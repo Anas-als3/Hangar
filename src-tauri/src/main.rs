@@ -66,6 +66,7 @@ fn main() {
             commands::get_registry_error,
             commands::run_project,
             commands::stop_project,
+            commands::open_in_browser,
             commands::get_log_buffer,
             commands::clear_log_buffer,
         ])

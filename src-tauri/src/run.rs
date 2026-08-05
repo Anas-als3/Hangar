@@ -7,16 +7,34 @@
 //! - the port pre-check, dual-stack ready polling and the browser hand-off — plan 004,
 //! - `git pull`, lockfile hashing and installs — plan 006.
 
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tauri::{AppHandle, Manager};
+use tauri_plugin_opener::OpenerExt;
+use tokio::sync::watch;
 
 use crate::commands::AppState;
-use crate::process::{
-    self, KillTarget, ProjectRuntime, ShellKind, SpawnOutcome, SpawnSpec, StopClaim,
-};
-use crate::registry::{self, Status};
+use crate::process::{self, KillTarget, ProjectRuntime, ShellKind, SpawnSpec};
+use crate::registry::{self, Project, Status};
+
+// ---------------------------------------------------------------------------------------------
+// SPEC.md §9 steps 5-7 — ready-detection constants. Requirements, not tuning knobs.
+// ---------------------------------------------------------------------------------------------
+
+/// §9 step 5: "Poll both `127.0.0.1:port` and `[::1]:port` every 500 ms".
+pub const POLL_INTERVAL: Duration = Duration::from_millis(500);
+
+/// §9 step 6: "Wait 300 ms grace, then: status `running`". Not decoration — a server that has just
+/// bound its socket is often still finishing its first compile, and opening the tab into a
+/// connection-reset is worse than opening it 300 ms later.
+pub const READY_GRACE: Duration = Duration::from_millis(300);
+
+/// §9 step 5 and §12 ("System sleep during `starting`"): the budget counts *completed poll
+/// attempts*, and a gap this long between two of them means the machine was suspended — the server
+/// was not given that time and must not be charged for it.
+pub const SLEEP_GAP: Duration = Duration::from_secs(5);
 
 // ---------------------------------------------------------------------------------------------
 // SPEC.md §6 — the status state machine. The single source of truth for what is legal.
@@ -193,7 +211,280 @@ pub fn guard_mutation(status: Status, name: &str) -> Result<(), String> {
     }
 }
 
-/// SPEC.md §9 steps 0 and 4, as far as M3 goes.
+// ---------------------------------------------------------------------------------------------
+// SPEC.md §9 step 5 — the ready budget, counted in attempts rather than wall-clock
+// ---------------------------------------------------------------------------------------------
+
+/// The remaining poll attempts for one `starting` phase.
+///
+/// SPEC.md §9 step 5 is specific: *"The timeout budget is counted in **completed poll attempts**
+/// (`readyTimeoutSec × 2` attempts), not wall-clock — a poll gap over 5 s (system slept) does not
+/// count against the budget."* A wall-clock deadline expires the instant a laptop wakes, killing a
+/// perfectly healthy server that was never given the time it was charged for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AttemptBudget {
+    remaining: u32,
+}
+
+impl AttemptBudget {
+    /// Two attempts per second, because [`POLL_INTERVAL`] is 500 ms.
+    pub fn new(ready_timeout_sec: u32) -> Self {
+        Self {
+            remaining: ready_timeout_sec.saturating_mul(2),
+        }
+    }
+
+    pub fn remaining(self) -> u32 {
+        self.remaining
+    }
+
+    pub fn is_exhausted(self) -> bool {
+        self.remaining == 0
+    }
+
+    /// Charges one completed attempt. `gap` is the wall-clock time since the *previous* attempt
+    /// began (`Duration::ZERO` for the first). A gap beyond [`SLEEP_GAP`] means the process was
+    /// suspended, so the attempt is free.
+    pub fn record(&mut self, gap: Duration) {
+        if gap > SLEEP_GAP {
+            return;
+        }
+        self.remaining = self.remaining.saturating_sub(1);
+    }
+}
+
+/// Why the `starting` phase ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadyOutcome {
+    /// The port answered on one of the two stacks.
+    Ready,
+    /// The child exited first — the exit watcher has already diagnosed and announced it.
+    ChildExited,
+    /// The attempt budget ran out with no answer.
+    TimedOut,
+}
+
+/// SPEC.md §9 step 5: poll both stacks every 500 ms, **racing the child's exit**.
+///
+/// The race is the whole point. A command that dies in the first second — a typo, a missing
+/// dependency, or the classic "user picked `build` instead of `dev`" — must be diagnosed in the
+/// first second, not after sitting through the full 60 s timeout.
+async fn await_ready(port: u16, ready_timeout_sec: u32, exited: &watch::Receiver<bool>) -> ReadyOutcome {
+    let mut budget = AttemptBudget::new(ready_timeout_sec);
+    let mut previous_attempt: Option<tokio::time::Instant> = None;
+
+    loop {
+        let started = tokio::time::Instant::now();
+        if *exited.borrow() {
+            return ReadyOutcome::ChildExited;
+        }
+        // Dual-stack, every attempt (§12 "Server bound to IPv6 localhost only").
+        if process::port_accepts(port).await {
+            return ReadyOutcome::Ready;
+        }
+
+        let gap = previous_attempt.map_or(Duration::ZERO, |prev| started.duration_since(prev));
+        previous_attempt = Some(started);
+        budget.record(gap);
+        if budget.is_exhausted() {
+            return ReadyOutcome::TimedOut;
+        }
+
+        // Sleeping *through* an exit is the bug this avoids: waiting on the reap signal wakes as
+        // soon as the child is gone, and otherwise falls through on the normal 500 ms cadence.
+        let mut rx = exited.clone();
+        let _ = tokio::time::timeout(POLL_INTERVAL, rx.wait_for(|reaped| *reaped)).await;
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// SPEC.md §9 steps 6-7 — the hand-off, and the timeout that must kill before it reports
+// ---------------------------------------------------------------------------------------------
+
+/// SPEC.md §9 step 7, as an ordering that cannot be got wrong by accident: the tree is killed and
+/// its death confirmed **before** the status becomes `crashed`.
+///
+/// This is the fix for the spec's worst orphan bug. Invert it — or skip the kill — and a timed-out
+/// server keeps running behind a `crashed` card that invites the user to Run again; the pre-check
+/// then finds the pinned port free (the framework auto-bumped), a second tree spawns, and the first
+/// becomes permanently untracked.
+///
+/// `kill` and `crash` are parameters so the ordering can be asserted without a live Tauri app; see
+/// `the_timeout_kills_the_tree_before_it_says_crashed`.
+async fn kill_then_crash<K, C, CF>(kill: K, crash: C) -> bool
+where
+    K: Future<Output = bool>,
+    C: FnOnce(bool) -> CF,
+    CF: Future<Output = ()>,
+{
+    let death_confirmed = kill.await;
+    crash(death_confirmed).await;
+    death_confirmed
+}
+
+/// SPEC.md §9 step 7's toast, verbatim, plus an honest note when the kill could not be verified.
+pub fn timeout_message(port: u16, ready_timeout_sec: u32, death_confirmed: bool) -> String {
+    let base = format!(
+        "Server didn't answer on port {port} within {ready_timeout_sec} s, so it was stopped. If it \
+         just needs longer (e.g. a first cold compile), raise Ready timeout in Edit. Check the log — \
+         did it start on another port? Pin it in Edit."
+    );
+    if death_confirmed {
+        base
+    } else {
+        // §8: never silently pretend it stopped.
+        format!("{base} Some of its processes could not be confirmed dead — press Stop to retry.")
+    }
+}
+
+/// SPEC.md §9 step 5's diagnosis for a child that exits while still `starting`, i.e. one that never
+/// answered on the port.
+///
+/// The exit-0 case is the single most common user error in the whole app — picking `build` (or
+/// `lint`, or `test`) in the Add dialog instead of a script that starts a server — and without this
+/// message it presents as a silent, successful-looking crash.
+pub fn starting_exit_message(exit_code: Option<i32>, command: &str, port: u16) -> String {
+    match exit_code {
+        Some(0) => format!(
+            "`{command}` finished (exit 0) without ever answering on port {port} — did you pick a \
+             script that starts a server (e.g. dev), not build?"
+        ),
+        Some(code) => format!(
+            "`{command}` exited with code {code} without ever answering on port {port} — see the \
+             log for the error."
+        ),
+        None => format!(
+            "`{command}` was terminated without ever answering on port {port} — see the log."
+        ),
+    }
+}
+
+/// Picks the message for an observed child exit. Only an exit from `starting` gets the §9 step 5
+/// diagnosis; an exit from `running` is an ordinary crash and keeps the exit-code note.
+///
+/// Called by the exit watcher, which is the one place that knows the exit happened — the §9 wording
+/// lives here because §9 lives here.
+pub async fn exit_message(
+    app: &AppHandle,
+    project_id: &str,
+    from: Status,
+    exit_code: Option<i32>,
+    fallback: &str,
+) -> String {
+    if from != Status::Starting {
+        return fallback.to_string();
+    }
+    let state = app.state::<AppState>();
+    let project = {
+        let projects = state.projects.lock().await;
+        projects.iter().find(|p| p.id == project_id).cloned()
+    };
+    match project {
+        Some(project) => starting_exit_message(exit_code, &project.command, project.port),
+        None => fallback.to_string(),
+    }
+}
+
+/// SPEC.md §5: `url` is an optional override; the default is computed from the pinned `port`.
+/// Ready-check, busy-check and duplicate-port validation always use `port` regardless — this is
+/// the *only* place `url` is honoured.
+pub fn project_url(project: &Project) -> String {
+    match project.url.as_deref().map(str::trim).filter(|u| !u.is_empty()) {
+        Some(url) => url.to_string(),
+        None => format!("http://localhost:{}", project.port),
+    }
+}
+
+/// SPEC.md §4: the opener plugin called **from Rust** bypasses the ACL and needs no capability
+/// entry. Deliberately not routed through the webview, and never `tauri-plugin-shell` (§4 forbids
+/// it, and its `open` is Tauri 2's deprecated path).
+pub async fn open_in_browser(app: &AppHandle, project: &Project) -> Result<(), String> {
+    let url = project_url(project);
+    match app.opener().open_url(&url, None::<&str>) {
+        Ok(()) => {
+            process::append_system(app, &project.id, format!("opened {url}")).await;
+            Ok(())
+        }
+        Err(e) => {
+            let message = format!("Couldn't open {url}: {e}");
+            process::append_system(app, &project.id, message.clone()).await;
+            Err(message)
+        }
+    }
+}
+
+/// SPEC.md §9 steps 5-7, run in the background so `run_project` stays fire-and-forget (§7) instead
+/// of holding an IPC call open for `readyTimeoutSec`.
+async fn await_ready_then_hand_off(app: AppHandle, project: Project, exited: watch::Receiver<bool>) {
+    match await_ready(project.port, project.ready_timeout_sec, &exited).await {
+        // The exit watcher has already narrated the exit and applied `crashed` with the §9 step 5
+        // diagnosis. Nothing to add, and nothing to kill.
+        ReadyOutcome::ChildExited => {}
+
+        ReadyOutcome::Ready => {
+            tokio::time::sleep(READY_GRACE).await;
+            // A Stop (or a crash) landing inside the grace wins: `Ready` is illegal from anything
+            // but `starting`, so the rejection is the guard, and no tab is opened for a dead server.
+            if apply(&app, &project.id, Trigger::Ready, None).await.is_err() {
+                return;
+            }
+            let _ = open_in_browser(&app, &project).await;
+        }
+
+        ReadyOutcome::TimedOut => on_ready_timeout(&app, &project).await,
+    }
+}
+
+/// SPEC.md §9 step 7. The ordering here is the point — see [`kill_then_crash`].
+async fn on_ready_timeout(app: &AppHandle, project: &Project) {
+    process::append_system(
+        app,
+        &project.id,
+        format!(
+            "no answer on port {} after {} poll attempts ({} s of polling) — stopping the process \
+             tree before reporting the failure",
+            project.port,
+            // Attempts, not wall-clock: §9 step 5 counts attempts precisely so a system sleep does
+            // not read as a slow server, and the log line should say what was actually measured.
+            AttemptBudget::new(project.ready_timeout_sec).remaining(),
+            project.ready_timeout_sec
+        ),
+    )
+    .await;
+
+    // Taken out of the map before the kill, exactly as `stop_project` does (SPEC.md §4: the async
+    // mutex is never held across a multi-second kill).
+    let mut target = KillTarget::default();
+    {
+        let state = app.state::<AppState>();
+        let mut runtime = state.runtime.lock().await;
+        let entry = runtime.entry(project.id.clone()).or_default();
+        target.pid = entry.child_pid;
+        target.exited = entry.exited.clone();
+        #[cfg(windows)]
+        {
+            target.job = entry.job.take();
+        }
+    }
+
+    kill_then_crash(
+        async {
+            let outcome = process::kill_tree(target).await;
+            for note in outcome.notes {
+                process::append_system(app, &project.id, note).await;
+            }
+            outcome.death_confirmed
+        },
+        |death_confirmed| async move {
+            let message = timeout_message(project.port, project.ready_timeout_sec, death_confirmed);
+            process::append_system(app, &project.id, message.clone()).await;
+            let _ = apply(app, &project.id, Trigger::Failed, Some(message)).await;
+        },
+    )
+    .await;
+}
+
+/// SPEC.md §9 steps 0, 1 and 4-7.
 pub async fn run_project(app: &AppHandle, project_id: &str) -> Result<(), String> {
     let state = app.state::<AppState>();
 
@@ -214,25 +505,42 @@ pub async fn run_project(app: &AppHandle, project_id: &str) -> Result<(), String
         ));
     }
 
+    // ---- §9 step 1: the port must be free before anything is spawned --------------------------
+    // Deliberately ahead of the claim: a refused Run must not flash `starting` and then a bogus
+    // `crashed`. Racing Runs are still safe — the claim below is what is atomic, and the second one
+    // is rejected there.
+    if process::port_accepts(project.port).await {
+        let env = state.dev_env.get().await.vars.clone();
+        // Strictly read-only (§9): v0 has no button to kill this process. It is very often the
+        // user's own terminal, and killing what Hangar did not spawn is exactly what §8 is careful
+        // never to claim.
+        let owner = process::port_owner(project.port, &env).await;
+        return Err(match owner {
+            Some(owner) => format!(
+                "Port {} is in use by {owner} — is this project running elsewhere?",
+                project.port
+            ),
+            // The lookup failed, timed out, or found nothing: say less rather than guess.
+            None => format!(
+                "Port {} is already in use — is this project running elsewhere?",
+                project.port
+            ),
+        });
+    }
+
     // ---- §6 guard + claim, atomically ---------------------------------------------------------
-    //
-    // The claim moves the card to `starting`, which is precisely what makes Stop legal (§6). Every
-    // await below therefore runs inside a window where the user can press Stop but there is no
-    // child to kill yet — the `lastRunAt` write, the login-shell environment resolution (a cold
-    // cell shells out with a 5 s budget) and, once plans 004/006 land, the whole pull/install
-    // phase. `spawn_in_flight` is the run sequence's claim on that window: a Stop arriving inside
-    // it parks on this receiver rather than verifying a death that has not happened, and the run
-    // sequence cancels itself the moment it notices (SPEC.md §12, "Stop clicked during
-    // updating/installing/starting").
-    //
-    // The sender is held for the whole body of this function: every return path drops it, which
-    // releases a parked Stop even on a path that forgot to.
-    let (spawn_claim, spawn_in_flight) = tokio::sync::watch::channel(false);
     apply_with(app, &project.id, Trigger::Run, None, |entry| {
-        entry.begin_run(spawn_in_flight)
+        entry.user_stop = false;
+        // §8 buffer lifecycle: cleared at the start of each Run.
+        entry.logs.clear();
     })
     .await
     .map_err(|rejection| rejection.for_project(&project.name))?;
+
+    // PLAN 006 SEAM. SPEC.md §9 steps 2-3 — `updating` (git pull --ff-only) and `installing`
+    // (lockfile hash + npm/pnpm/yarn install), both stoppable, both taking the per-canonical-path
+    // mutex — insert here, between the claim and the spawn below. The §6 machine already treats
+    // both statuses as legal and stoppable; nothing enters them yet.
 
     // ---- §5/§6: lastRunAt is set when entering `starting` -------------------------------------
     let started_at = iso8601_utc(SystemTime::now());
@@ -261,14 +569,6 @@ pub async fn run_project(app: &AppHandle, project_id: &str) -> Result<(), String
     }
 
     // ---- §9 step 4: spawn ---------------------------------------------------------------------
-    //
-    // Last look before anything is created: a Stop that landed while the environment was resolving
-    // costs zero processes if it is noticed here. `had_child: false` is the honest input to §8
-    // verification — there demonstrably never was a child for this run.
-    if stop_is_pending(app, &project.id).await {
-        return cancel_run(app, &project, KillTarget::default()).await;
-    }
-
     process::append_system(app, &project.id, format!("$ {}", project.command)).await;
 
     let spec = SpawnSpec {
@@ -289,12 +589,7 @@ pub async fn run_project(app: &AppHandle, project_id: &str) -> Result<(), String
             // SPEC.md §8: if a tool resolves to nothing, the error line must show the PATH searched.
             process::append_system(app, &project.id, format!("{e}\nPATH searched: {path_searched}"))
                 .await;
-            // Nothing was created, so the pre-registration window closes with no kill target — and
-            // `had_child` stays false, which is the honest answer for any Stop still parked on it.
-            let _ = apply_with(app, &project.id, Trigger::Failed, Some(e.clone()), |entry| {
-                entry.spawn_in_flight = None;
-            })
-            .await;
+            let _ = apply(app, &project.id, Trigger::Failed, Some(e.clone())).await;
             return Err(e);
         }
     };
@@ -304,89 +599,37 @@ pub async fn run_project(app: &AppHandle, project_id: &str) -> Result<(), String
     // The exit watcher signals this once it has reaped the child; the §8 kill sequence awaits it
     // instead of calling `wait()` a second time on a Child it does not own.
     let (exit_tx, exit_rx) = tokio::sync::watch::channel(false);
-    // SPEC.md §8/§12: `/bin/sh` always exists, so the spawn above succeeds even when `npm` does
-    // not — the shell reports "command not found" and exits 127. The exit watcher prints this
-    // PATH in that case; without it, the single most important error message in the app is
-    // missing. See `process::is_tool_not_found_exit`.
-    let outcome = {
+    {
         let mut runtime = state.runtime.lock().await;
         let entry = runtime.entry(project.id.clone()).or_default();
+        entry.child_pid = pid;
+        entry.exited = Some(exit_rx.clone());
+        // SPEC.md §8/§12: `/bin/sh` always exists, so the spawn above succeeds even when `npm` does
+        // not — the shell reports "command not found" and exits 127. The exit watcher prints this
+        // PATH in that case; without it, the single most important error message in the app is
+        // missing. See `process::is_tool_not_found_exit`.
+        entry.path_searched = Some(path_searched.clone());
         #[cfg(windows)]
         {
             entry.job = spawned.job;
         }
-        // Publishing the kill target and reading the user-stop flag happen under ONE lock. Split
-        // them and a Stop can slip between, find nothing registered, and announce a stop while this
-        // very tree comes up behind it.
-        entry.register_child(pid, exit_rx, path_searched.clone())
-    };
+    }
 
     let pipeline = process::attach_log_pipeline(app, &project.id, &mut child);
 
-    if outcome == SpawnOutcome::CancelRun {
-        // A Stop was claimed while this run was working: the card already says `stopping` and the
-        // Stop sequence is parked waiting for us, because at the moment it looked there was nothing
-        // to signal. This tree is reachable from nowhere else. The exit watcher starts first — it
-        // owns `wait()`, so it is both the reaper and what the kill below awaits (§8).
-        process::spawn_exit_watcher(app.clone(), project.id.clone(), child, pipeline, exit_tx);
-        let target = {
-            let mut runtime = state.runtime.lock().await;
-            runtime
-                .entry(project.id.clone())
-                .or_default()
-                .take_kill_target()
-        };
-        return cancel_run(app, &project, target).await;
-    }
-
-    // PLAN 004 OWNS THIS LINE. Ready-detection — dual-stack port polling racing the child's exit,
-    // the attempt-counted timeout, the 300 ms grace and opening the browser — is plan 004's scope.
-    // Until then a successful spawn is the most this milestone can honestly claim, so the card goes
-    // straight to `running`. Do not add a placeholder poll here.
-    //
-    // The rejection is ignored on purpose: a Stop clicked in the moments between the registration
-    // above and this line leaves the project in `stopping`, where `Ready` is illegal — and the Stop
-    // must win. It can do so safely now: that Stop found a registered kill target.
-    let _ = apply(app, &project.id, Trigger::Ready, None).await;
-
-    // Started last on purpose: an instantly-exiting command must not have its `crashed` transition
-    // overwritten by the `running` line above.
+    // Started before the polling below, not after: it is what diagnoses an instantly-exiting
+    // command, and it is what signals the reap the poller races.
     process::spawn_exit_watcher(app.clone(), project.id.clone(), child, pipeline, exit_tx);
 
-    // Held until here so that every early return above wakes a parked Stop by dropping it.
-    drop(spawn_claim);
+    // §9 steps 5-7 run detached. `run_project` is fire-and-forget (§7) — holding the IPC call open
+    // for up to `readyTimeoutSec` would block the frontend's next command behind a 60 s wait.
+    tauri::async_runtime::spawn(await_ready_then_hand_off(
+        app.clone(),
+        project.clone(),
+        exit_rx,
+    ));
+
     Ok(())
-}
-
-/// Has a Stop already been claimed for the run currently in flight? (SPEC.md §6 makes Stop legal
-/// from the moment the `Run` claim lands, which is several awaits before there is a child.)
-async fn stop_is_pending(app: &AppHandle, project_id: &str) -> bool {
-    let state = app.state::<AppState>();
-    let runtime = state.runtime.lock().await;
-    runtime
-        .get(project_id)
-        .is_some_and(ProjectRuntime::run_cancelled)
-}
-
-/// The run sequence cancelling itself because a Stop landed while it was working.
-///
-/// It runs the *same* §8 sequence a Stop does — kill, reap, confirmed death, then the port — and
-/// announces through the same `StopConfirmed` / `KillVerificationFailed` triggers, so a cancelled
-/// run can never report `stopped` on a tree it has not verified.
-async fn cancel_run(
-    app: &AppHandle,
-    project: &registry::Project,
-    target: KillTarget,
-) -> Result<(), String> {
-    finish_stop(
-        app,
-        &project.id,
-        &project.name,
-        Some(project.port),
-        true,
-        target,
-    )
-    .await
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -419,118 +662,44 @@ pub async fn stop_project(app: &AppHandle, project_id: &str) -> Result<(), Strin
     let port = project.as_ref().map(|p| p.port);
 
     // ---- 1. claim the stop -------------------------------------------------------------------
-    let mut claim = None;
+    let mut target = KillTarget::default();
     let transition = apply_with(app, project_id, Trigger::Stop, None, |entry| {
-        claim = Some(entry.claim_stop());
+        entry.user_stop = true;
+        target.pid = entry.child_pid;
+        target.exited = entry.exited.clone();
+        // Taken out of the map, not borrowed: the kill below awaits for seconds and the async mutex
+        // must not be held across it (SPEC.md §4).
+        #[cfg(windows)]
+        {
+            target.job = entry.job.take();
+        }
     })
     .await
     .map_err(|rejection| rejection.for_project(&name))?;
 
-    let mut cancelled_mid_phase = matches!(
-        transition.from,
-        Status::Updating | Status::Installing | Status::Starting
-    );
-
-    let target = match claim.expect("the Stop claim runs under the transition's lock") {
-        StopClaim::Kill(target) => target,
-        StopClaim::AwaitSpawn(spawn_in_flight) => {
-            // The run sequence is between its `starting` claim and its child's registration, so
-            // there is nothing to signal *yet* — and reporting that as a verified death is how a
-            // live tree ends up behind a `stopped` card, orphaned for the app's lifetime. The flag
-            // set above is already visible to the spawn side; wait for it to notice and settle.
-            process::append_system(
-                app,
-                project_id,
-                "waiting for the run that is still starting to cancel",
-            )
-            .await;
-            if !await_spawn_cancel(spawn_in_flight).await {
-                let message = format!(
-                    "Couldn't confirm {name} stopped: the run that was starting did not respond \
-                     within {} s. Press Stop again to retry.",
-                    SPAWN_CANCEL_BUDGET.as_secs()
-                );
-                process::append_system(app, project_id, message.clone()).await;
-                let _ = apply(app, project_id, Trigger::KillVerificationFailed, None).await;
-                return Err(message);
-            }
-
-            // The run sequence settles the outcome itself, through the same §8 verification and the
-            // same §6 triggers (see `cancel_run`). If it did, honour its verdict.
-            let settled = {
-                let runtime = state.runtime.lock().await;
-                runtime.get(project_id).map(|entry| entry.status)
-            };
-            match settled {
-                Some(Status::Stopped) => return Ok(()),
-                Some(Status::StopFailed) => {
-                    return Err(format!(
-                        "Couldn't confirm {name} stopped — see the log. Press Stop again to retry."
-                    ))
-                }
-                _ => {}
-            }
-
-            // It returned without settling (a spawn failure, say). Whatever it left behind is ours
-            // to finish — including the case where it left nothing, which `had_child` reports
-            // honestly rather than as a confirmed death.
-            cancelled_mid_phase = true;
-            let mut runtime = state.runtime.lock().await;
-            runtime
-                .entry(project_id.to_string())
-                .or_default()
-                .take_kill_target()
-        }
-    };
-
-    finish_stop(app, project_id, &name, port, cancelled_mid_phase, target).await
-}
-
-/// How long a Stop waits for a run sequence to notice it and cancel. Generous on purpose: the run
-/// side's own cancellation runs the full §8 kill (5 s SIGTERM grace + 5 s reap + 3 s death check +
-/// the port probe) before it releases the waiter.
-const SPAWN_CANCEL_BUDGET: Duration = Duration::from_secs(20);
-
-/// True if the run sequence settled (or simply returned, which drops the sender) inside the budget.
-async fn await_spawn_cancel(mut spawn_in_flight: tokio::sync::watch::Receiver<bool>) -> bool {
-    tokio::time::timeout(SPAWN_CANCEL_BUDGET, async move {
-        // `Err` means every sender is gone, i.e. the run sequence has returned — also a settlement.
-        let _ = spawn_in_flight.wait_for(|settled| *settled).await;
-    })
-    .await
-    .is_ok()
-}
-
-/// Steps 2–5 of the Stop sequence, shared by `stop_project` and by a run sequence cancelling itself.
-/// There is exactly one implementation so a cancelled run cannot verify less than a Stop does.
-async fn finish_stop(
-    app: &AppHandle,
-    project_id: &str,
-    name: &str,
-    port: Option<u16>,
-    cancelled_mid_phase: bool,
-    target: KillTarget,
-) -> Result<(), String> {
     // ---- 2. kill -----------------------------------------------------------------------------
-    let mut outcome = process::kill_tree(target).await;
-    for note in std::mem::take(&mut outcome.notes) {
+    let outcome = process::kill_tree(target).await;
+    for note in outcome.notes {
         process::append_system(app, project_id, note).await;
     }
 
     // ---- 3./4. verify: death FIRST, then the port ---------------------------------------------
-    let port_still_answers = if outcome.death_confirmed {
+    let port_free = if outcome.death_confirmed {
         match port {
-            Some(port) => process::port_accepts(port).await,
-            None => false,
+            Some(port) => !process::port_accepts(port).await,
+            None => true,
         }
     } else {
         // Not even asked: with processes still alive the port answer is meaningless.
-        true
+        false
     };
 
     // ---- 5. status ---------------------------------------------------------------------------
-    if process::stop_is_verified(outcome.death_confirmed, port_still_answers) {
-        if cancelled_mid_phase {
+    if outcome.death_confirmed && port_free {
+        if matches!(
+            transition.from,
+            Status::Updating | Status::Installing | Status::Starting
+        ) {
             // §6: "log line 'Run cancelled by user' if user-stopped mid-phase".
             process::append_system(app, project_id, "Run cancelled by user").await;
         }
@@ -544,12 +713,7 @@ async fn finish_stop(
         )
         .await;
 
-        // Verified — and this is one of only two places the kill primitive may be retired.
-        if let Err(rejection) = apply_with(app, project_id, Trigger::StopConfirmed, None, |entry| {
-            entry.clear_kill_target()
-        })
-        .await
-        {
+        if let Err(rejection) = apply(app, project_id, Trigger::StopConfirmed, None).await {
             process::append_system(
                 app,
                 project_id,
@@ -574,14 +738,11 @@ async fn finish_stop(
     let message = format!("Couldn't confirm {name} stopped: {reason}. Press Stop again to retry.");
 
     process::append_system(app, project_id, message.clone()).await;
-    // §6: "`stop-failed` | Stop clicked | `stopping` — retry the kill". A retry can only kill what
-    // it still owns, so the primitive goes back into the map instead of being dropped here.
-    let _ = apply_with(
+    let _ = apply(
         app,
         project_id,
         Trigger::KillVerificationFailed,
         Some(reason),
-        |entry| entry.restore_kill_target(&mut outcome),
     )
     .await;
 
@@ -871,31 +1032,6 @@ mod tests {
         }
     }
 
-    /// Plan 003's test plan, "Kill verification result mapping" — the two §8 checks, end to end,
-    /// onto the two statuses §6 allows a `stopping` project to reach.
-    #[test]
-    fn kill_verification_maps_death_and_port_onto_stopped_or_stop_failed() {
-        fn verdict(death_confirmed: bool, port_still_answers: bool) -> Status {
-            let trigger = if process::stop_is_verified(death_confirmed, port_still_answers) {
-                Trigger::StopConfirmed
-            } else {
-                Trigger::KillVerificationFailed
-            };
-            next_status(Status::Stopping, trigger).unwrap()
-        }
-
-        assert_eq!(verdict(true, false), Status::Stopped, "death + free port");
-        assert_eq!(
-            verdict(true, true),
-            Status::StopFailed,
-            "death confirmed but the port still answers — something else owns it"
-        );
-        // Death not confirmed is `stop-failed` whatever the port says: a port-only check is the
-        // false proxy §8 exists to forbid, since leaked watchers never listen on it at all.
-        assert_eq!(verdict(false, true), Status::StopFailed);
-        assert_eq!(verdict(false, false), Status::StopFailed);
-    }
-
     #[test]
     fn ready_is_reachable_only_from_starting() {
         assert_eq!(next_status(Status::Starting, Trigger::Ready), Ok(Status::Running));
@@ -905,6 +1041,350 @@ mod tests {
             }
             assert!(next_status(from, Trigger::Ready).is_err());
         }
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // SPEC.md §9 step 5 — the attempt-counted, sleep-proof ready budget
+    // -----------------------------------------------------------------------------------------
+
+    #[test]
+    fn the_budget_is_two_attempts_per_second_of_ready_timeout() {
+        assert_eq!(AttemptBudget::new(60).remaining(), 120, "the §5 default");
+        assert_eq!(AttemptBudget::new(1).remaining(), 2);
+        assert_eq!(AttemptBudget::new(0).remaining(), 0);
+    }
+
+    #[test]
+    fn each_completed_attempt_spends_exactly_one() {
+        let mut budget = AttemptBudget::new(2); // 4 attempts
+        for expected in [3, 2, 1, 0] {
+            budget.record(POLL_INTERVAL);
+            assert_eq!(budget.remaining(), expected);
+        }
+        assert!(budget.is_exhausted());
+
+        // Exhausted stays exhausted; it must never wrap around into a fresh budget.
+        budget.record(POLL_INTERVAL);
+        assert_eq!(budget.remaining(), 0);
+    }
+
+    #[test]
+    fn a_system_sleep_does_not_consume_the_budget() {
+        // SPEC.md §12, "System sleep during `starting`": the laptop was shut for two hours. A
+        // wall-clock deadline would have expired 7199 s ago and killed a healthy server the moment
+        // the machine woke; the attempt count is untouched because no attempt was actually made.
+        let mut budget = AttemptBudget::new(60);
+        for _ in 0..100 {
+            budget.record(Duration::from_secs(7200));
+        }
+        assert_eq!(budget.remaining(), 120, "a suspended machine is not a slow server");
+
+        // The boundary: 5 s exactly is still a (very slow) poll and is charged; beyond it is sleep.
+        let mut budget = AttemptBudget::new(1);
+        budget.record(SLEEP_GAP);
+        assert_eq!(budget.remaining(), 1);
+        budget.record(SLEEP_GAP + Duration::from_millis(1));
+        assert_eq!(budget.remaining(), 1);
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // SPEC.md §9 step 7 — kill the tree BEFORE saying `crashed`
+    // -----------------------------------------------------------------------------------------
+
+    #[test]
+    fn the_timeout_kills_the_tree_before_it_says_crashed() {
+        use std::sync::{Arc, Mutex};
+
+        let order: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+        let kill_order = Arc::clone(&order);
+        let crash_order = Arc::clone(&order);
+
+        // `block_on` uses Tauri's runtime — SPEC.md §4 forbids creating one of our own.
+        let confirmed = tauri::async_runtime::block_on(kill_then_crash(
+            async move {
+                kill_order.lock().unwrap().push("kill");
+                true
+            },
+            move |death_confirmed| async move {
+                crash_order
+                    .lock()
+                    .unwrap()
+                    .push(if death_confirmed { "crash" } else { "crash-unverified" });
+            },
+        ));
+
+        assert!(confirmed);
+        assert_eq!(
+            *order.lock().unwrap(),
+            ["kill", "crash"],
+            "inverting this order is the orphan bug SPEC.md §9 step 7 exists to close"
+        );
+    }
+
+    #[test]
+    fn a_timeout_whose_kill_could_not_be_verified_says_so() {
+        let verified = timeout_message(3000, 60, true);
+        assert!(verified.starts_with(
+            "Server didn't answer on port 3000 within 60 s, so it was stopped."
+        ));
+        assert!(verified.contains("raise Ready timeout in Edit"));
+        assert!(verified.contains("did it start on another port? Pin it in Edit."));
+        assert!(!verified.contains("press Stop to retry"));
+
+        // §8: never silently pretend it stopped.
+        let unverified = timeout_message(3000, 60, false);
+        assert!(unverified.contains("could not be confirmed dead — press Stop to retry."));
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // SPEC.md §9 step 5 — diagnosing a child that exits while still `starting`
+    // -----------------------------------------------------------------------------------------
+
+    #[test]
+    fn an_exit_zero_while_starting_asks_about_the_wrong_script() {
+        // §12: "Child exits during `starting` (exit 0 — e.g. user picked `build`)".
+        let message = starting_exit_message(Some(0), "npm run build", 3000);
+        assert_eq!(
+            message,
+            "`npm run build` finished (exit 0) without ever answering on port 3000 — did you pick \
+             a script that starts a server (e.g. dev), not build?"
+        );
+    }
+
+    #[test]
+    fn a_nonzero_exit_while_starting_reports_the_code_and_points_at_the_log() {
+        let message = starting_exit_message(Some(1), "npm run dev", 5173);
+        assert!(message.contains("exited with code 1"), "got {message}");
+        assert!(message.contains("port 5173"), "got {message}");
+        assert!(message.contains("see the log"), "got {message}");
+        assert!(
+            !message.contains("did you pick"),
+            "a real failure must not be explained away as the wrong script: {message}"
+        );
+
+        // Killed by a signal: no code to report, but still not a mystery.
+        let signalled = starting_exit_message(None, "npm run dev", 5173);
+        assert!(signalled.contains("was terminated"), "got {signalled}");
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // SPEC.md §5 — `url` is an override for the browser only
+    // -----------------------------------------------------------------------------------------
+
+    fn project_fixture(url: Option<&str>) -> Project {
+        Project {
+            id: "ielts-coach".into(),
+            name: "IELTS Coach".into(),
+            path: "/tmp/ielts".into(),
+            command: "npm run dev".into(),
+            port: 3000,
+            url: url.map(str::to_string),
+            update_on_run: true,
+            ready_timeout_sec: 60,
+            last_lockfile_hash: None,
+            last_run_at: None,
+        }
+    }
+
+    #[test]
+    fn the_browser_url_defaults_to_the_pinned_port() {
+        assert_eq!(project_url(&project_fixture(None)), "http://localhost:3000");
+    }
+
+    #[test]
+    fn a_url_override_is_honoured_but_blank_is_not() {
+        assert_eq!(
+            project_url(&project_fixture(Some("http://localhost:3000/dashboard"))),
+            "http://localhost:3000/dashboard"
+        );
+        // An empty or whitespace override is a leftover from the Edit dialog, not an instruction.
+        assert_eq!(project_url(&project_fixture(Some(""))), "http://localhost:3000");
+        assert_eq!(project_url(&project_fixture(Some("   "))), "http://localhost:3000");
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // SPEC.md §15 acceptance tests, against the real code paths.
+    //
+    // Ignored by default: they start real `node` processes. Run them with
+    //
+    //     cargo test --manifest-path src-tauri/Cargo.toml -- --ignored --nocapture --test-threads=1
+    //
+    // `--test-threads=1` is REQUIRED, not tidiness. SPEC.md §15's measurement is `pgrep -f node`,
+    // which is a machine-wide count: run these concurrently and each one's fixture lands inside the
+    // others' before/after window, so they fail with the count going *down*. That reads exactly like
+    // an orphan bug and is not one. Same reason §15 test 3 says to take the baseline after a prior
+    // Run — the count only means something when nothing else is moving.
+    // -----------------------------------------------------------------------------------------
+
+    /// Writes a throwaway Node project and returns its directory.
+    #[cfg(unix)]
+    fn write_fixture(tag: &str, server_js: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "hangar-{tag}-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("create the fixture directory");
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"name":"hangar-fixture","private":true,"version":"0.0.0","scripts":{"dev":"node server.js"}}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.join("server.js"), server_js).unwrap();
+        dir
+    }
+
+    #[cfg(unix)]
+    async fn count_node_processes() -> usize {
+        let spec = SpawnSpec {
+            command: "pgrep -f node | wc -l".to_string(),
+            kill_on_drop: true,
+            ..SpawnSpec::default()
+        };
+        let spawned = process::spawn(&spec).expect("spawn pgrep");
+        let output = spawned.child.wait_with_output().await.expect("run pgrep");
+        String::from_utf8_lossy(&output.stdout).trim().parse().unwrap_or(0)
+    }
+
+    /// SPEC.md §15 test 7 — **the timeout-orphan test**, and the reason §9 step 7 orders the kill
+    /// before the status change.
+    ///
+    /// The fixture reproduces the exact failure: it binds a *different* port from the pinned one,
+    /// which is what a framework does when it finds the pinned port busy and auto-bumps. The
+    /// ready-check can therefore never succeed. Before the fix the card went `crashed` while the
+    /// server kept running, and the next Run — finding the pinned port free — spawned a second tree
+    /// and orphaned the first forever.
+    ///
+    /// It also spawns a SIGTERM-ignoring grandchild that never listens on any port, so a port-only
+    /// verification would call this a clean stop while it was still running.
+    #[test]
+    #[ignore]
+    #[cfg(unix)]
+    fn a_ready_timeout_kills_the_tree_and_leaves_no_orphans() {
+        const PINNED: u16 = 39221; // nothing ever listens here — the auto-bump case
+        const ACTUAL: u16 = 39222; // where the fixture really binds
+
+        let dir = write_fixture(
+            "timeout-orphan",
+            r#"const http = require('http');
+const { spawn } = require('child_process');
+spawn(process.execPath, ['-e', "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], {
+  stdio: 'ignore',
+});
+http.createServer((_req, res) => res.end('ok')).listen(39222, () => console.log('listening'));
+"#,
+        );
+
+        let fixture = dir.clone();
+        tauri::async_runtime::block_on(async move {
+            let before = count_node_processes().await;
+
+            let spawned = process::spawn(&SpawnSpec {
+                command: "npm run dev".to_string(),
+                cwd: Some(fixture),
+                long_lived: true,
+                ..SpawnSpec::default()
+            })
+            .expect("spawn npm run dev");
+            let mut child = spawned.child;
+            let pid = child.id().expect("the child has a pid");
+
+            // The production contract: one task owns `wait()` and signals the kill path.
+            let (exit_tx, exit_rx) = watch::channel(false);
+            tauri::async_runtime::spawn(async move {
+                let _ = child.wait().await;
+                let _ = exit_tx.send(true);
+            });
+
+            // It really is up on its bumped port, so this is a live server being timed out.
+            let mut up = false;
+            for _ in 0..60 {
+                if process::port_accepts(ACTUAL).await {
+                    up = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            assert!(up, "the fixture never bound its own port {ACTUAL}");
+
+            let during = count_node_processes().await;
+            println!("timeout-orphan: node before={before} during={during}");
+            assert!(during > before, "the fixture must create node processes");
+
+            // §9 step 5: 2 s of budget on a port nobody answers.
+            let outcome = await_ready(PINNED, 2, &exit_rx).await;
+            assert_eq!(
+                outcome,
+                ReadyOutcome::TimedOut,
+                "the pinned port never answers, so this must time out rather than go ready"
+            );
+
+            // §9 step 7: kill FIRST, and only a confirmed death may be reported.
+            let kill = process::kill_tree(process::KillTarget {
+                pid: Some(pid),
+                exited: Some(exit_rx),
+                ..process::KillTarget::default()
+            })
+            .await;
+            for note in &kill.notes {
+                println!("timeout-orphan: {note}");
+            }
+            assert!(kill.death_confirmed, "the timed-out tree was not confirmed dead");
+
+            let after = count_node_processes().await;
+            println!("timeout-orphan: node after={after}");
+            assert_eq!(after, before, "a timed-out tree must not be left running");
+            assert!(
+                !process::port_accepts(ACTUAL).await,
+                "the bumped port {ACTUAL} still answers — the server outlived its own timeout"
+            );
+        });
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// SPEC.md §15 test 4 (bonus) and §12's "Child exits during `starting`" rows: a command that
+    /// exits instantly must be diagnosed instantly.
+    ///
+    /// This is what makes picking `build` instead of `dev` a one-second mistake rather than a
+    /// 60-second mystery — the poll loop races the child's exit instead of sleeping through it.
+    #[test]
+    #[ignore]
+    #[cfg(unix)]
+    fn a_command_that_exits_at_once_is_diagnosed_at_once_not_after_the_timeout() {
+        const PINNED: u16 = 39223;
+
+        tauri::async_runtime::block_on(async {
+            let spawned = process::spawn(&SpawnSpec {
+                // Stands in for `npm run build`: does its job, exits 0, never serves anything.
+                command: "node -e 'process.exit(0)'".to_string(),
+                long_lived: true,
+                ..SpawnSpec::default()
+            })
+            .expect("spawn the instant-exit command");
+            let mut child = spawned.child;
+
+            let (exit_tx, exit_rx) = watch::channel(false);
+            tauri::async_runtime::spawn(async move {
+                let _ = child.wait().await;
+                let _ = exit_tx.send(true);
+            });
+
+            // A 60 s ready timeout — the §5 default. If the loop slept through the exit this would
+            // take a minute.
+            let started = tokio::time::Instant::now();
+            let outcome = await_ready(PINNED, 60, &exit_rx).await;
+            let elapsed = started.elapsed();
+
+            println!("instant-exit: {outcome:?} after {} ms", elapsed.as_millis());
+            assert_eq!(outcome, ReadyOutcome::ChildExited);
+            assert!(
+                elapsed < Duration::from_secs(5),
+                "the exit must be noticed at once, not after the 60 s budget — took {elapsed:?}"
+            );
+        });
     }
 
     #[test]

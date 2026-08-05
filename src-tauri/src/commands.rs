@@ -94,6 +94,26 @@ pub async fn stop_project(id: String, app: AppHandle) -> Result<(), String> {
     crate::run::stop_project(&app, &id).await
 }
 
+/// SPEC.md §7 `open_in_browser` — the overflow-menu action. The automatic hand-off on entering
+/// `running` (§9 step 6) does not go through here; both call `run::open_in_browser`, which uses the
+/// opener plugin **from Rust** (§4: that bypasses the ACL, so no capability entry is needed).
+#[tauri::command]
+pub async fn open_in_browser(
+    id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let project = {
+        let projects = state.projects.lock().await;
+        projects
+            .iter()
+            .find(|p| p.id == id)
+            .cloned()
+            .ok_or_else(|| format!("no project with id {id}"))?
+    };
+    crate::run::open_in_browser(&app, &project).await
+}
+
 /// SPEC.md §8: Rust owns the buffer; the panel backfills from it on open.
 #[tauri::command]
 pub async fn get_log_buffer(

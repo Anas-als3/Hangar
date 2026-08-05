@@ -1,12 +1,13 @@
 /**
  * One project card — SPEC.md §11.
  *
- * M2 wired the primary **Run** button and **Show logs**; M3 wires **Stop** — live in every active
- * phase, a disabled spinner while `stopping`, and a retry from `stop-failed`. The other menu
- * entries land with plan 005 (dialogs), the phase strip and the uptime slot with plan 006.
+ * M2 wired the primary **Run** button and **Show logs**; M3 wired **Stop** — live in every active
+ * phase, a disabled spinner while `stopping`, and a retry from `stop-failed`; M4 wires **Open in
+ * browser**. The remaining menu entries land with plan 005 (dialogs), the phase strip and the
+ * uptime slot with plan 006.
  */
 import { useEffect, useRef, useState } from "react";
-import { openLogs, startProject, stopProjectAction } from "../store";
+import { openInBrowserAction, openLogs, startProject, stopProjectAction } from "../store";
 import type { ProjectView, Status } from "../types";
 
 const STATUS_LABEL: Record<Status, string> = {
@@ -55,15 +56,21 @@ function lastRunLabel(iso: string | undefined): string {
 }
 
 /** §11 overflow menu. Only "Show logs" is live at M2 — the rest arrive with plans 004/005. */
-const MENU_ITEMS = [
-  "Open in browser",
-  "Open in editor",
-  "Show logs",
-  "Edit",
-  "Remove",
-] as const;
-
-const LIVE_MENU_ITEMS: ReadonlySet<(typeof MENU_ITEMS)[number]> = new Set(["Show logs"]);
+/**
+ * §11 overflow menu, in the spec's order. An entry with a `null` action is not wired yet and
+ * renders disabled rather than silently doing nothing — plan 005 adds Open in editor, Edit and
+ * Remove.
+ */
+const MENU_ITEMS: ReadonlyArray<{
+  label: string;
+  action: ((projectId: string) => void) | null;
+}> = [
+  { label: "Open in browser", action: (id) => void openInBrowserAction(id) },
+  { label: "Open in editor", action: null },
+  { label: "Show logs", action: (id) => void openLogs(id) },
+  { label: "Edit", action: null },
+  { label: "Remove", action: null },
+];
 
 export function ProjectCard({ project }: { project: ProjectView }) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -123,32 +130,29 @@ export function ProjectCard({ project }: { project: ProjectView }) {
               role="menu"
               className="absolute right-0 z-10 mt-1 w-44 overflow-hidden rounded-md border border-white/10 bg-bg py-1 shadow-lg"
             >
-              {MENU_ITEMS.map((item) => {
-                const live = LIVE_MENU_ITEMS.has(item);
-                return (
-                  <button
-                    key={item}
-                    role="menuitem"
-                    type="button"
-                    disabled={!live}
-                    onClick={
-                      live
-                        ? () => {
-                            setMenuOpen(false);
-                            void openLogs(project.id);
-                          }
-                        : undefined
-                    }
-                    className={
-                      live
-                        ? "block w-full px-3 py-1.5 text-left text-sm text-text transition-colors hover:bg-white/5"
-                        : "block w-full cursor-not-allowed px-3 py-1.5 text-left text-sm text-muted opacity-50"
-                    }
-                  >
-                    {item}
-                  </button>
-                );
-              })}
+              {MENU_ITEMS.map(({ label, action }) => (
+                <button
+                  key={label}
+                  role="menuitem"
+                  type="button"
+                  disabled={action === null}
+                  onClick={
+                    action
+                      ? () => {
+                          setMenuOpen(false);
+                          action(project.id);
+                        }
+                      : undefined
+                  }
+                  className={
+                    action
+                      ? "block w-full px-3 py-1.5 text-left text-sm text-text transition-colors hover:bg-white/5"
+                      : "block w-full cursor-not-allowed px-3 py-1.5 text-left text-sm text-muted opacity-50"
+                  }
+                >
+                  {label}
+                </button>
+              ))}
             </div>
           )}
         </div>

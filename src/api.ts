@@ -32,6 +32,17 @@ export function stopProject(id: string): Promise<void> {
   return invoke<void>("stop_project", { id });
 }
 
+/**
+ * §7 `open_in_browser` — the overflow-menu action only.
+ *
+ * The automatic tab on entering `running` (§9 step 6) is opened by Rust, not by this call: §4 puts
+ * the opener plugin on the Rust side so it bypasses the ACL, and routing it through the webview
+ * would need a capability entry the spec does not grant.
+ */
+export function openInBrowser(id: string): Promise<void> {
+  return invoke<void>("open_in_browser", { id });
+}
+
 /** §8: Rust owns the buffer; the panel backfills from it on open. */
 export function getLogBuffer(id: string): Promise<LogLine[]> {
   return invoke<LogLine[]>("get_log_buffer", { id });

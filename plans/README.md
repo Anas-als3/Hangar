@@ -14,7 +14,7 @@ conditions, and update your row below when done.
 | 001 | Scaffold, storage, and app shell | M1 | P1 | M | — | DONE |
 | 002 | Spawn, environment resolution, log pipeline | M2 | P1 | L | 001 | DONE |
 | 003 | Guaranteed process-tree kill | M3 | P1 | L | 002 | DONE |
-| 004 | Ready-detection and browser hand-off | M4 | P1 | M | 003 | TODO |
+| 004 | Ready-detection and browser hand-off | M4 | P1 | M | 003 | DONE |
 | 005 | Add / Edit / Remove and settings | M5 | P2 | M | 004 | TODO |
 | 006 | Update-on-run and full UI pass | M6 | P2 | L | 005 | TODO |
 

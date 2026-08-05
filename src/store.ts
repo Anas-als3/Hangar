@@ -15,6 +15,7 @@ import {
   getLogBuffer,
   getProjects,
   getRegistryError,
+  openInBrowser,
   runProject,
   stopProject,
 } from "./api";
@@ -122,6 +123,14 @@ function applyStatusChanged(payload: StatusChangedPayload): void {
     projects,
     logs: runIsStarting ? { ...state.logs, [payload.projectId]: [] } : state.logs,
   });
+
+  // §7: "message carries e.g. the crash reason". A Run is fire-and-forget, so everything that goes
+  // wrong *after* it returns — the §9 step 5 wrong-script diagnosis, the step 7 ready-timeout —
+  // can only reach the user through this event. Scoped to `crashed`: `stop-failed` already toasts
+  // from the rejected `stop_project` call, and toasting both would double up.
+  if (payload.status === "crashed" && payload.message) {
+    setToast(payload.message);
+  }
 }
 
 /** Keeps only the newest `LOG_BUFFER_LIMIT` lines, exactly like the Rust ring buffer. */
@@ -178,6 +187,18 @@ export async function startProject(projectId: string): Promise<void> {
 export async function stopProjectAction(projectId: string): Promise<void> {
   try {
     await stopProject(projectId);
+  } catch (err) {
+    setToast(errorMessage(err));
+  }
+}
+
+/**
+ * §7 `open_in_browser` — the overflow-menu action. The tab that opens by itself when a project
+ * turns `running` (§9 step 6) does not come through here; Rust opens it directly.
+ */
+export async function openInBrowserAction(projectId: string): Promise<void> {
+  try {
+    await openInBrowser(projectId);
   } catch (err) {
     setToast(errorMessage(err));
   }
