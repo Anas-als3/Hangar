@@ -47,6 +47,26 @@ errors originating outside `src-tauri/src/` (a dependency's build script or a mi
 linker component), record the exact error in your report and proceed. If it fails with
 errors *in our own code*, that is a real failure — fix it.
 
+**`llvm-rc` is required on `PATH` for this gate (added during M1 review).** Building for a
+Windows target runs Tauri's `build.rs` → `tauri-winres`, which shells out to a Windows
+resource compiler. Without one it panics *before* any of `src-tauri/src/` is typechecked
+(`called Result::unwrap() on an Err value: NotAttempted("llvm-rc")` at
+`tauri-winres-0.3.6/src/lib.rs:543`), so the gate reports failure while having verified
+nothing — the exact opposite of its purpose. Fixed by `brew install llvm`; Homebrew keeps
+it keg-only, so run the gate with:
+
+```sh
+PATH="/opt/homebrew/opt/llvm/bin:$PATH" \
+  cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc
+```
+
+With `llvm-rc` on `PATH` the gate exits 0 and **does** compile our crate. Verified by
+temporarily inserting a deliberate type error inside a `#[cfg(windows)]` fn in
+`src-tauri/src/process.rs`: the gate failed with `error[E0308] --> src/process.rs`, exit
+101, and passed again once removed. Plan 003's executor can therefore trust this gate to
+catch type errors in the Job Object / `raw_arg` / `CREATE_NO_WINDOW` blocks. It still
+cannot *link* or *run* them — see the paragraph below.
+
 Nothing on this machine can *execute* the Windows paths. Their runtime correctness is
 explicitly deferred to a human test on a Windows machine (SPEC.md §15 test 3).
 
@@ -54,6 +74,7 @@ explicitly deferred to a human test on a Windows machine (SPEC.md §15 test 3).
 
 - macOS 26.5.1, arm64. Node v24.18.0, npm 11.16.0. Rust 1.97.1 / cargo 1.97.1 (installed for this project).
 - Rust targets installed: `aarch64-apple-darwin`, `x86_64-pc-windows-msvc`.
+- `llvm` installed via Homebrew (M1 review) for `llvm-rc`, keg-only at `/opt/homebrew/opt/llvm/bin`.
 - Xcode Command Line Tools at `/Library/Developer/CommandLineTools`.
 - Git repo initialized; baseline commit `e74666e` contains only `SPEC.md`, `CLAUDE.md`, `.gitignore`, `plans/`.
 
