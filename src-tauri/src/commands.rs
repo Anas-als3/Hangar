@@ -6,6 +6,7 @@
 //! no stub that "sort of" stops.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 
 use tauri::{AppHandle, State};
 use tokio::sync::Mutex;
@@ -27,6 +28,13 @@ pub struct AppState {
     pub runtime: Mutex<RuntimeMap>,
     /// The §8 login-shell environment, resolved once and shared by every child.
     pub dev_env: DevEnvCell,
+    /// SPEC.md §8 quit interception: set once every tree has been killed. Both interception paths
+    /// check it, so the `app_handle.exit(0)` that follows cleanup passes straight through instead of
+    /// bouncing off the very guard that triggered the cleanup.
+    pub cleanup_done: AtomicBool,
+    /// A confirm dialog is already open (or the kill is already running). Without it, holding Cmd+Q
+    /// or clicking the close button twice stacks dialogs and starts two stop-everything passes.
+    pub quit_in_flight: AtomicBool,
 }
 
 impl AppState {
@@ -43,6 +51,8 @@ impl AppState {
             registry_error,
             runtime: Mutex::new(RuntimeMap::new()),
             dev_env: DevEnvCell::default(),
+            cleanup_done: AtomicBool::new(false),
+            quit_in_flight: AtomicBool::new(false),
         }
     }
 }
@@ -74,6 +84,14 @@ pub async fn get_projects(state: State<'_, AppState>) -> Result<Vec<ProjectView>
 #[tauri::command]
 pub async fn run_project(id: String, app: AppHandle) -> Result<(), String> {
     crate::run::run_project(&app, &id).await
+}
+
+/// SPEC.md §7 `stop_project`. Awaits the whole §8 sequence — kill, reap, verified death, then the
+/// port — so the returned `Result` is a truthful answer: `Ok` means the tree is gone, `Err` is the
+/// `stop-failed` toast. Status still arrives via `status-changed`; nothing polls.
+#[tauri::command]
+pub async fn stop_project(id: String, app: AppHandle) -> Result<(), String> {
+    crate::run::stop_project(&app, &id).await
 }
 
 /// SPEC.md §8: Rust owns the buffer; the panel backfills from it on open.

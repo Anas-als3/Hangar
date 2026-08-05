@@ -1,10 +1,10 @@
 /**
  * The only file that calls `invoke()` (SPEC.md §7, §13). Components import from here.
  *
- * M1 wired the read-only slice of the frozen API; M2 adds `run_project`, `get_log_buffer`
- * and `clear_log_buffer`. The rest (`add_project`, `update_project`, `remove_project`,
- * `stop_project`, `read_package_json`, `open_in_editor`, `open_in_browser`) are added by
- * plans 003–005 under exactly those names.
+ * M1 wired the read-only slice of the frozen API; M2 added `run_project`, `get_log_buffer` and
+ * `clear_log_buffer`; M3 adds `stop_project`. The rest (`add_project`, `update_project`,
+ * `remove_project`, `read_package_json`, `open_in_editor`, `open_in_browser`) are added by
+ * plans 004–005 under exactly those names.
  */
 import { invoke } from "@tauri-apps/api/core";
 import type { LogLine, ProjectView, RegistryError, Settings } from "./types";
@@ -19,6 +19,17 @@ export function getProjects(): Promise<ProjectView[]> {
  */
 export function runProject(id: string): Promise<void> {
   return invoke<void>("run_project", { id });
+}
+
+/**
+ * §7 `stop_project`. Valid in every active phase, and from `stop-failed` as a retry.
+ *
+ * The promise resolves only once Rust has killed the tree AND verified it (process death first,
+ * then the port — §8). A rejection is the `stop-failed` toast; the card's own red pill comes from
+ * the `status-changed` event, not from here.
+ */
+export function stopProject(id: string): Promise<void> {
+  return invoke<void>("stop_project", { id });
 }
 
 /** §8: Rust owns the buffer; the panel backfills from it on open. */

@@ -1,15 +1,19 @@
 //! SPEC.md §8 — the ONE shared spawn helper, the platform kill paths (Job Objects on Windows),
 //! the line-oriented log reader, and the per-project 500-line ring buffers.
 //!
-//! Plan 002 (M2) implements the spawn side, the log pipeline, the status-transition helper and the
-//! exit watcher. The kill paths (`TerminateJobObject`, `SIGTERM`/`SIGKILL` to the process group,
-//! death-then-port verification, `stop-failed`) are plan 003 and are deliberately absent here.
+//! Plan 002 (M2) implemented the spawn side, the log pipeline and the exit watcher. Plan 003 (M3)
+//! adds the other half: the dual-stack port probe, `TerminateJobObject` / `SIGTERM`-then-`SIGKILL`
+//! to the process group, and the death-then-port verification §8 requires.
+//!
+//! This module owns the *mechanics*. Which status those mechanics produce is SPEC.md §6, and lives
+//! in one place only: `run::next_status` and `run::apply*`.
 //!
 //! **Every** child process Hangar will ever spawn goes through [`spawn`] — that is the only way the
 //! Windows flags (`raw_arg`, `CREATE_NO_WINDOW`, Job Object assignment) and the universal
 //! `stdin: null` cannot be forgotten by a later plan. No `Command` may be constructed anywhere else.
 
 use std::collections::{HashMap, VecDeque};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
@@ -19,6 +23,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::watch;
 
 use crate::commands::AppState;
 use crate::env_resolve::EnvMap;
@@ -35,6 +40,22 @@ pub const MAX_LINES_PER_FLUSH: usize = 2000;
 /// a console window (SPEC.md §8).
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// SPEC.md §8 kill constants. Requirements, not tuning knobs.
+///
+/// `TERM_GRACE`: "SIGTERM to -pgid, wait up to 5 s racing `child.wait()`, then SIGKILL". Unix only —
+/// `TerminateJobObject` is atomic and has nothing to wait for.
+/// `DEATH_CONFIRM_TIMEOUT`: "`kill(-pgid, 0)` returns ESRCH (poll up to 3 s)".
+#[cfg(unix)]
+pub const TERM_GRACE: Duration = Duration::from_secs(5);
+pub const DEATH_CONFIRM_TIMEOUT: Duration = Duration::from_secs(3);
+pub const DEATH_POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// The direct child must be *reaped*, never abandoned (§8) — but a wedged `wait()` must not hang
+/// Stop forever either, so the wait for the exit watcher is bounded.
+pub const REAP_TIMEOUT: Duration = Duration::from_secs(5);
+/// Per-attempt TCP connect budget for the dual-stack probe. Loopback answers in microseconds; this
+/// only has to cover a machine under heavy load.
+pub const PORT_PROBE_TIMEOUT: Duration = Duration::from_millis(400);
 
 // ---------------------------------------------------------------------------------------------
 // Log lines and the per-project ring buffer
@@ -99,18 +120,22 @@ impl LogBuffer {
 pub struct ProjectRuntime {
     pub status: Status,
     pub logs: LogBuffer,
-    /// SPEC.md §6: set by Stop (plan 003). The exit watcher reads it to decide `stopped` vs
-    /// `crashed`. At M2 nothing sets it, so a child exit is always a crash.
+    /// SPEC.md §6: set by Stop **before the kill begins**, cleared at the start of each Run. The
+    /// exit watcher reads it to decide `crashed` vs "a Stop is in flight and owns the outcome".
     pub user_stop: bool,
     /// PID of the live child, cleared by the exit watcher. On Unix this is also the process-group
-    /// id (the child is spawned with `.process_group(0)`), which is what plan 003 signals.
+    /// id (the child is spawned with `.process_group(0)`), which is what the kill signals.
     pub child_pid: Option<u32>,
+    /// Flips to `true` when the exit watcher has reaped the child (SPEC.md §8: "every kill path ends
+    /// by awaiting the same wait future"). The kill sequence cannot call `child.wait()` itself —
+    /// the watcher owns the `Child` — so it awaits this instead.
+    pub exited: Option<watch::Receiver<bool>>,
     /// The PATH the current child was actually given (`DevEnvironment::effective_path()`), recorded
     /// at spawn so the exit watcher can print it when the shell exits "command not found"
     /// (SPEC.md §8 and the §12 nvm-from-Dock row). See [`is_tool_not_found_exit`].
     pub path_searched: Option<String>,
-    /// The Job Object the child was assigned to at spawn. `None` means assignment failed and plan
-    /// 003 must use the `taskkill /PID <pid> /T /F` fallback (SPEC.md §8).
+    /// The Job Object the child was assigned to at spawn. `None` means assignment failed and the
+    /// kill must fall back to `taskkill /PID <pid> /T /F` (SPEC.md §8).
     #[cfg(windows)]
     pub job: Option<win32job::Job>,
 }
@@ -122,6 +147,7 @@ impl Default for ProjectRuntime {
             logs: LogBuffer::default(),
             user_stop: false,
             child_pid: None,
+            exited: None,
             path_searched: None,
             #[cfg(windows)]
             job: None,
@@ -316,6 +342,320 @@ fn build_command(spec: &SpawnSpec) -> Command {
 }
 
 // ---------------------------------------------------------------------------------------------
+// The dual-stack port probe (SPEC.md §8 verification, §9 steps 1 and 5)
+// ---------------------------------------------------------------------------------------------
+
+/// True if **either** `127.0.0.1:port` or `[::1]:port` accepts a TCP connection.
+///
+/// Both stacks are mandatory, not defensive: Node 17+ resolves `localhost` to `::1` first and most
+/// dev servers bind IPv6-only as a result, so an IPv4-only probe reports a perfectly healthy server
+/// as dead (SPEC.md §12, row "Server bound to IPv6 localhost only").
+///
+/// Plan 004 reuses this for ready-polling — which is why it is a helper and not inline in the kill
+/// path. It performs exactly ONE attempt per stack; the polling loop and its attempt budget belong
+/// to plan 004.
+pub async fn port_accepts(port: u16) -> bool {
+    let (v4, v6) = tokio::join!(
+        connect_accepts(SocketAddr::from((Ipv4Addr::LOCALHOST, port))),
+        connect_accepts(SocketAddr::from((Ipv6Addr::LOCALHOST, port))),
+    );
+    v4 || v6
+}
+
+async fn connect_accepts(addr: SocketAddr) -> bool {
+    matches!(
+        tokio::time::timeout(PORT_PROBE_TIMEOUT, tokio::net::TcpStream::connect(addr)).await,
+        Ok(Ok(_))
+    )
+}
+
+// ---------------------------------------------------------------------------------------------
+// The kill paths (SPEC.md §8 — the acceptance-test level requirement)
+// ---------------------------------------------------------------------------------------------
+
+/// Everything the kill needs, taken **out** of the runtime map before the sequence starts so the
+/// async mutex is never held across the (up to 5 s) kill (SPEC.md §4).
+#[derive(Debug, Default)]
+pub struct KillTarget {
+    /// Unix: the process-group id (the child was spawned with `.process_group(0)`, so its pid *is*
+    /// the pgid). Windows: the direct child's pid, used only by the `taskkill` fallback.
+    pub pid: Option<u32>,
+    /// The exit watcher's reap signal — see [`ProjectRuntime::exited`].
+    pub exited: Option<watch::Receiver<bool>>,
+    /// The project's Job Object. Kept alive for the whole sequence: it is both the kill primitive
+    /// and the verification source, and dropping it (KILL_ON_JOB_CLOSE) is the final backstop.
+    #[cfg(windows)]
+    pub job: Option<win32job::Job>,
+}
+
+/// The result of one kill attempt. `death_confirmed` is the FIRST half of §8 verification; the port
+/// check is the second and is deliberately performed by the caller only after this is true.
+#[derive(Debug)]
+pub struct KillOutcome {
+    pub death_confirmed: bool,
+    /// `system` log lines narrating what actually happened (SPEC.md §7: "kill results").
+    pub notes: Vec<String>,
+}
+
+/// Waits for the exit watcher to reap the child, bounded by `budget`. Returns true if it was
+/// reaped (or if there is nothing to wait for).
+async fn wait_for_exit(exited: &Option<watch::Receiver<bool>>, budget: Duration) -> bool {
+    let Some(rx) = exited else {
+        return true;
+    };
+    let mut rx = rx.clone();
+    if *rx.borrow() {
+        return true;
+    }
+    tokio::time::timeout(budget, async move {
+        let _ = rx.wait_for(|reaped| *reaped).await;
+    })
+    .await
+    .is_ok()
+}
+
+#[cfg(unix)]
+fn signal_group(pgid: u32, signal: i32) -> std::io::Result<()> {
+    let pgid = i32::try_from(pgid).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "process id out of range")
+    })?;
+    // SAFETY: `kill(2)` with a negative pid addresses the whole process group and touches no Rust
+    // memory. A negative return is reported through errno, as usual for libc.
+    let rc = unsafe { libc::kill(-pgid, signal) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+/// SPEC.md §8 verification, Unix half: `kill(-pgid, 0)` returning `ESRCH` means no member of the
+/// group is left. `EPERM` means a member exists that we may not signal — that is still *alive*, so
+/// it must not count as death.
+#[cfg(unix)]
+pub fn group_is_gone(pgid: u32) -> bool {
+    match signal_group(pgid, 0) {
+        Ok(()) => false,
+        Err(e) => e.raw_os_error() == Some(libc::ESRCH),
+    }
+}
+
+#[cfg(unix)]
+async fn confirm_group_death(pgid: u32) -> bool {
+    let deadline = tokio::time::Instant::now() + DEATH_CONFIRM_TIMEOUT;
+    loop {
+        if group_is_gone(pgid) {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(DEATH_POLL_INTERVAL).await;
+    }
+}
+
+/// SPEC.md §8, macOS/Linux: SIGTERM to `-pgid`, up to 5 s racing the child's exit, then SIGKILL to
+/// `-pgid`; end by awaiting the same `child.wait()` the exit watcher owns; then confirm death.
+///
+/// Documented limitation (§8): a child that calls `setsid` (Nx / Turborepo daemons, watchman) leaves
+/// the group by design and is not Hangar's to kill.
+#[cfg(unix)]
+pub async fn kill_tree(target: KillTarget) -> KillOutcome {
+    let mut notes = Vec::new();
+
+    let Some(pgid) = target.pid else {
+        // Stop pressed with no child registered (e.g. the phase between two children). There is
+        // nothing of ours alive; the caller still verifies the port.
+        return KillOutcome {
+            death_confirmed: true,
+            notes,
+        };
+    };
+
+    match signal_group(pgid, libc::SIGTERM) {
+        Ok(()) => notes.push(format!("sent SIGTERM to process group {pgid}")),
+        Err(e) if e.raw_os_error() == Some(libc::ESRCH) => {
+            notes.push(format!("process group {pgid} had already exited"));
+        }
+        Err(e) => notes.push(format!("could not SIGTERM process group {pgid}: {e}")),
+    }
+
+    // §8: "wait up to 5 s racing child.wait()". The watcher owns the wait; this races its signal.
+    wait_for_exit(&target.exited, TERM_GRACE).await;
+
+    if !group_is_gone(pgid) {
+        match signal_group(pgid, libc::SIGKILL) {
+            // Not "after 5 s": §8's wait *races* `child.wait()`, so it ends as soon as the direct
+            // child is reaped — which is usually well inside the grace. Saying "after 5 s" here
+            // would put a measurement in the log that never happened.
+            Ok(()) => notes.push(format!(
+                "process group {pgid} did not exit on SIGTERM (waited up to {} s) — sent SIGKILL",
+                TERM_GRACE.as_secs()
+            )),
+            Err(e) if e.raw_os_error() == Some(libc::ESRCH) => {}
+            Err(e) => notes.push(format!("could not SIGKILL process group {pgid}: {e}")),
+        }
+    }
+
+    // §8 reaping: never abandon a Child. The watcher does the actual `wait()`; we must not declare
+    // anything until it has.
+    if !wait_for_exit(&target.exited, REAP_TIMEOUT).await {
+        notes.push(format!(
+            "the direct child of group {pgid} was not reaped within {} s",
+            REAP_TIMEOUT.as_secs()
+        ));
+    }
+
+    let death_confirmed = confirm_group_death(pgid).await;
+    if !death_confirmed {
+        notes.push(format!(
+            "processes in group {pgid} were still alive {} s after SIGKILL",
+            DEATH_CONFIRM_TIMEOUT.as_secs()
+        ));
+    }
+
+    KillOutcome {
+        death_confirmed,
+        notes,
+    }
+}
+
+// `TerminateJobObject` is not exposed by `win32job` 2.x (it has create / assign / query only), and
+// SPEC.md §8 names it as *the* Windows kill. Declared here rather than adding a whole `windows`
+// crate dependency for one call — `kernel32` is already linked by std.
+#[cfg(windows)]
+#[allow(non_snake_case)]
+#[link(name = "kernel32")]
+extern "system" {
+    fn TerminateJobObject(job: isize, exit_code: u32) -> i32;
+}
+
+/// `taskkill` exit code 128 = "the process was not found", i.e. it is already dead. SPEC.md §8 says
+/// to treat that as success.
+#[cfg(windows)]
+const TASKKILL_NOT_FOUND: i32 = 128;
+
+#[cfg(windows)]
+const TASKKILL_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// SPEC.md §8, Windows: `TerminateJobObject` on the project's job kills every descendant atomically,
+/// including grandchildren whose intermediate parent already exited — which `taskkill /T`
+/// structurally misses because it walks live PPID chains only. `taskkill` is a FALLBACK, used only
+/// when job assignment failed at spawn.
+#[cfg(windows)]
+pub async fn kill_tree(target: KillTarget) -> KillOutcome {
+    let mut notes = Vec::new();
+    let terminated;
+
+    if let Some(job) = &target.job {
+        // SAFETY: `job.handle()` is a live job handle owned by `target` for the whole call.
+        let ok = unsafe { TerminateJobObject(job.handle(), 1) } != 0;
+        if ok {
+            notes.push("terminated the job object — the whole process tree".to_string());
+        } else {
+            notes.push(format!(
+                "TerminateJobObject failed: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        terminated = ok;
+    } else if let Some(pid) = target.pid {
+        notes.push(
+            "no job object was assigned at spawn — falling back to taskkill, which cannot \
+             guarantee a tree kill"
+                .to_string(),
+        );
+        let (ok, mut taskkill_notes) = taskkill_tree(pid).await;
+        notes.append(&mut taskkill_notes);
+        terminated = ok;
+    } else {
+        return KillOutcome {
+            death_confirmed: true,
+            notes,
+        };
+    }
+
+    if !wait_for_exit(&target.exited, REAP_TIMEOUT).await {
+        notes.push(format!(
+            "the direct child was not reaped within {} s",
+            REAP_TIMEOUT.as_secs()
+        ));
+    }
+
+    let death_confirmed = confirm_job_death(&target, terminated).await;
+    if !death_confirmed {
+        notes.push("processes are still alive after the kill".to_string());
+    }
+
+    // Dropping `target` closes the job handle; with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE that is the
+    // final backstop for anything the terminate somehow missed.
+    KillOutcome {
+        death_confirmed,
+        notes,
+    }
+}
+
+/// SPEC.md §8 verification, Windows half: the job's active-process count is 0, or (when the job is
+/// unavailable) `TerminateJobObject`/`taskkill` reported success.
+#[cfg(windows)]
+async fn confirm_job_death(target: &KillTarget, terminated: bool) -> bool {
+    let Some(job) = &target.job else {
+        return terminated;
+    };
+    let deadline = tokio::time::Instant::now() + DEATH_CONFIRM_TIMEOUT;
+    loop {
+        match job.query_process_id_list() {
+            Ok(pids) if pids.is_empty() => return true,
+            Ok(_) => {}
+            // The count is unavailable — fall back to §8's stated alternative.
+            Err(_) => return terminated,
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(DEATH_POLL_INTERVAL).await;
+    }
+}
+
+/// The §8 fallback, through the ONE spawn helper (so it inherits `CREATE_NO_WINDOW` and never
+/// flashes a console window).
+#[cfg(windows)]
+async fn taskkill_tree(pid: u32) -> (bool, Vec<String>) {
+    let spec = SpawnSpec {
+        command: format!("taskkill /PID {pid} /T /F"),
+        // A one-shot helper: it needs no group/job of its own, and tokio's drop-reaper is the right
+        // cleanup if the timeout below fires.
+        long_lived: false,
+        kill_on_drop: true,
+        ..SpawnSpec::default()
+    };
+
+    let spawned = match spawn(&spec) {
+        Ok(spawned) => spawned,
+        Err(e) => return (false, vec![format!("could not run taskkill: {e}")]),
+    };
+
+    match tokio::time::timeout(TASKKILL_TIMEOUT, spawned.child.wait_with_output()).await {
+        Ok(Ok(output)) => {
+            let code = output.status.code().unwrap_or(-1);
+            let ok = output.status.success() || code == TASKKILL_NOT_FOUND;
+            (
+                ok,
+                vec![format!("taskkill /PID {pid} /T /F exited with code {code}")],
+            )
+        }
+        Ok(Err(e)) => (false, vec![format!("taskkill failed: {e}")]),
+        Err(_) => (
+            false,
+            vec![format!(
+                "taskkill did not finish within {} s",
+                TASKKILL_TIMEOUT.as_secs()
+            )],
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
 // Pure text helpers (unit-tested — the parts most likely to be subtly wrong)
 // ---------------------------------------------------------------------------------------------
 
@@ -495,17 +835,11 @@ pub async fn append_system(app: &AppHandle, project_id: &str, line: impl Into<St
 }
 
 /// The ONE place `status-changed` is emitted (SPEC.md §7: emitted on every transition).
-pub async fn set_status(
-    app: &AppHandle,
-    project_id: &str,
-    status: Status,
-    message: Option<String>,
-) {
-    {
-        let state = app.state::<AppState>();
-        let mut runtime = state.runtime.lock().await;
-        runtime.entry(project_id.to_string()).or_default().status = status;
-    }
+///
+/// It only *emits*. The status itself is written by `run::apply_with`, which is the only place a §6
+/// transition is decided — the check and the write have to happen under a single lock, and a
+/// separate "set" entry point here is exactly how a double-clicked Run gets to double-spawn.
+pub fn emit_status(app: &AppHandle, project_id: &str, status: Status, message: Option<String>) {
     let _ = app.emit(
         STATUS_CHANGED_EVENT,
         StatusChangedPayload {
@@ -665,11 +999,15 @@ pub fn is_tool_not_found_exit(code: i32) -> bool {
 ///
 /// `pipeline` is the handle from [`attach_log_pipeline`]; it is drained before anything is narrated
 /// so the child's own last words always precede `process exited …` and the `crashed` card.
+///
+/// `exited` is signalled last, once the child is reaped, its output is flushed and its status is
+/// settled — that is what the kill sequence awaits instead of a second `wait()` on the same Child.
 pub fn spawn_exit_watcher(
     app: AppHandle,
     project_id: String,
     child: Child,
     pipeline: LogPipeline,
+    exited: watch::Sender<bool>,
 ) {
     tauri::async_runtime::spawn(async move {
         let mut child = child;
@@ -717,8 +1055,7 @@ pub fn spawn_exit_watcher(
             }
         }
 
-        // SPEC.md §6: a child exit with the user-stop flag NOT set is a crash; with it set it is a
-        // clean stop (plan 003 is what sets the flag — at M2 it is always false).
+        // SPEC.md §6: a child exit with the user-stop flag NOT set is a crash.
         let user_stop = {
             let state = app.state::<AppState>();
             let mut runtime = state.runtime.lock().await;
@@ -727,12 +1064,24 @@ pub fn spawn_exit_watcher(
             entry.user_stop
         };
 
-        let next = if user_stop {
-            Status::Stopped
-        } else {
-            Status::Crashed
-        };
-        set_status(&app, &project_id, next, Some(exit_note)).await;
+        // With the flag set, the Stop sequence that set it is awaiting this very exit and announces
+        // the outcome itself — `stopped` only once §8 verification has confirmed the tree is dead,
+        // `stop-failed` otherwise. Announcing `stopped` from here would show a settled, green
+        // "Stopped" card for up to 3 s while processes are still running, which is precisely the
+        // silent lie §8 forbids. Either way the exit never reads as `crashed`, which is the §6
+        // guarantee ("a user Stop must never display as `crashed`").
+        if !user_stop {
+            let _ = crate::run::apply(
+                &app,
+                &project_id,
+                crate::run::Trigger::ChildExit { user_stop: false },
+                Some(exit_note),
+            )
+            .await;
+        }
+
+        // Last: the child is reaped, its output is flushed and its status is settled.
+        let _ = exited.send(true);
     });
 }
 
@@ -905,6 +1254,152 @@ mod tests {
         assert!(!is_tool_not_found_exit(1));
         assert!(!is_tool_not_found_exit(2));
         assert!(!is_tool_not_found_exit(130), "SIGINT via the shell");
+    }
+
+    /// SPEC.md §15 test 3 — **the orphan test**, in code, against the real kill path.
+    ///
+    /// Ignored by default because it starts a real `npm run dev` (needs `npm` on PATH and takes a
+    /// few seconds). Run it deliberately:
+    ///
+    /// ```sh
+    /// cargo test --manifest-path src-tauri/Cargo.toml -- --ignored --nocapture
+    /// ```
+    ///
+    /// The fixture is shaped like every failure §8 warns about at once:
+    /// - `npm` is an intermediate parent that exits before its grandchild;
+    /// - the server spawns a child that **never listens on the port** (an esbuild-service / watcher
+    ///   stand-in), so a port-only verification would call this stop a success while it still runs;
+    /// - that child **ignores SIGTERM**, so the kill has to escalate to SIGKILL on the group.
+    #[test]
+    #[ignore]
+    fn the_orphan_test_leaves_no_node_processes_behind() {
+        const PORT: u16 = 39117;
+
+        let dir = std::env::temp_dir().join(format!(
+            "hangar-orphan-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+        ));
+        std::fs::create_dir_all(&dir).expect("create the fixture directory");
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"name":"hangar-orphan-test","private":true,"version":"0.0.0","scripts":{"dev":"node server.js"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("server.js"),
+            r#"const http = require('http');
+const { spawn } = require('child_process');
+// A child that never listens on the port AND ignores SIGTERM: port-only verification would miss it
+// entirely, and a polite SIGTERM would leave it running.
+spawn(process.execPath, ['-e', "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], {
+  stdio: 'ignore',
+});
+http.createServer((_req, res) => res.end('ok')).listen(39117, () => console.log('listening'));
+"#,
+        )
+        .unwrap();
+
+        // `block_on` uses Tauri's runtime — SPEC.md §4 forbids creating one of our own, tests
+        // included.
+        let fixture = dir.clone();
+        tauri::async_runtime::block_on(async move {
+            let before = count_node_processes().await;
+
+            let spec = SpawnSpec {
+                command: "npm run dev".to_string(),
+                cwd: Some(fixture),
+                long_lived: true,
+                ..SpawnSpec::default()
+            };
+            let spawned = spawn(&spec).expect("spawn npm run dev");
+            let mut child = spawned.child;
+            let pid = child.id().expect("the child has a pid");
+
+            // The production contract: one task owns `wait()` (reaping) and signals the kill path.
+            let (exit_tx, exit_rx) = watch::channel(false);
+            tauri::async_runtime::spawn(async move {
+                let _ = child.wait().await;
+                let _ = exit_tx.send(true);
+            });
+
+            let mut answered = false;
+            for _ in 0..60 {
+                if port_accepts(PORT).await {
+                    answered = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            assert!(answered, "the fixture server never answered on {PORT}");
+
+            let during = count_node_processes().await;
+            println!("orphan test: node processes before={before} during={during}");
+            println!("orphan test: process group {pid} holds:\n{}", list_group(pid).await);
+            assert!(
+                during > before,
+                "the fixture must actually create node processes"
+            );
+
+            let outcome = kill_tree(KillTarget {
+                pid: Some(pid),
+                exited: Some(exit_rx),
+                #[cfg(windows)]
+                job: spawned.job,
+            })
+            .await;
+            for note in &outcome.notes {
+                println!("orphan test: {note}");
+            }
+
+            assert!(outcome.death_confirmed, "process death was not confirmed");
+            assert!(
+                !port_accepts(PORT).await,
+                "port {PORT} still answers after the kill"
+            );
+
+            let after = count_node_processes().await;
+            println!("orphan test: node processes after={after}");
+            assert_eq!(
+                after, before,
+                "the node process count must return to baseline"
+            );
+        });
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `pgrep -f node | wc -l` — SPEC.md §15's own measurement, run through the one spawn helper.
+    /// The count includes the measuring shell itself (its argv contains "node"), which is a constant
+    /// offset present in every sample and therefore cancels out of the comparison.
+    /// Everything currently in the spawned process group — the tree the kill has to reach.
+    #[cfg(unix)]
+    async fn list_group(pgid: u32) -> String {
+        let spec = SpawnSpec {
+            command: format!("pgrep -g {pgid} -l"),
+            kill_on_drop: true,
+            ..SpawnSpec::default()
+        };
+        let spawned = spawn(&spec).expect("spawn pgrep");
+        let output = spawned.child.wait_with_output().await.expect("run pgrep");
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    #[cfg(unix)]
+    async fn count_node_processes() -> usize {
+        let spec = SpawnSpec {
+            command: "pgrep -f node | wc -l".to_string(),
+            kill_on_drop: true,
+            ..SpawnSpec::default()
+        };
+        let spawned = spawn(&spec).expect("spawn pgrep");
+        let output = spawned.child.wait_with_output().await.expect("run pgrep");
+        String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse()
+            .unwrap_or(0)
     }
 
     #[test]

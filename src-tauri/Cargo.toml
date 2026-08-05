@@ -22,7 +22,17 @@ tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # tokio is used for its types only — no runtime is created here (SPEC.md §4).
-tokio = { version = "1", features = ["process", "io-util", "time", "sync", "macros"] }
+# DEVIATION from §4's literal feature list: `net` is added for `tokio::net::TcpStream`, which is the
+# dual-stack port probe §8 verification and §9's ready-check are both specified in terms of. The
+# alternative (blocking `std::net` connects on the blocking pool) would still be "tokio types only"
+# but burns a thread per probe; this keeps the spec's intent — tokio types, no runtime of our own.
+tokio = { version = "1", features = ["process", "io-util", "time", "sync", "macros", "net"] }
+
+[target.'cfg(unix)'.dependencies]
+# Justification (SPEC.md §4 dependency rule): SPEC.md §8's Unix kill is `kill(-pgid, SIGTERM/SIGKILL)`
+# and its verification is `kill(-pgid, 0) == ESRCH`. std can only signal a single `Child`, and has no
+# way to address a process group or to probe for liveness — `libc::kill` is the only route.
+libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 # Job Objects (SPEC.md §4/§8) — justification: `taskkill /T` walks live PPID chains and so cannot

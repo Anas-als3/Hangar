@@ -72,3 +72,15 @@
 .hangar-pulse {
   animation: hangar-pulse 1.6s ease-in-out infinite;
 }
+
+/* §11: "while `stopping`, the button shows a spinner and is disabled". Also reduced-motion aware
+   via the base rule above, which leaves a static ring rather than a spinning one. */
+@keyframes hangar-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.hangar-spin {
+  animation: hangar-spin 0.8s linear infinite;
+}

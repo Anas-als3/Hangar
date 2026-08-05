@@ -16,6 +16,7 @@ import {
   getProjects,
   getRegistryError,
   runProject,
+  stopProject,
 } from "./api";
 import type {
   LogLine,
@@ -162,6 +163,21 @@ export function startEventListeners(): void {
 export async function startProject(projectId: string): Promise<void> {
   try {
     await runProject(projectId);
+  } catch (err) {
+    setToast(errorMessage(err));
+  }
+}
+
+/**
+ * §7 `stop_project`. The card flips to `stopping` from the backend's event, not from here — the
+ * status is never guessed in the frontend (§7: all status UI is derived from `status-changed`).
+ *
+ * The promise settles only when the kill has been verified, so a rejection means `stop-failed`:
+ * processes survived or the port is still answering. Both facts are in the toast.
+ */
+export async function stopProjectAction(projectId: string): Promise<void> {
+  try {
+    await stopProject(projectId);
   } catch (err) {
     setToast(errorMessage(err));
   }

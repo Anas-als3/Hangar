@@ -1,13 +1,12 @@
 /**
  * One project card — SPEC.md §11.
  *
- * M2 wires the primary **Run** button and **Show logs**. The Stop button renders but stays
- * inert: killing a process tree is plan 003, and a half-wired Stop is exactly how half-kill bugs
- * happen. The other menu entries land with plan 005 (dialogs), the phase strip and the uptime
- * slot with plan 006.
+ * M2 wired the primary **Run** button and **Show logs**; M3 wires **Stop** — live in every active
+ * phase, a disabled spinner while `stopping`, and a retry from `stop-failed`. The other menu
+ * entries land with plan 005 (dialogs), the phase strip and the uptime slot with plan 006.
  */
 import { useEffect, useRef, useState } from "react";
-import { openLogs, startProject } from "../store";
+import { openLogs, startProject, stopProjectAction } from "../store";
 import type { ProjectView, Status } from "../types";
 
 const STATUS_LABEL: Record<Status, string> = {
@@ -88,9 +87,12 @@ export function ProjectCard({ project }: { project: ProjectView }) {
     };
   }, [menuOpen]);
 
-  const isActive = ACTIVE_STATUSES.has(project.status);
-  // §11: a crashed card's primary button is Run (retry). While stopping it is a disabled spinner.
-  const primaryIsStop = isActive;
+  // §11: a crashed card's primary button is Run (retry). While `stopping` it is a disabled
+  // spinner. A `stop-failed` card keeps Stop, enabled, so the user can retry the kill (§6/§12).
+  const primaryIsStop =
+    ACTIVE_STATUSES.has(project.status) || project.status === "stop-failed";
+  const stopping = project.status === "stopping";
+  const stopFailed = project.status === "stop-failed";
   const runDisabled = !project.pathExists;
 
   return (
@@ -174,13 +176,28 @@ export function ProjectCard({ project }: { project: ProjectView }) {
 
       <footer className="mt-auto flex items-center justify-between gap-3">
         {primaryIsStop ? (
-          // Inert on purpose: plan 003 owns the kill path and wires this button.
           <button
             type="button"
-            disabled
-            className="rounded-md border border-white/10 px-4 py-2 text-sm font-medium text-text opacity-60"
+            disabled={stopping}
+            onClick={() => void stopProjectAction(project.id)}
+            title={
+              stopFailed
+                ? "The last Stop could not be verified — press Stop to try again"
+                : undefined
+            }
+            className={`inline-flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+              stopFailed
+                ? "border-status-danger/50 text-status-danger hover:bg-status-danger/10"
+                : "border-white/10 text-text hover:bg-white/5"
+            }`}
           >
-            {project.status === "stopping" ? "Stopping…" : "Stop"}
+            {stopping && (
+              <span
+                aria-hidden="true"
+                className="hangar-spin size-3.5 rounded-full border-2 border-current border-t-transparent"
+              />
+            )}
+            {stopping ? "Stopping…" : "Stop"}
           </button>
         ) : (
           <button
