@@ -1,0 +1,25 @@
+[package]
+name = "hangar"
+version = "0.1.0"
+description = "Hangar — a launch bay for local dev projects"
+authors = ["you"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+#
+# The generated `[lib]` target was removed: SPEC.md §13 puts the builder, plugins and state
+# in `main.rs`, and Hangar is desktop-only (no mobile entry point to expose).
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+# Exactly the three plugins SPEC.md §4 allows. The shell, fs and store plugins are forbidden.
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# tokio is used for its types only — no runtime is created here (SPEC.md §4).
+tokio = { version = "1", features = ["process", "io-util", "time", "sync", "macros"] }

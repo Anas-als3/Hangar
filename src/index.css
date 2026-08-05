@@ -1,0 +1,74 @@
+/* Entry stylesheet — SPEC.md §4 (Tailwind v4 via @tailwindcss/vite, single import) and §11 (palette + type). */
+@import "tailwindcss";
+
+/* Fonts ship as npm packages so Vite bundles the woff2 files — no CDN, no runtime network (SPEC.md §4). */
+@import "@fontsource/space-grotesk/500.css";
+@import "@fontsource/space-grotesk/700.css";
+@import "@fontsource/inter/400.css";
+@import "@fontsource/inter/500.css";
+@import "@fontsource/inter/600.css";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
+
+/* §11 design tokens. Components reference these tokens only — never raw hex. */
+@theme {
+  --color-bg: #101623;
+  --color-surface: #1a2233;
+  --color-text: #e8ecf4;
+  --color-muted: #8a94a8;
+
+  /* Single accent: warm amber. Run button, active phase. */
+  --color-accent: #f5b942;
+
+  /* Status colors are functional only (§11). */
+  --color-status-running: #34d399;
+  --color-status-active: #f5b942; /* starting / updating / installing — amber pulse */
+  --color-status-danger: #f87171; /* crashed & stop-failed */
+  --color-status-stopped: #64748b; /* "stopped slate" — §11 gives no hex; slate-500 */
+
+  --font-display: "Space Grotesk", system-ui, sans-serif;
+  --font-sans: "Inter", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    background-color: var(--color-bg);
+    color: var(--color-text);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* §11: respect prefers-reduced-motion. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+/* Amber pulse for the transitional statuses (§11). Disabled by the reduced-motion rule above. */
+@keyframes hangar-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.hangar-pulse {
+  animation: hangar-pulse 1.6s ease-in-out infinite;
+}
