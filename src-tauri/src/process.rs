@@ -123,19 +123,29 @@ pub struct ProjectRuntime {
     /// SPEC.md §6: set by Stop **before the kill begins**, cleared at the start of each Run. The
     /// exit watcher reads it to decide `crashed` vs "a Stop is in flight and owns the outcome".
     pub user_stop: bool,
-    /// The kill handle for the current run, and a liveness marker for the direct child.
+    /// The kill primitive for the current run. On Unix this is the process-group id (the child is
+    /// spawned with `.process_group(0)`, so its pid *is* the pgid); on Windows it is the direct
+    /// child's pid, used only by the `taskkill` fallback.
     ///
-    /// On Unix this is the process-GROUP id (the child is spawned with `.process_group(0)`, so its
-    /// pid *is* the pgid). It deliberately **survives the reap**: the tree routinely outlives the
-    /// direct child (`npm` exits, the server it spawned does not), and SPEC.md §6's row
-    /// "`stop-failed` | Stop clicked | `stopping` (retry the kill)" is only real if the retry still
-    /// has something to signal. Clearing it on reap would leave the retry verifying nothing but the
-    /// port — the false proxy §8 forbids. Overwritten by the next Run.
-    ///
-    /// Accepted risk: once the group is long dead the OS could reuse the pid. SPEC.md §16 parks the
-    /// proper fix (a `running.json` sidecar with start-time identity, never a pid match alone); the
-    /// retry window here is seconds, not reboots.
-    pub child_pid: Option<u32>,
+    /// It deliberately **survives the reap**. The exit watcher must never clear it: a Stop that
+    /// reaches `stop-failed` has already reaped its direct child, and a retry Stop (SPEC.md §6,
+    /// row "`stop-failed` | Stop clicked | `stopping` — retry the kill") with nothing to signal is
+    /// not a retry at all — it falls through to the port probe, which the surviving children
+    /// (esbuild service, file watchers) never answer, and announces a stop that never happened.
+    /// Cleared in exactly two places: a *verified* stop, and the start of the next Run.
+    pub kill_pid: Option<u32>,
+    /// True from the moment a child is registered for the current run until that run's tree is
+    /// confirmed dead (or the next Run claims the project). It is what tells "Stop pressed with no
+    /// child of ours anywhere" apart from "the primitive was lost", so [`kill_tree`]'s
+    /// nothing-to-signal early return can never launder a previous failure into a confirmed death.
+    pub child_registered: bool,
+    /// Held by the run sequence for the whole window between its §6 `Run` claim — which is what
+    /// makes Stop legal — and the moment its child is finally registered above. Several awaits live
+    /// inside that window (the `lastRunAt` write, the login-shell environment resolution, plans
+    /// 004/006's pull and install phases), and a Stop landing there has nothing to signal *yet*.
+    /// It waits on this instead of verifying a death that has not happened; the run sequence
+    /// observes `user_stop` on the other side and cancels itself.
+    pub spawn_in_flight: Option<watch::Receiver<bool>>,
     /// Flips to `true` when the exit watcher has reaped the child (SPEC.md §8: "every kill path ends
     /// by awaiting the same wait future"). The kill sequence cannot call `child.wait()` itself —
     /// the watcher owns the `Child` — so it awaits this instead.
@@ -145,13 +155,8 @@ pub struct ProjectRuntime {
     /// (SPEC.md §8 and the §12 nvm-from-Dock row). See [`is_tool_not_found_exit`].
     pub path_searched: Option<String>,
     /// The Job Object the child was assigned to at spawn. `None` means assignment failed and the
-    /// kill must fall back to `taskkill /PID <pid> /T /F` (SPEC.md §8).
-    ///
-    /// Borrowed out for a kill and **put straight back** unless death was confirmed: it is both the
-    /// kill primitive and the verification source (`query_process_id_list`), so a stop that ends in
-    /// `stop-failed` must leave it here for the retry. Dropping it is meaningful — with
-    /// KILL_ON_JOB_CLOSE the kernel reaps whatever is left in the job — so it is dropped in exactly
-    /// two places: on a confirmed stop, and at the start of the next Run.
+    /// kill must fall back to `taskkill /PID <pid> /T /F` (SPEC.md §8). Like `kill_pid` it survives
+    /// the reap, and a failed verification hands it back so the retry still owns it.
     #[cfg(windows)]
     pub job: Option<win32job::Job>,
 }
@@ -162,12 +167,153 @@ impl Default for ProjectRuntime {
             status: Status::Stopped,
             logs: LogBuffer::default(),
             user_stop: false,
-            child_pid: None,
+            kill_pid: None,
+            child_registered: false,
+            spawn_in_flight: None,
             exited: None,
             path_searched: None,
             #[cfg(windows)]
             job: None,
         }
+    }
+}
+
+/// What the run sequence must do at the moment its child finally lands in the runtime map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpawnOutcome {
+    /// No Stop arrived while the run sequence was working — carry on.
+    Proceed,
+    /// A Stop was claimed inside the pre-registration window. The card already says `stopping` and
+    /// the Stop sequence found nothing to signal, so this brand-new tree is *only* reachable from
+    /// here: kill it, or it runs unowned for the rest of the app's lifetime.
+    CancelRun,
+}
+
+/// What a Stop can actually act on, decided under the runtime lock so it cannot race the spawn.
+#[derive(Debug)]
+pub enum StopClaim {
+    /// A kill primitive is registered (or demonstrably never existed) — signal it and verify.
+    Kill(KillTarget),
+    /// A Run is inside its pre-registration window. Wait for it to settle, then re-claim; the
+    /// receiver resolves when the run sequence has cancelled itself (or simply returned).
+    AwaitSpawn(watch::Receiver<bool>),
+}
+
+impl ProjectRuntime {
+    /// Run's bookkeeping, applied under the same lock as the §6 `Run` transition.
+    pub fn begin_run(&mut self, spawn_in_flight: watch::Receiver<bool>) {
+        self.user_stop = false;
+        // §8 buffer lifecycle: cleared at the start of each Run.
+        self.logs.clear();
+        // The previous run's kill primitive is retired here — one of the only two places it may be
+        // (the other is a *verified* stop).
+        self.kill_pid = None;
+        self.child_registered = false;
+        self.exited = None;
+        #[cfg(windows)]
+        {
+            self.job = None;
+        }
+        self.spawn_in_flight = Some(spawn_in_flight);
+    }
+
+    /// True if a Stop has already been claimed for this run. Checked once more immediately before
+    /// the spawn, so a Stop that landed during the environment resolution costs no process at all.
+    ///
+    /// The status test is a belt-and-braces assertion of the same thing from the §6 side: while a
+    /// run sequence is working, its project can only legally be in one of the phase statuses.
+    pub fn run_cancelled(&self) -> bool {
+        self.user_stop
+            || !matches!(
+                self.status,
+                Status::Updating | Status::Installing | Status::Starting
+            )
+    }
+
+    /// Publishes the freshly spawned child as this project's kill target — and answers, under the
+    /// same lock, whether a Stop beat it to the punch.
+    pub fn register_child(
+        &mut self,
+        pid: Option<u32>,
+        exited: watch::Receiver<bool>,
+        path_searched: String,
+    ) -> SpawnOutcome {
+        self.kill_pid = pid;
+        self.child_registered = true;
+        self.exited = Some(exited);
+        self.path_searched = Some(path_searched);
+
+        if self.run_cancelled() {
+            // `spawn_in_flight` stays set: the Stop parked on it must not wake until this run has
+            // killed what it just created and the §8 verification has announced the outcome.
+            SpawnOutcome::CancelRun
+        } else {
+            self.spawn_in_flight = None;
+            SpawnOutcome::Proceed
+        }
+    }
+
+    /// The exit watcher's runtime-lock block. It reports the user-stop flag (SPEC.md §6: an exit
+    /// without it is a crash) and deliberately touches **nothing else**.
+    ///
+    /// Retiring the kill primitive here would be the obvious-looking thing to do and is wrong:
+    /// reaping the direct child is not the same event as the tree being dead — `npm` exits long
+    /// before the grandchildren it started — so a Stop that ends in `stop-failed` would leave the
+    /// retry with nothing to signal. See [`Self::kill_pid`].
+    pub fn observe_child_exit(&mut self) -> bool {
+        self.user_stop
+    }
+
+    /// Stop's bookkeeping, applied under the same lock as the §6 `Stop` transition. The flag is set
+    /// **before** the kill begins (SPEC.md §8), which is also what the spawn side reads.
+    pub fn claim_stop(&mut self) -> StopClaim {
+        self.user_stop = true;
+        match &self.spawn_in_flight {
+            Some(rx) => StopClaim::AwaitSpawn(rx.clone()),
+            None => StopClaim::Kill(self.take_kill_target()),
+        }
+    }
+
+    /// Everything the kill needs, taken **out** of the runtime map so the async mutex is never held
+    /// across the (up to 5 s) kill (SPEC.md §4). `kill_pid` is copied rather than taken: it is the
+    /// retry's only handle on the tree and is cleared solely by [`Self::clear_kill_target`].
+    pub fn take_kill_target(&mut self) -> KillTarget {
+        KillTarget {
+            pid: self.kill_pid,
+            had_child: self.child_registered,
+            exited: self.exited.clone(),
+            // DEVIATION worth naming: the job *is* moved out, because `win32job::Job` owns a handle
+            // and is not clonable, and the lock cannot be held across the kill. A failed
+            // verification puts it straight back (see `restore_kill_target`) so the retry still owns
+            // the primitive.
+            #[cfg(windows)]
+            job: self.job.take(),
+        }
+    }
+
+    /// A stop that §8 verification **confirmed**. The only place other than a new Run where the
+    /// kill primitive is allowed to disappear.
+    pub fn clear_kill_target(&mut self) {
+        self.kill_pid = None;
+        self.child_registered = false;
+        self.spawn_in_flight = None;
+        #[cfg(windows)]
+        {
+            self.job = None;
+        }
+    }
+
+    /// Verification failed → `stop-failed`, and SPEC.md §6 promises the Stop button retries the
+    /// kill. That is only true if the retry still owns a primitive, so the job goes back.
+    pub fn restore_kill_target(&mut self, outcome: &mut KillOutcome) {
+        self.spawn_in_flight = None;
+        #[cfg(windows)]
+        {
+            if self.job.is_none() {
+                self.job = outcome.job.take();
+            }
+        }
+        let _ = outcome;
     }
 }
 
@@ -547,6 +693,10 @@ pub struct KillTarget {
     /// The retained kill handle — [`ProjectRuntime::child_pid`]. Unix: the process-group id.
     /// Windows: the direct child's pid, used only by the `taskkill` fallback.
     pub pid: Option<u32>,
+    /// True when a child *was* registered for this run and its tree has never been confirmed dead.
+    /// With no `pid`/`job` left to signal that is an **unverifiable** state, not a verified death —
+    /// see the early returns in [`kill_tree`].
+    pub had_child: bool,
     /// The exit watcher's reap signal — see [`ProjectRuntime::exited`].
     pub exited: Option<watch::Receiver<bool>>,
     /// The project's Job Object. Kept alive for the whole sequence: it is both the kill primitive
@@ -557,11 +707,36 @@ pub struct KillTarget {
 
 /// The result of one kill attempt. `death_confirmed` is the FIRST half of §8 verification; the port
 /// check is the second and is deliberately performed by the caller only after this is true.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct KillOutcome {
     pub death_confirmed: bool,
     /// `system` log lines narrating what actually happened (SPEC.md §7: "kill results").
     pub notes: Vec<String>,
+    /// Handed back so a failed verification can return the primitive to the runtime map and SPEC.md
+    /// §6's "`stop-failed` | Stop clicked | retry the kill" is a real retry. On a confirmed stop the
+    /// caller simply drops it, and with KILL_ON_JOB_CLOSE that drop is the final backstop.
+    #[cfg(windows)]
+    pub job: Option<win32job::Job>,
+}
+
+/// SPEC.md §8's death check when there is nothing left to signal. `had_child` is the whole question:
+/// a Stop pressed with no child of ours anywhere is trivially a confirmed death, but a run whose
+/// primitive went missing is a *failure to verify* — and reporting it as death is exactly how a
+/// `stop-failed` retry launders itself into a green "stopped" card while orphans keep running.
+fn nothing_to_signal(had_child: bool, mut notes: Vec<String>) -> KillOutcome {
+    if had_child {
+        notes.push(
+            "no process group or job is registered for this project any more, so its death \
+             cannot be confirmed"
+                .to_string(),
+        );
+    }
+    KillOutcome {
+        death_confirmed: !had_child,
+        notes,
+        #[cfg(windows)]
+        job: None,
+    }
 }
 
 /// Waits for the exit watcher to reap the child, bounded by `budget`. Returns true if it was
@@ -631,13 +806,10 @@ pub async fn kill_tree(target: KillTarget) -> KillOutcome {
     let mut notes = Vec::new();
 
     let Some(pgid) = target.pid else {
-        // Stop pressed with nothing of ours ever registered (e.g. the phase between two children).
-        // Nothing is alive; the caller still verifies the port. `child_pid` now survives the reap,
-        // so this is genuinely "never spawned" rather than "handle lost".
-        return KillOutcome {
-            death_confirmed: true,
-            notes,
-        };
+        // Stop pressed with no child registered (e.g. the phase between two children). There is
+        // nothing of ours alive; the caller still verifies the port. But see `nothing_to_signal`:
+        // that is only true when there demonstrably never was one.
+        return nothing_to_signal(target.had_child, notes);
     };
 
     match signal_group(pgid, libc::SIGTERM) {
@@ -686,6 +858,16 @@ pub async fn kill_tree(target: KillTarget) -> KillOutcome {
         death_confirmed,
         notes,
     }
+}
+
+/// SPEC.md §8, step 5, as a pure function: the two verification results the Stop sequence has to
+/// combine, and the status each pair produces. Death is confirmed FIRST and the port is only
+/// *asked* when it was — with processes still alive the port answer is meaningless, and answering
+/// "free" from it is the false proxy §8 forbids.
+///
+/// Returns `true` for `stopped`, `false` for `stop-failed`.
+pub fn stop_is_verified(death_confirmed: bool, port_still_answers: bool) -> bool {
+    death_confirmed && !port_still_answers
 }
 
 // `TerminateJobObject` is not exposed by `win32job` 2.x (it has create / assign / query only), and
@@ -737,11 +919,8 @@ pub async fn kill_tree(target: KillTarget) -> KillOutcome {
         notes.append(&mut taskkill_notes);
         terminated = ok;
     } else {
-        // Nothing of ours was ever registered for this project (see the Unix arm).
-        return KillOutcome {
-            death_confirmed: true,
-            notes,
-        };
+        // Nothing to signal — verified death only if there demonstrably never was a child.
+        return nothing_to_signal(target.had_child, notes);
     }
 
     if !wait_for_exit(&target.exited, REAP_TIMEOUT).await {
@@ -756,12 +935,14 @@ pub async fn kill_tree(target: KillTarget) -> KillOutcome {
         notes.push("processes are still alive after the kill".to_string());
     }
 
-    // Dropping `target` closes the job handle; with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE that is the
-    // final backstop for anything the terminate somehow missed. A `stop-failed` retry falls back to
-    // `taskkill` on the retained pid — see `ProjectRuntime::child_pid`.
+    // The job is handed back rather than dropped here: a failed verification returns it to the
+    // runtime map so SPEC.md §6's Stop-from-`stop-failed` retry still owns the kill primitive. On a
+    // confirmed stop the caller drops it, and with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE that drop is
+    // still the final backstop for anything the terminate somehow missed.
     KillOutcome {
         death_confirmed,
         notes,
+        job: target.job,
     }
 }
 
@@ -1225,26 +1406,16 @@ pub fn spawn_exit_watcher(
             }
         }
 
-        // SPEC.md §6: a child exit with the user-stop flag NOT set is a crash.
-        //
-        // `child_pid` is deliberately NOT cleared here. It is the process-GROUP id, and the whole
-        // reason `stop-failed` keeps a working Stop button (§8) is the case where the direct child
-        // has exited and been reaped while grandchildren survive in the group. Clearing it would
-        // leave the retry with nothing to signal, so Stop-again would report success without
-        // killing anything. It is overwritten by the next Run, and a run that never spawned leaves
-        // it `None`.
-        //
-        // Accepted risk: if the group is long dead, the OS could in principle reuse the pid before
-        // a retry. SPEC.md §16's `running.json` identity check (start-time, not pid alone) is the
-        // real fix; it is parked there, and the retry window here is seconds, not reboots.
+        // SPEC.md §6: a child exit with the user-stop flag NOT set is a crash. See
+        // `ProjectRuntime::observe_child_exit` for what this block must NOT do.
         let (user_stop, from) = {
             let state = app.state::<AppState>();
-            let runtime = state.runtime.lock().await;
-            let entry = runtime.get(&project_id);
-            (
-                entry.is_some_and(|entry| entry.user_stop),
-                entry.map_or(Status::Stopped, |entry| entry.status),
-            )
+            let mut runtime = state.runtime.lock().await;
+            let entry = runtime.entry(project_id.clone()).or_default();
+            // The status is read under the SAME lock as the flag: §9 step 5's diagnosis turns on
+            // whether the exit interrupted `starting` (never answered on the port) or `running` (an
+            // ordinary crash), and a status re-read after the lock could see a later transition.
+            (entry.observe_child_exit(), entry.status)
         };
 
         // With the flag set, the Stop sequence that set it is awaiting this very exit and announces
@@ -1532,9 +1703,178 @@ My Dev Server.exe                1 Console                    1     45,678 K
     #[test]
     fn tasklist_with_no_match_yields_no_name() {
         assert_eq!(
-            parse_tasklist_name("INFO: No tasks are running which match the specified criteria.\n", 4321),
+            parse_tasklist_name(
+                "INFO: No tasks are running which match the specified criteria.\n",
+                4321
+            ),
             None
         );
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // The spawn/Stop race and the retained kill primitive.
+    //
+    // Both of these are regressions with a name: the runtime entry is the only place the spawn
+    // side and the Stop sequence meet, and every operation either performs under the runtime lock
+    // is a method on it. Driving those methods in order *is* driving the race.
+    // -----------------------------------------------------------------------------------------
+
+    fn started_run() -> (ProjectRuntime, watch::Sender<bool>) {
+        let mut entry = ProjectRuntime::default();
+        let (claim, in_flight) = watch::channel(false);
+        entry.begin_run(in_flight);
+        // §6: the `Run` claim moves the card to `starting`, which is what makes Stop legal — long
+        // before there is anything to kill.
+        entry.status = Status::Starting;
+        (entry, claim)
+    }
+
+    #[test]
+    fn a_stop_claimed_while_the_pid_is_unregistered_is_never_a_verified_death() {
+        let (mut entry, _claim) = started_run();
+
+        // Stop lands inside the pre-registration window: the `lastRunAt` write, the login-shell
+        // environment resolution, and (from plans 004/006) the whole pull/install phase all live
+        // here, so this is minutes wide, not microseconds.
+        let claim = entry.claim_stop();
+        entry.status = Status::Stopping;
+        assert!(entry.user_stop, "the flag is set before any kill (§8)");
+
+        match claim {
+            StopClaim::AwaitSpawn(_) => {}
+            StopClaim::Kill(target) => {
+                // The defect, in one line: a target built here has no pid, `kill_tree` signals
+                // nothing, and the port probe finds nothing listening because the server has not
+                // started yet — so the card announces `stopped` over a tree that is about to come
+                // up and will never be reachable again.
+                let outcome = tauri::async_runtime::block_on(kill_tree(target));
+                panic!(
+                    "a Stop in the pre-registration window must not settle the stop itself \
+                     (kill_tree reported death_confirmed = {})",
+                    outcome.death_confirmed
+                );
+            }
+        }
+
+        // ...and the pid appears afterwards. The spawn side has to observe the Stop under the very
+        // same lock that publishes the pid, or the two can still slip past each other.
+        let (_exit_tx, exit_rx) = watch::channel(false);
+        assert_eq!(
+            entry.register_child(Some(4321), exit_rx, "/usr/bin".to_string()),
+            SpawnOutcome::CancelRun,
+            "the run must cancel itself instead of returning with a live child"
+        );
+
+        // And what it cancels with is a real, signalable target.
+        let target = entry.take_kill_target();
+        assert_eq!(target.pid, Some(4321));
+        assert!(target.had_child);
+    }
+
+    #[test]
+    fn a_stop_before_the_spawn_bails_the_run_without_creating_a_process() {
+        let (mut entry, _claim) = started_run();
+        assert!(!entry.run_cancelled(), "nothing has been stopped yet");
+
+        entry.claim_stop();
+        entry.status = Status::Stopping;
+
+        assert!(
+            entry.run_cancelled(),
+            "the last check before `spawn` must see the Stop and cost zero processes"
+        );
+        // Nothing was ever created, so this — and only this — is an honest confirmed death.
+        let outcome = tauri::async_runtime::block_on(kill_tree(entry.take_kill_target()));
+        assert!(outcome.death_confirmed);
+    }
+
+    #[test]
+    fn a_second_stop_after_a_stop_failed_still_signals_and_still_evaluates_death() {
+        let (mut entry, _claim) = started_run();
+        let (exit_tx, exit_rx) = watch::channel(false);
+        entry.register_child(Some(4321), exit_rx, "/usr/bin".to_string());
+        entry.status = Status::Running;
+
+        // First Stop: there is a primitive, so it is signalled.
+        let StopClaim::Kill(first) = entry.claim_stop() else {
+            panic!("a registered child must produce a kill target");
+        };
+        assert_eq!(first.pid, Some(4321));
+        entry.status = Status::Stopping;
+
+        // Mid-sequence the exit watcher reaps the DIRECT child — `npm` exits long before the
+        // grandchildren it started do — and runs its own runtime-lock block. That reap must not
+        // cost us the primitive.
+        let _ = exit_tx.send(true);
+        assert!(
+            entry.observe_child_exit(),
+            "the flag was set before the kill, so this exit is a Stop, not a crash"
+        );
+
+        // Verification fails anyway (a group member still alive at 3 s, EPERM, a wedged process):
+        // §6 row "`stopping` | kill verification fails | `stop-failed`".
+        let mut outcome = KillOutcome {
+            death_confirmed: false,
+            ..KillOutcome::default()
+        };
+        entry.restore_kill_target(&mut outcome);
+        entry.status = Status::StopFailed;
+
+        // §6 row "`stop-failed` | Stop clicked | `stopping` — retry the kill". A retry that owns
+        // nothing is not a retry: it signals nothing, and because the survivors are exactly the
+        // children that never listen on the port (esbuild service, file watchers — SPEC.md §8's own
+        // examples), the port probe waves it through as `stopped`.
+        let StopClaim::Kill(retry) = entry.claim_stop() else {
+            panic!("a retry must not wait on a spawn that finished long ago");
+        };
+        assert_eq!(
+            retry.pid,
+            Some(4321),
+            "the retry Stop must still have a process group to signal"
+        );
+        assert!(
+            retry.had_child,
+            "and must still know a child existed, so a missing pid can never read as death"
+        );
+
+        // Only a *verified* stop retires it.
+        entry.clear_kill_target();
+        assert_eq!(entry.kill_pid, None);
+        assert!(!entry.child_registered);
+    }
+
+    #[test]
+    fn a_kill_target_that_lost_its_primitive_is_not_a_confirmed_death() {
+        // SPEC.md §8: "never silently pretend it stopped". `had_child` is the difference between
+        // "there was nothing of ours to kill" and "we lost track of it".
+        let lost = tauri::async_runtime::block_on(kill_tree(KillTarget {
+            pid: None,
+            had_child: true,
+            ..KillTarget::default()
+        }));
+        assert!(
+            !lost.death_confirmed,
+            "an unsignalable target must fail verification, not launder itself into `stopped`"
+        );
+        assert!(!lost.notes.is_empty(), "and it must say so in the log");
+
+        let never_spawned = tauri::async_runtime::block_on(kill_tree(KillTarget::default()));
+        assert!(
+            never_spawned.death_confirmed,
+            "a Stop with no child of ours anywhere is genuinely a confirmed death"
+        );
+    }
+
+    #[test]
+    fn kill_verification_needs_death_first_and_then_the_port() {
+        // SPEC.md §8 / plan 003 step 3, the mechanics half of the mapping.
+        assert!(stop_is_verified(true, false), "death confirmed + port free");
+        assert!(
+            !stop_is_verified(true, true),
+            "death confirmed but the port still answers"
+        );
+        assert!(!stop_is_verified(false, false), "death not confirmed");
+        assert!(!stop_is_verified(false, true));
     }
 
     /// SPEC.md §15 test 3 — **the orphan test**, in code, against the real kill path.
@@ -1626,6 +1966,7 @@ http.createServer((_req, res) => res.end('ok')).listen(39117, () => console.log(
 
             let outcome = kill_tree(KillTarget {
                 pid: Some(pid),
+                had_child: true,
                 exited: Some(exit_rx),
                 #[cfg(windows)]
                 job: spawned.job,

@@ -16,7 +16,9 @@ use tauri_plugin_opener::OpenerExt;
 use tokio::sync::watch;
 
 use crate::commands::AppState;
-use crate::process::{self, KillTarget, ProjectRuntime, ShellKind, SpawnSpec};
+use crate::process::{
+    self, KillTarget, ProjectRuntime, ShellKind, SpawnOutcome, SpawnSpec, StopClaim,
+};
 use crate::registry::{self, Project, Status};
 
 // ---------------------------------------------------------------------------------------------
@@ -453,19 +455,17 @@ async fn on_ready_timeout(app: &AppHandle, project: &Project) {
     .await;
 
     // Taken out of the map before the kill, exactly as `stop_project` does (SPEC.md §4: the async
-    // mutex is never held across a multi-second kill).
-    let mut target = KillTarget::default();
-    {
+    // mutex is never held across a multi-second kill). `take_kill_target` is the same accessor the
+    // Stop path uses, so a timeout kill and a user Stop cannot drift apart — including `had_child`,
+    // which is what stops a lost primitive being reported as a confirmed death.
+    let target = {
         let state = app.state::<AppState>();
         let mut runtime = state.runtime.lock().await;
-        let entry = runtime.entry(project.id.clone()).or_default();
-        target.pid = entry.child_pid;
-        target.exited = entry.exited.clone();
-        #[cfg(windows)]
-        {
-            target.job = entry.job.take();
-        }
-    }
+        runtime
+            .entry(project.id.clone())
+            .or_default()
+            .take_kill_target()
+    };
 
     kill_then_crash(
         async {
@@ -529,10 +529,21 @@ pub async fn run_project(app: &AppHandle, project_id: &str) -> Result<(), String
     }
 
     // ---- §6 guard + claim, atomically ---------------------------------------------------------
+    //
+    // The claim moves the card to `starting`, which is precisely what makes Stop legal (§6). Every
+    // await below therefore runs inside a window where the user can press Stop but there is no
+    // child to kill yet — the `lastRunAt` write, the login-shell environment resolution (a cold
+    // cell shells out with a 5 s budget) and, once plans 004/006 land, the whole pull/install
+    // phase. `spawn_in_flight` is the run sequence's claim on that window: a Stop arriving inside
+    // it parks on this receiver rather than verifying a death that has not happened, and the run
+    // sequence cancels itself the moment it notices (SPEC.md §12, "Stop clicked during
+    // updating/installing/starting").
+    //
+    // The sender is held for the whole body of this function: every return path drops it, which
+    // releases a parked Stop even on a path that forgot to.
+    let (spawn_claim, spawn_in_flight) = tokio::sync::watch::channel(false);
     apply_with(app, &project.id, Trigger::Run, None, |entry| {
-        entry.user_stop = false;
-        // §8 buffer lifecycle: cleared at the start of each Run.
-        entry.logs.clear();
+        entry.begin_run(spawn_in_flight)
     })
     .await
     .map_err(|rejection| rejection.for_project(&project.name))?;
@@ -569,6 +580,14 @@ pub async fn run_project(app: &AppHandle, project_id: &str) -> Result<(), String
     }
 
     // ---- §9 step 4: spawn ---------------------------------------------------------------------
+    //
+    // Last look before anything is created: a Stop that landed while the environment was resolving
+    // costs zero processes if it is noticed here. `had_child: false` is the honest input to §8
+    // verification — there demonstrably never was a child for this run.
+    if stop_is_pending(app, &project.id).await {
+        return cancel_run(app, &project, KillTarget::default()).await;
+    }
+
     process::append_system(app, &project.id, format!("$ {}", project.command)).await;
 
     let spec = SpawnSpec {
@@ -589,7 +608,12 @@ pub async fn run_project(app: &AppHandle, project_id: &str) -> Result<(), String
             // SPEC.md §8: if a tool resolves to nothing, the error line must show the PATH searched.
             process::append_system(app, &project.id, format!("{e}\nPATH searched: {path_searched}"))
                 .await;
-            let _ = apply(app, &project.id, Trigger::Failed, Some(e.clone())).await;
+            // Nothing was created, so the pre-registration window closes with no kill target — and
+            // `had_child` stays false, which is the honest answer for any Stop still parked on it.
+            let _ = apply_with(app, &project.id, Trigger::Failed, Some(e.clone()), |entry| {
+                entry.spawn_in_flight = None;
+            })
+            .await;
             return Err(e);
         }
     };
@@ -599,37 +623,90 @@ pub async fn run_project(app: &AppHandle, project_id: &str) -> Result<(), String
     // The exit watcher signals this once it has reaped the child; the §8 kill sequence awaits it
     // instead of calling `wait()` a second time on a Child it does not own.
     let (exit_tx, exit_rx) = tokio::sync::watch::channel(false);
-    {
+    // SPEC.md §8/§12: `/bin/sh` always exists, so the spawn above succeeds even when `npm` does
+    // not — the shell reports "command not found" and exits 127. The exit watcher prints this
+    // PATH in that case; without it, the single most important error message in the app is
+    // missing. See `process::is_tool_not_found_exit`.
+    let outcome = {
         let mut runtime = state.runtime.lock().await;
         let entry = runtime.entry(project.id.clone()).or_default();
-        entry.child_pid = pid;
-        entry.exited = Some(exit_rx.clone());
-        // SPEC.md §8/§12: `/bin/sh` always exists, so the spawn above succeeds even when `npm` does
-        // not — the shell reports "command not found" and exits 127. The exit watcher prints this
-        // PATH in that case; without it, the single most important error message in the app is
-        // missing. See `process::is_tool_not_found_exit`.
-        entry.path_searched = Some(path_searched.clone());
+
         #[cfg(windows)]
         {
             entry.job = spawned.job;
         }
-    }
+        // Publishing the kill target and reading the user-stop flag happen under ONE lock. Split
+        // them and a Stop can slip between, find nothing registered, and announce a stop while this
+        // very tree comes up behind it.
+        // Cloned, not moved: the ready poller below races this same reap signal (§9 step 5), and
+        // the runtime entry needs its own copy for the §8 kill path.
+        entry.register_child(pid, exit_rx.clone(), path_searched.clone())
+    };
 
     let pipeline = process::attach_log_pipeline(app, &project.id, &mut child);
+
+    if outcome == SpawnOutcome::CancelRun {
+        // A Stop was claimed while this run was working: the card already says `stopping` and the
+        // Stop sequence is parked waiting for us, because at the moment it looked there was nothing
+        // to signal. This tree is reachable from nowhere else. The exit watcher starts first — it
+        // owns `wait()`, so it is both the reaper and what the kill below awaits (§8).
+        process::spawn_exit_watcher(app.clone(), project.id.clone(), child, pipeline, exit_tx);
+        let target = {
+            let mut runtime = state.runtime.lock().await;
+            runtime
+                .entry(project.id.clone())
+                .or_default()
+                .take_kill_target()
+        };
+        return cancel_run(app, &project, target).await;
+    }
 
     // Started before the polling below, not after: it is what diagnoses an instantly-exiting
     // command, and it is what signals the reap the poller races.
     process::spawn_exit_watcher(app.clone(), project.id.clone(), child, pipeline, exit_tx);
 
-    // §9 steps 5-7 run detached. `run_project` is fire-and-forget (§7) — holding the IPC call open
-    // for up to `readyTimeoutSec` would block the frontend's next command behind a 60 s wait.
+    // §9 steps 5-7 run detached. `run_project` is fire-and-forget (§7) — holding the IPC call
+    // open for up to `readyTimeoutSec` would block the frontend's next command behind a 60 s wait.
     tauri::async_runtime::spawn(await_ready_then_hand_off(
         app.clone(),
         project.clone(),
         exit_rx,
     ));
 
+    // Held until here so that every early return above wakes a parked Stop by dropping it.
+    drop(spawn_claim);
     Ok(())
+}
+
+/// Has a Stop already been claimed for the run currently in flight? (SPEC.md §6 makes Stop legal
+/// from the moment the `Run` claim lands, which is several awaits before there is a child.)
+async fn stop_is_pending(app: &AppHandle, project_id: &str) -> bool {
+    let state = app.state::<AppState>();
+    let runtime = state.runtime.lock().await;
+    runtime
+        .get(project_id)
+        .is_some_and(ProjectRuntime::run_cancelled)
+}
+
+/// The run sequence cancelling itself because a Stop landed while it was working.
+///
+/// It runs the *same* §8 sequence a Stop does — kill, reap, confirmed death, then the port — and
+/// announces through the same `StopConfirmed` / `KillVerificationFailed` triggers, so a cancelled
+/// run can never report `stopped` on a tree it has not verified.
+async fn cancel_run(
+    app: &AppHandle,
+    project: &registry::Project,
+    target: KillTarget,
+) -> Result<(), String> {
+    finish_stop(
+        app,
+        &project.id,
+        &project.name,
+        Some(project.port),
+        true,
+        target,
+    )
+    .await
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -662,44 +739,118 @@ pub async fn stop_project(app: &AppHandle, project_id: &str) -> Result<(), Strin
     let port = project.as_ref().map(|p| p.port);
 
     // ---- 1. claim the stop -------------------------------------------------------------------
-    let mut target = KillTarget::default();
+    let mut claim = None;
     let transition = apply_with(app, project_id, Trigger::Stop, None, |entry| {
-        entry.user_stop = true;
-        target.pid = entry.child_pid;
-        target.exited = entry.exited.clone();
-        // Taken out of the map, not borrowed: the kill below awaits for seconds and the async mutex
-        // must not be held across it (SPEC.md §4).
-        #[cfg(windows)]
-        {
-            target.job = entry.job.take();
-        }
+        claim = Some(entry.claim_stop());
     })
     .await
     .map_err(|rejection| rejection.for_project(&name))?;
 
+    let mut cancelled_mid_phase = matches!(
+        transition.from,
+        Status::Updating | Status::Installing | Status::Starting
+    );
+
+    let target = match claim.expect("the Stop claim runs under the transition's lock") {
+        StopClaim::Kill(target) => target,
+        StopClaim::AwaitSpawn(spawn_in_flight) => {
+            // The run sequence is between its `starting` claim and its child's registration, so
+            // there is nothing to signal *yet* — and reporting that as a verified death is how a
+            // live tree ends up behind a `stopped` card, orphaned for the app's lifetime. The flag
+            // set above is already visible to the spawn side; wait for it to notice and settle.
+            process::append_system(
+                app,
+                project_id,
+                "waiting for the run that is still starting to cancel",
+            )
+            .await;
+            if !await_spawn_cancel(spawn_in_flight).await {
+                let message = format!(
+                    "Couldn't confirm {name} stopped: the run that was starting did not respond \
+                     within {} s. Press Stop again to retry.",
+                    SPAWN_CANCEL_BUDGET.as_secs()
+                );
+                process::append_system(app, project_id, message.clone()).await;
+                let _ = apply(app, project_id, Trigger::KillVerificationFailed, None).await;
+                return Err(message);
+            }
+
+            // The run sequence settles the outcome itself, through the same §8 verification and the
+            // same §6 triggers (see `cancel_run`). If it did, honour its verdict.
+            let settled = {
+                let runtime = state.runtime.lock().await;
+                runtime.get(project_id).map(|entry| entry.status)
+            };
+            match settled {
+                Some(Status::Stopped) => return Ok(()),
+                Some(Status::StopFailed) => {
+                    return Err(format!(
+                        "Couldn't confirm {name} stopped — see the log. Press Stop again to retry."
+                    ))
+                }
+                _ => {}
+            }
+
+            // It returned without settling (a spawn failure, say). Whatever it left behind is ours
+            // to finish — including the case where it left nothing, which `had_child` reports
+            // honestly rather than as a confirmed death.
+            cancelled_mid_phase = true;
+            let mut runtime = state.runtime.lock().await;
+            runtime
+                .entry(project_id.to_string())
+                .or_default()
+                .take_kill_target()
+        }
+    };
+
+    finish_stop(app, project_id, &name, port, cancelled_mid_phase, target).await
+}
+
+/// How long a Stop waits for a run sequence to notice it and cancel. Generous on purpose: the run
+/// side's own cancellation runs the full §8 kill (5 s SIGTERM grace + 5 s reap + 3 s death check +
+/// the port probe) before it releases the waiter.
+const SPAWN_CANCEL_BUDGET: Duration = Duration::from_secs(20);
+
+/// True if the run sequence settled (or simply returned, which drops the sender) inside the budget.
+async fn await_spawn_cancel(mut spawn_in_flight: tokio::sync::watch::Receiver<bool>) -> bool {
+    tokio::time::timeout(SPAWN_CANCEL_BUDGET, async move {
+        // `Err` means every sender is gone, i.e. the run sequence has returned — also a settlement.
+        let _ = spawn_in_flight.wait_for(|settled| *settled).await;
+    })
+    .await
+    .is_ok()
+}
+
+/// Steps 2–5 of the Stop sequence, shared by `stop_project` and by a run sequence cancelling itself.
+/// There is exactly one implementation so a cancelled run cannot verify less than a Stop does.
+async fn finish_stop(
+    app: &AppHandle,
+    project_id: &str,
+    name: &str,
+    port: Option<u16>,
+    cancelled_mid_phase: bool,
+    target: KillTarget,
+) -> Result<(), String> {
     // ---- 2. kill -----------------------------------------------------------------------------
-    let outcome = process::kill_tree(target).await;
-    for note in outcome.notes {
+    let mut outcome = process::kill_tree(target).await;
+    for note in std::mem::take(&mut outcome.notes) {
         process::append_system(app, project_id, note).await;
     }
 
     // ---- 3./4. verify: death FIRST, then the port ---------------------------------------------
-    let port_free = if outcome.death_confirmed {
+    let port_still_answers = if outcome.death_confirmed {
         match port {
-            Some(port) => !process::port_accepts(port).await,
-            None => true,
+            Some(port) => process::port_accepts(port).await,
+            None => false,
         }
     } else {
         // Not even asked: with processes still alive the port answer is meaningless.
-        false
+        true
     };
 
     // ---- 5. status ---------------------------------------------------------------------------
-    if outcome.death_confirmed && port_free {
-        if matches!(
-            transition.from,
-            Status::Updating | Status::Installing | Status::Starting
-        ) {
+    if process::stop_is_verified(outcome.death_confirmed, port_still_answers) {
+        if cancelled_mid_phase {
             // §6: "log line 'Run cancelled by user' if user-stopped mid-phase".
             process::append_system(app, project_id, "Run cancelled by user").await;
         }
@@ -713,7 +864,12 @@ pub async fn stop_project(app: &AppHandle, project_id: &str) -> Result<(), Strin
         )
         .await;
 
-        if let Err(rejection) = apply(app, project_id, Trigger::StopConfirmed, None).await {
+        // Verified — and this is one of only two places the kill primitive may be retired.
+        if let Err(rejection) = apply_with(app, project_id, Trigger::StopConfirmed, None, |entry| {
+            entry.clear_kill_target()
+        })
+        .await
+        {
             process::append_system(
                 app,
                 project_id,
@@ -738,11 +894,14 @@ pub async fn stop_project(app: &AppHandle, project_id: &str) -> Result<(), Strin
     let message = format!("Couldn't confirm {name} stopped: {reason}. Press Stop again to retry.");
 
     process::append_system(app, project_id, message.clone()).await;
-    let _ = apply(
+    // §6: "`stop-failed` | Stop clicked | `stopping` — retry the kill". A retry can only kill what
+    // it still owns, so the primitive goes back into the map instead of being dropped here.
+    let _ = apply_with(
         app,
         project_id,
         Trigger::KillVerificationFailed,
         Some(reason),
+        |entry| entry.restore_kill_target(&mut outcome),
     )
     .await;
 
@@ -1030,6 +1189,31 @@ mod tests {
             assert!(next_status(from, Trigger::StopConfirmed).is_err());
             assert!(next_status(from, Trigger::KillVerificationFailed).is_err());
         }
+    }
+
+    /// Plan 003's test plan, "Kill verification result mapping" — the two §8 checks, end to end,
+    /// onto the two statuses §6 allows a `stopping` project to reach.
+    #[test]
+    fn kill_verification_maps_death_and_port_onto_stopped_or_stop_failed() {
+        fn verdict(death_confirmed: bool, port_still_answers: bool) -> Status {
+            let trigger = if process::stop_is_verified(death_confirmed, port_still_answers) {
+                Trigger::StopConfirmed
+            } else {
+                Trigger::KillVerificationFailed
+            };
+            next_status(Status::Stopping, trigger).unwrap()
+        }
+
+        assert_eq!(verdict(true, false), Status::Stopped, "death + free port");
+        assert_eq!(
+            verdict(true, true),
+            Status::StopFailed,
+            "death confirmed but the port still answers — something else owns it"
+        );
+        // Death not confirmed is `stop-failed` whatever the port says: a port-only check is the
+        // false proxy §8 exists to forbid, since leaked watchers never listen on it at all.
+        assert_eq!(verdict(false, true), Status::StopFailed);
+        assert_eq!(verdict(false, false), Status::StopFailed);
     }
 
     #[test]
