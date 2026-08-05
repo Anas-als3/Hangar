@@ -105,6 +105,10 @@ pub struct ProjectRuntime {
     /// PID of the live child, cleared by the exit watcher. On Unix this is also the process-group
     /// id (the child is spawned with `.process_group(0)`), which is what plan 003 signals.
     pub child_pid: Option<u32>,
+    /// The PATH the current child was actually given (`DevEnvironment::effective_path()`), recorded
+    /// at spawn so the exit watcher can print it when the shell exits "command not found"
+    /// (SPEC.md §8 and the §12 nvm-from-Dock row). See [`is_tool_not_found_exit`].
+    pub path_searched: Option<String>,
     /// The Job Object the child was assigned to at spawn. `None` means assignment failed and plan
     /// 003 must use the `taskkill /PID <pid> /T /F` fallback (SPEC.md §8).
     #[cfg(windows)]
@@ -118,6 +122,7 @@ impl Default for ProjectRuntime {
             logs: LogBuffer::default(),
             user_stop: false,
             child_pid: None,
+            path_searched: None,
             #[cfg(windows)]
             job: None,
         }
@@ -397,14 +402,22 @@ impl LineSplitter {
         for &byte in chunk {
             match byte {
                 b'\r' => {
-                    out.push(self.take_line());
+                    // A `\r` break whose content sanitizes to nothing is a cursor-rewrite artifact,
+                    // not a line: Vite/webpack/next/npm emit `\x1b[2K\r` (or a bare `\r`) once per
+                    // animation frame, and pushing those as empty lines would flood the 100 ms
+                    // batcher and evict the real output from the 500-line ring.
+                    if let Some(line) = self.take_line() {
+                        out.push(line);
+                    }
                     self.pending_cr = true;
                 }
                 b'\n' => {
                     if self.pending_cr && self.buf.is_empty() {
                         // second half of a CRLF — the break was already emitted
                     } else {
-                        out.push(self.take_line());
+                        // A `\n` break DOES emit a genuine blank line: dev servers use them for
+                        // spacing and dropping them would reflow the panel.
+                        out.push(self.take_line().unwrap_or_default());
                     }
                     self.pending_cr = false;
                 }
@@ -417,18 +430,22 @@ impl LineSplitter {
         out
     }
 
-    /// The trailing partial line at EOF (a child that exits without a final newline).
+    /// The trailing partial line at EOF (a child that exits without a final newline). `None` when
+    /// there is nothing buffered, or when what is buffered is escape sequences only.
     pub fn finish(&mut self) -> Option<String> {
-        if self.buf.is_empty() {
-            None
-        } else {
-            Some(self.take_line())
-        }
+        self.take_line()
     }
 
-    fn take_line(&mut self) -> String {
+    /// Drains the buffer and sanitizes it. `None` when the sanitized result is empty — the caller
+    /// decides whether an empty break is meaningful.
+    fn take_line(&mut self) -> Option<String> {
         let bytes = std::mem::take(&mut self.buf);
-        sanitize_line(&String::from_utf8_lossy(&bytes))
+        let line = sanitize_line(&String::from_utf8_lossy(&bytes));
+        if line.is_empty() {
+            None
+        } else {
+            Some(line)
+        }
     }
 }
 
@@ -503,22 +520,77 @@ pub async fn set_status(
 // The live pipeline: two readers -> one batching flusher -> ring buffer + event
 // ---------------------------------------------------------------------------------------------
 
+/// The live pipeline's completion handle. `child.wait()` returns as soon as the process is reaped —
+/// it does not touch the pipes — so up to one full 100 ms flush window of the child's own output is
+/// still in flight at that moment. The exit watcher must [`drain`](LogPipeline::drain) this before
+/// it narrates the exit, for two reasons:
+///
+/// 1. **Ordering**: otherwise `process exited with code 1` and the `crashed` card land *before* the
+///    stderr line that explains them.
+/// 2. **Cross-run corruption**: an undrained flusher outlives its child, so a Run clicked within
+///    ~100 ms of a crash would have the dead run's lines appended to its freshly cleared buffer.
+pub struct LogPipeline {
+    /// Fires when the flusher's channel closes, which happens once both readers have dropped their
+    /// sender AND every queued line has been flushed to the ring buffer.
+    done: tokio::sync::oneshot::Receiver<()>,
+    /// Aborted if the drain times out, so a wedged pipe can never leak into the next run.
+    tasks: Vec<tauri::async_runtime::JoinHandle<()>>,
+}
+
+/// A wedged pipe (an escaped grandchild holding the write end open) must not stall the `crashed`
+/// transition forever.
+pub const LOG_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+
+impl LogPipeline {
+    /// Waits for every reader and the flusher to finish, bounded by [`LOG_DRAIN_TIMEOUT`]. On
+    /// timeout the tasks are aborted and a `system` line says so.
+    pub async fn drain(self, app: &AppHandle, project_id: &str) {
+        let Self { done, tasks } = self;
+        if tokio::time::timeout(LOG_DRAIN_TIMEOUT, done).await.is_err() {
+            for task in &tasks {
+                task.abort();
+            }
+            append_system(
+                app,
+                project_id,
+                "log output did not finish within 2 s — some final lines may be missing \
+                 (a child still holds the pipe open)",
+            )
+            .await;
+        }
+    }
+}
+
 /// Takes stdout and stderr off the child and starts the reader and flusher tasks.
-pub fn attach_log_pipeline(app: &AppHandle, project_id: &str, child: &mut Child) {
+#[must_use = "the exit watcher must drain the pipeline before narrating the exit"]
+pub fn attach_log_pipeline(app: &AppHandle, project_id: &str, child: &mut Child) -> LogPipeline {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<LogLine>();
+    let mut tasks = Vec::new();
 
     if let Some(stdout) = child.stdout.take() {
-        spawn_reader(stdout, Stream::Stdout, tx.clone());
+        tasks.push(spawn_reader(stdout, Stream::Stdout, tx.clone()));
     }
     if let Some(stderr) = child.stderr.take() {
-        spawn_reader(stderr, Stream::Stderr, tx.clone());
+        tasks.push(spawn_reader(stderr, Stream::Stderr, tx.clone()));
     }
     drop(tx); // so the flusher ends when both readers are done
 
-    spawn_flusher(app.clone(), project_id.to_string(), rx);
+    let (done_tx, done) = tokio::sync::oneshot::channel();
+    tasks.push(spawn_flusher(
+        app.clone(),
+        project_id.to_string(),
+        rx,
+        done_tx,
+    ));
+
+    LogPipeline { done, tasks }
 }
 
-fn spawn_reader<R>(reader: R, stream: Stream, tx: UnboundedSender<LogLine>)
+fn spawn_reader<R>(
+    reader: R,
+    stream: Stream,
+    tx: UnboundedSender<LogLine>,
+) -> tauri::async_runtime::JoinHandle<()>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
@@ -541,10 +613,15 @@ where
         if let Some(line) = splitter.finish() {
             let _ = tx.send(LogLine { stream, line });
         }
-    });
+    })
 }
 
-fn spawn_flusher(app: AppHandle, project_id: String, mut rx: UnboundedReceiver<LogLine>) {
+fn spawn_flusher(
+    app: AppHandle,
+    project_id: String,
+    mut rx: UnboundedReceiver<LogLine>,
+    done: tokio::sync::oneshot::Sender<()>,
+) -> tauri::async_runtime::JoinHandle<()> {
     tauri::async_runtime::spawn(async move {
         // Batched: at most one `log-lines` event every 100 ms (SPEC.md §8).
         while let Some(first) = rx.recv().await {
@@ -559,17 +636,51 @@ fn spawn_flusher(app: AppHandle, project_id: String, mut rx: UnboundedReceiver<L
             }
             append_logs(&app, &project_id, cap_batch(batch)).await;
         }
-    });
+        // `recv()` returned None: both readers dropped their sender and everything they produced is
+        // now in the ring buffer. Only here is it safe to declare the run over.
+        let _ = done.send(());
+    })
+}
+
+/// Exit codes that mean "the shell could not find the command", i.e. the tool was not on the PATH
+/// Hangar handed the child.
+///
+/// SPEC.md §12, row "Hangar launched from Dock/Finder on macOS with nvm-managed npm": *"if a tool is
+/// missing anyway, the log line shows the PATH searched"*, and SPEC.md §8: *"If a tool still resolves
+/// to nothing, the error log line must show the PATH that was searched."* This is the realistic
+/// failure — `/bin/sh` itself always exists, so `spawn` succeeds and it is the shell that reports
+/// `npm: command not found` and exits 127. Plans 003/004 must not remove this.
+pub fn is_tool_not_found_exit(code: i32) -> bool {
+    matches!(
+        code,
+        // POSIX sh: 127 = command not found, 126 = found but not executable.
+        126 | 127
+        // cmd.exe: 9009 = "'npm' is not recognized as an internal or external command".
+        | 9009
+    )
 }
 
 /// One task per running project that awaits `child.wait()` — SPEC.md §8 requires that no `Child`
 /// handle is ever abandoned without being waited: this is both the crash trigger and the reaper.
-pub fn spawn_exit_watcher(app: AppHandle, project_id: String, child: Child) {
+///
+/// `pipeline` is the handle from [`attach_log_pipeline`]; it is drained before anything is narrated
+/// so the child's own last words always precede `process exited …` and the `crashed` card.
+pub fn spawn_exit_watcher(
+    app: AppHandle,
+    project_id: String,
+    child: Child,
+    pipeline: LogPipeline,
+) {
     tauri::async_runtime::spawn(async move {
         let mut child = child;
         let result = child.wait().await;
 
-        let (message, exit_note) = match result {
+        // `wait()` only drops stdin and reaps — the readers can still hold unflushed output.
+        pipeline.drain(&app, &project_id).await;
+
+        let exit_code = result.as_ref().ok().and_then(|status| status.code());
+
+        let (message, exit_note) = match &result {
             Ok(status) => match status.code() {
                 Some(code) => (
                     format!("process exited with code {code}"),
@@ -589,6 +700,22 @@ pub fn spawn_exit_watcher(app: AppHandle, project_id: String, child: Child) {
         // The log line lands in the buffer before the status flips, so the panel always explains
         // the card.
         append_system(&app, &project_id, message).await;
+
+        // SPEC.md §8/§12: when the command itself was never found, say what PATH was searched —
+        // this is the nvm/fnm/volta-from-Dock failure the whole §8 environment resolution exists to
+        // prevent, and the user cannot debug it without seeing the PATH.
+        if exit_code.is_some_and(is_tool_not_found_exit) {
+            let path_searched = {
+                let state = app.state::<AppState>();
+                let runtime = state.runtime.lock().await;
+                runtime
+                    .get(&project_id)
+                    .and_then(|entry| entry.path_searched.clone())
+            };
+            if let Some(path) = path_searched {
+                append_system(&app, &project_id, format!("PATH searched: {path}")).await;
+            }
+        }
 
         // SPEC.md §6: a child exit with the user-stop flag NOT set is a crash; with it set it is a
         // clean stop (plan 003 is what sets the flag — at M2 it is always false).
@@ -642,6 +769,27 @@ mod tests {
         let mut splitter = LineSplitter::default();
         let lines = splitter.push(b"10%\r20%\r30%\r");
         assert_eq!(lines, vec!["10%", "20%", "30%"]);
+    }
+
+    #[test]
+    fn an_ansi_cursor_rewrite_before_a_cr_does_not_emit_a_blank_line() {
+        // Vite/webpack/next/npm redraw their status with `\x1b[2K\r` once per animation frame.
+        // Splitting on the raw `\r` before stripping used to turn each frame into an empty line,
+        // flooding the batcher and evicting real output from the 500-line ring.
+        let mut splitter = LineSplitter::default();
+        assert_eq!(splitter.push(b"\x1b[2K\rVITE ready\n"), vec!["VITE ready"]);
+
+        let mut splitter = LineSplitter::default();
+        assert_eq!(
+            splitter.push(b"\x1b[2K\rbuilding\x1b[2K\rdone\n"),
+            vec!["building", "done"]
+        );
+    }
+
+    #[test]
+    fn genuine_blank_lines_from_newlines_are_preserved() {
+        let mut splitter = LineSplitter::default();
+        assert_eq!(splitter.push(b"one\n\ntwo\n"), vec!["one", "", "two"]);
     }
 
     #[test]
@@ -741,6 +889,22 @@ mod tests {
         })
         .unwrap();
         assert_eq!(json, r#"{"stream":"stderr","line":"boom"}"#);
+    }
+
+    #[test]
+    fn command_not_found_exit_codes_trigger_the_path_searched_line() {
+        // SPEC.md §12: "Hangar launched from Dock/Finder on macOS with nvm-managed npm | ... if a
+        // tool is missing anyway, the log line shows the PATH searched". `/bin/sh` always exists, so
+        // this — not a spawn error — is how a missing npm actually surfaces.
+        assert!(is_tool_not_found_exit(127), "sh: command not found");
+        assert!(is_tool_not_found_exit(126), "sh: found but not executable");
+        assert!(is_tool_not_found_exit(9009), "cmd.exe: not recognized");
+
+        // A dev server that really ran and really failed must NOT get a PATH lecture.
+        assert!(!is_tool_not_found_exit(0));
+        assert!(!is_tool_not_found_exit(1));
+        assert!(!is_tool_not_found_exit(2));
+        assert!(!is_tool_not_found_exit(130), "SIGINT via the shell");
     }
 
     #[test]

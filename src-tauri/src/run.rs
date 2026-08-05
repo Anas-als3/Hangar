@@ -117,13 +117,18 @@ pub async fn run_project(app: &AppHandle, project_id: &str) -> Result<(), String
         let mut runtime = state.runtime.lock().await;
         let entry = runtime.entry(project.id.clone()).or_default();
         entry.child_pid = pid;
+        // SPEC.md §8/§12: `/bin/sh` always exists, so the spawn above succeeds even when `npm` does
+        // not — the shell reports "command not found" and exits 127. The exit watcher prints this
+        // PATH in that case; without it, the single most important error message in the app is
+        // missing. See `process::is_tool_not_found_exit`.
+        entry.path_searched = Some(path_searched.clone());
         #[cfg(windows)]
         {
             entry.job = spawned.job;
         }
     }
 
-    process::attach_log_pipeline(app, &project.id, &mut child);
+    let pipeline = process::attach_log_pipeline(app, &project.id, &mut child);
 
     // PLAN 004 OWNS THIS LINE. Ready-detection — dual-stack port polling racing the child's exit,
     // the attempt-counted timeout, the 300 ms grace and opening the browser — is plan 004's scope.
@@ -133,7 +138,7 @@ pub async fn run_project(app: &AppHandle, project_id: &str) -> Result<(), String
 
     // Started last on purpose: an instantly-exiting command must not have its `crashed` transition
     // overwritten by the `running` line above.
-    process::spawn_exit_watcher(app.clone(), project.id.clone(), child);
+    process::spawn_exit_watcher(app.clone(), project.id.clone(), child, pipeline);
 
     Ok(())
 }
