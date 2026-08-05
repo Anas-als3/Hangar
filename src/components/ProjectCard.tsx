@@ -1,11 +1,13 @@
 /**
  * One project card — SPEC.md §11.
  *
- * M1 scope: name, status pill with the port in mono, the time slot, the primary Run/Stop button
- * and the overflow menu. The buttons are deliberately wired to nothing: `run_project` /
- * `stop_project` land in plan 002, the dialogs in plan 005, the phase strip in plan 006.
+ * M2 wires the primary **Run** button and **Show logs**. The Stop button renders but stays
+ * inert: killing a process tree is plan 003, and a half-wired Stop is exactly how half-kill bugs
+ * happen. The other menu entries land with plan 005 (dialogs), the phase strip and the uptime
+ * slot with plan 006.
  */
 import { useEffect, useRef, useState } from "react";
+import { openLogs, startProject } from "../store";
 import type { ProjectView, Status } from "../types";
 
 const STATUS_LABEL: Record<Status, string> = {
@@ -53,6 +55,7 @@ function lastRunLabel(iso: string | undefined): string {
   return `Last run ${days} d ago`;
 }
 
+/** §11 overflow menu. Only "Show logs" is live at M2 — the rest arrive with plans 004/005. */
 const MENU_ITEMS = [
   "Open in browser",
   "Open in editor",
@@ -60,6 +63,8 @@ const MENU_ITEMS = [
   "Edit",
   "Remove",
 ] as const;
+
+const LIVE_MENU_ITEMS: ReadonlySet<(typeof MENU_ITEMS)[number]> = new Set(["Show logs"]);
 
 export function ProjectCard({ project }: { project: ProjectView }) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -116,17 +121,32 @@ export function ProjectCard({ project }: { project: ProjectView }) {
               role="menu"
               className="absolute right-0 z-10 mt-1 w-44 overflow-hidden rounded-md border border-white/10 bg-bg py-1 shadow-lg"
             >
-              {MENU_ITEMS.map((item) => (
-                <button
-                  key={item}
-                  role="menuitem"
-                  type="button"
-                  disabled
-                  className="block w-full cursor-not-allowed px-3 py-1.5 text-left text-sm text-muted opacity-50"
-                >
-                  {item}
-                </button>
-              ))}
+              {MENU_ITEMS.map((item) => {
+                const live = LIVE_MENU_ITEMS.has(item);
+                return (
+                  <button
+                    key={item}
+                    role="menuitem"
+                    type="button"
+                    disabled={!live}
+                    onClick={
+                      live
+                        ? () => {
+                            setMenuOpen(false);
+                            void openLogs(project.id);
+                          }
+                        : undefined
+                    }
+                    className={
+                      live
+                        ? "block w-full px-3 py-1.5 text-left text-sm text-text transition-colors hover:bg-white/5"
+                        : "block w-full cursor-not-allowed px-3 py-1.5 text-left text-sm text-muted opacity-50"
+                    }
+                  >
+                    {item}
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>
@@ -154,6 +174,7 @@ export function ProjectCard({ project }: { project: ProjectView }) {
 
       <footer className="mt-auto flex items-center justify-between gap-3">
         {primaryIsStop ? (
+          // Inert on purpose: plan 003 owns the kill path and wires this button.
           <button
             type="button"
             disabled
@@ -166,6 +187,7 @@ export function ProjectCard({ project }: { project: ProjectView }) {
             type="button"
             disabled={runDisabled}
             title={runDisabled ? "The project folder no longer exists" : undefined}
+            onClick={() => void startProject(project.id)}
             className="rounded-md bg-accent px-5 py-2 text-sm font-semibold text-bg transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
           >
             Run

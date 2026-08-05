@@ -36,6 +36,16 @@ fn main() {
                 settings,
                 load.error,
             ));
+
+            // SPEC.md §8: resolve the login-shell environment ONCE at startup, in the background so
+            // it can never block the window from appearing. A Run that arrives before this finishes
+            // awaits the same resolution rather than racing it (see `DevEnvCell`).
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let state = handle.state::<commands::AppState>();
+                let _ = state.dev_env.get().await;
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -43,6 +53,9 @@ fn main() {
             commands::get_settings,
             commands::set_settings,
             commands::get_registry_error,
+            commands::run_project,
+            commands::get_log_buffer,
+            commands::clear_log_buffer,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,14 +1,17 @@
 /**
  * App shell — SPEC.md §11.
  *
- * M1 scope: header, the corrupt-registry banner, the grid, and the empty state.
- * The Add button and the settings gear open nothing yet (plan 005); the log slide-over is
- * plan 002. Status arrives from one `get_projects()` call — the two §7 event listeners are
- * registered once at startup by plan 002.
+ * Header, the corrupt-registry banner, the grid, the empty state, and (M2) the log slide-over.
+ * The Add button and the settings gear open nothing yet (plan 005).
+ *
+ * Status arrives from one `get_projects()` call plus the `status-changed` event — never polling
+ * (§7). Both event listeners are registered once at startup in `src/main.tsx`, not here and
+ * certainly not in `LogPanel`.
  */
 import { useEffect } from "react";
+import LogPanel from "./components/LogPanel";
 import ProjectGrid from "./components/ProjectGrid";
-import { loadRegistry, useHangarStore } from "./store";
+import { loadRegistry, setToast, useHangarStore } from "./store";
 
 function CorruptRegistryBanner({
   backupPath,
@@ -56,8 +59,28 @@ function EmptyState() {
   );
 }
 
+/** §7: command errors surface as toasts ("errors always say what happened and what to do next"). */
+function Toast({ message }: { message: string }) {
+  return (
+    <div
+      role="alert"
+      className="fixed bottom-6 left-1/2 z-30 flex max-w-[36rem] -translate-x-1/2 items-start gap-4 rounded-md border border-status-danger/40 bg-surface px-4 py-3 text-sm text-text shadow-lg"
+    >
+      <span className="min-w-0">{message}</span>
+      <button
+        type="button"
+        aria-label="Dismiss"
+        onClick={() => setToast(null)}
+        className="shrink-0 text-muted transition-colors hover:text-text"
+      >
+        <span aria-hidden="true">✕</span>
+      </button>
+    </div>
+  );
+}
+
 function App() {
-  const { projects, registryError, loading, loadError } = useHangarStore();
+  const { projects, registryError, loading, loadError, toast } = useHangarStore();
 
   useEffect(() => {
     void loadRegistry();
@@ -109,6 +132,9 @@ function App() {
           <ProjectGrid projects={projects} />
         )}
       </main>
+
+      <LogPanel />
+      {toast && <Toast message={toast} />}
     </div>
   );
 }

@@ -23,3 +23,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # tokio is used for its types only — no runtime is created here (SPEC.md §4).
 tokio = { version = "1", features = ["process", "io-util", "time", "sync", "macros"] }
+
+[target.'cfg(windows)'.dependencies]
+# Job Objects (SPEC.md §4/§8) — justification: `taskkill /T` walks live PPID chains and so cannot
+# guarantee a tree kill; KILL_ON_JOB_CLOSE also reaps every child if Hangar itself dies.
+win32job = "2"

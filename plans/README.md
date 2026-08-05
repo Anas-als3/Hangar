@@ -12,7 +12,7 @@ conditions, and update your row below when done.
 | Plan | Title | Milestone | Priority | Effort | Depends on | Status |
 |------|-------|-----------|----------|--------|------------|--------|
 | 001 | Scaffold, storage, and app shell | M1 | P1 | M | — | DONE |
-| 002 | Spawn, environment resolution, log pipeline | M2 | P1 | L | 001 | TODO |
+| 002 | Spawn, environment resolution, log pipeline | M2 | P1 | L | 001 | DONE |
 | 003 | Guaranteed process-tree kill | M3 | P1 | L | 002 | TODO |
 | 004 | Ready-detection and browser hand-off | M4 | P1 | M | 003 | TODO |
 | 005 | Add / Edit / Remove and settings | M5 | P2 | M | 004 | TODO |
