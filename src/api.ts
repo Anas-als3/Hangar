@@ -1,16 +1,61 @@
 /**
  * The only file that calls `invoke()` (SPEC.md §7, §13). Components import from here.
  *
- * M1 wired the read-only slice of the frozen API; M2 added `run_project`, `get_log_buffer` and
- * `clear_log_buffer`; M3 adds `stop_project`. The rest (`add_project`, `update_project`,
- * `remove_project`, `read_package_json`, `open_in_editor`, `open_in_browser`) are added by
- * plans 004–005 under exactly those names.
+ * M1 wired the read-only slice of the frozen API (plus `get_settings`/`set_settings`); M2 added
+ * `run_project`, `get_log_buffer` and `clear_log_buffer`; M3 added `stop_project`; M4 added
+ * `open_in_browser`. M5 (this plan) adds the rest of §7: `add_project`, `update_project`,
+ * `remove_project`, `read_package_json`, `open_in_editor` — under exactly those names.
  */
 import { invoke } from "@tauri-apps/api/core";
-import type { LogLine, ProjectView, RegistryError, Settings } from "./types";
+import type {
+  LogLine,
+  NewProject,
+  PackageJsonInfo,
+  Project,
+  ProjectView,
+  RegistryError,
+  Settings,
+} from "./types";
 
 export function getProjects(): Promise<ProjectView[]> {
   return invoke<ProjectView[]>("get_projects");
+}
+
+/** §7 `add_project` / §10 — the duplicate-port rejection (naming the owner) happens in Rust. */
+export function addProject(input: NewProject): Promise<ProjectView> {
+  return invoke<ProjectView>("add_project", { input });
+}
+
+/**
+ * §7 `update_project`. Takes the FULL `Project` (id included), not a patch — callers must spread
+ * the project being edited and override only the fields the dialog changed, so `lastLockfileHash`
+ * / `lastRunAt` survive an edit unchanged. Rejected if the project is not `stopped`/`crashed`
+ * (§6) — the caller must confirm-and-stop first (see `stopIfRunningWithConfirm` in `store.ts`).
+ */
+export function updateProject(project: Project): Promise<ProjectView> {
+  return invoke<ProjectView>("update_project", { project });
+}
+
+/** §7 `remove_project` — rejected with a message if status ∉ {stopped, crashed} (§6). */
+export function removeProject(id: string): Promise<void> {
+  return invoke<void>("remove_project", { id });
+}
+
+/**
+ * §7 `read_package_json` — the Add dialog's script list, package-manager detection and port
+ * suggestion (§10 steps 2-4, 6). Never rejects: a missing/unparseable `package.json` comes back
+ * as empty scripts, which is what lets the dialog fall back to manual command + port entry.
+ */
+export function readPackageJson(path: string): Promise<PackageJsonInfo> {
+  return invoke<PackageJsonInfo>("read_package_json", { path });
+}
+
+/**
+ * §7 `open_in_editor` / §10 step 7 — runs `<editorCommand> <path>` through the Rust spawn helper.
+ * A rejection is the "Couldn't run '<editor>' " toast.
+ */
+export function openInEditor(id: string): Promise<void> {
+  return invoke<void>("open_in_editor", { id });
 }
 
 /**

@@ -61,14 +61,19 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_projects,
+            commands::add_project,
+            commands::update_project,
+            commands::remove_project,
             commands::get_settings,
             commands::set_settings,
             commands::get_registry_error,
             commands::run_project,
             commands::stop_project,
             commands::open_in_browser,
+            commands::open_in_editor,
             commands::get_log_buffer,
             commands::clear_log_buffer,
+            commands::read_package_json,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

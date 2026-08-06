@@ -196,12 +196,10 @@ pub async fn apply(
 /// runs the full §8 kill and **waits for verification** before removing/saving."
 ///
 /// This is the backend half of that rule, and the reason it can be trusted: plan 005's
-/// `remove_project` / `update_project` call it *before* touching the registry, so even a frontend
-/// that skipped its confirm dialog cannot mutate a project whose tree is still alive. The confirm
-/// flow itself calls `stop_project` first, which only returns Ok once death is verified.
-// Unused until plan 005 adds `remove_project` / `update_project`; wired and tested now so the rule
-// exists before the commands that must obey it.
-#[allow(dead_code)]
+/// `remove_project` / `update_project` (`commands.rs`) call it *before* touching the registry, so
+/// even a frontend that skipped its confirm dialog cannot mutate a project whose tree is still
+/// alive. The confirm flow itself calls `stop_project` first, which only returns Ok once death is
+/// verified.
 pub fn guard_mutation(status: Status, name: &str) -> Result<(), String> {
     if matches!(status, Status::Stopped | Status::Crashed) {
         Ok(())
@@ -419,6 +417,79 @@ pub async fn open_in_browser(app: &AppHandle, project: &Project) -> Result<(), S
             process::append_system(app, &project.id, message.clone()).await;
             Err(message)
         }
+    }
+}
+
+/// Bounded wait for the editor launcher's own exit (SPEC.md §7 `open_in_editor`). `code`/`subl`/etc.
+/// hand off to an already-running instance (or fork a new one) and return almost immediately, so
+/// this is generous without risking a wedged command hanging the toast.
+const EDITOR_LAUNCH_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Shell-quotes an absolute path for the platform's spawn wrapper (SPEC.md §8: `/bin/sh -c` on
+/// Unix, `cmd /C` on Windows) so a folder name containing a space cannot split it into two
+/// arguments to the editor command.
+#[cfg(unix)]
+fn quote_for_shell(path: &str) -> String {
+    format!("'{}'", path.replace('\'', "'\\''"))
+}
+
+#[cfg(windows)]
+fn quote_for_shell(path: &str) -> String {
+    format!("\"{}\"", path.replace('"', "\"\""))
+}
+
+/// SPEC.md §7 `open_in_editor` / §10 step 7: `<editorCommand> <path>` through the ONE §8 spawn
+/// helper — never a bare `Command`, because `code` is a `.cmd` batch shim on Windows that
+/// `Command::new` cannot execute directly (§8's `cmd /C` wrapping is what makes it runnable).
+///
+/// Not registered as a kill target: the editor is not part of the project's process tree, and an
+/// already-running VS Code just opens a new window and lets its own launcher process exit — this
+/// awaits that exit (bounded by [`EDITOR_LAUNCH_TIMEOUT`]) so the child is still reaped rather than
+/// abandoned (SPEC.md §8), without touching the project's own status or runtime entry.
+pub async fn open_in_editor(app: &AppHandle, project: &Project) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let editor_command = state.settings.lock().await.editor_command.clone();
+    let (env, path_searched) = {
+        let dev_env = state.dev_env.get().await;
+        (dev_env.vars.clone(), dev_env.effective_path())
+    };
+
+    let not_found = format!(
+        "Couldn't run '{editor_command}' — is it on your PATH? Change the editor command in \
+         Settings."
+    );
+
+    let spec = SpawnSpec {
+        command: format!("{editor_command} {}", quote_for_shell(&project.path)),
+        cwd: Some(PathBuf::from(&project.path)),
+        env,
+        extra_env: Vec::new(),
+        long_lived: false,
+        // Bounded by the timeout below rather than left to hang if the launcher is wedged.
+        kill_on_drop: true,
+        shell: ShellKind::Default,
+    };
+
+    let spawned = match process::spawn(&spec) {
+        Ok(spawned) => spawned,
+        Err(e) => return Err(format!("{not_found} ({e})\nPATH searched: {path_searched}")),
+    };
+
+    // SPEC.md §8/§12: `/bin/sh` (or `cmd`) always exists, so `spawn` above succeeds even when the
+    // editor command does not — the shell reports "command not found" and exits 127 (see
+    // `process::is_tool_not_found_exit`). That, not a spawn error, is the realistic failure this
+    // toast exists for.
+    match tokio::time::timeout(EDITOR_LAUNCH_TIMEOUT, spawned.child.wait_with_output()).await {
+        Ok(Ok(output)) => match output.status.code() {
+            Some(code) if process::is_tool_not_found_exit(code) => {
+                Err(format!("{not_found}\nPATH searched: {path_searched}"))
+            }
+            _ => Ok(()),
+        },
+        // A launcher that errors out mid-wait or outlives the timeout has already done its job in
+        // every realistic case (the editor itself detaches); `kill_on_drop` reaps whatever is left
+        // rather than this leaving an abandoned `Child` handle (SPEC.md §8).
+        Ok(Err(_)) | Err(_) => Ok(()),
     }
 }
 
