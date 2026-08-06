@@ -43,6 +43,13 @@ export interface ProjectView extends Project {
 /** §7: `NewProject = Project minus id/lastLockfileHash/lastRunAt`. Used by `add_project` (plan 005). */
 export type NewProject = Omit<Project, "id" | "lastLockfileHash" | "lastRunAt">;
 
+/** §7 `read_package_json` return shape — the Add/Edit dialog's script and port suggestions. */
+export interface PackageJsonInfo {
+  scripts: Record<string, string>;
+  packageManager: "npm" | "pnpm" | "yarn";
+  portSuggestion?: number;
+}
+
 export interface LogLine {
   stream: "stdout" | "stderr" | "system";
   line: string;

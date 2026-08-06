@@ -8,6 +8,7 @@
 //! - unknown JSON fields are ignored, never fatal.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -56,6 +57,44 @@ fn default_update_on_run() -> bool {
 
 fn default_ready_timeout_sec() -> u32 {
     60
+}
+
+/// SPEC.md §7: `NewProject = Project minus id/lastLockfileHash/lastRunAt` — the `add_project`
+/// input. Those three fields are either generated (`id`) or start unset for a project that has
+/// never run (`lastLockfileHash`, `lastRunAt`), so a caller can never supply them.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewProject {
+    pub name: String,
+    pub path: String,
+    pub command: String,
+    pub port: u16,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default = "default_update_on_run")]
+    pub update_on_run: bool,
+    #[serde(default = "default_ready_timeout_sec")]
+    pub ready_timeout_sec: u32,
+}
+
+/// SPEC.md §5 `id: string // nanoid`. No id-generation crate is added for this one call site
+/// (CLAUDE.md: a new dependency needs a one-line justification, and `uuid` is only present here
+/// transitively through Tauri's own dependency tree, with no `v4`/random feature enabled for it) —
+/// a nanosecond timestamp plus a per-process atomic counter is unique enough for a single-machine,
+/// single-process registry with no distributed coordination and no security requirement on the id.
+pub fn generate_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = unix_timestamp_nanos();
+    format!("{nanos:x}-{counter:x}")
+}
+
+fn unix_timestamp_nanos() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0)
 }
 
 /// What the frontend receives. Derived fields are computed here and never persisted (SPEC.md §5).
@@ -260,6 +299,163 @@ pub fn save_settings(dir: &Path, settings: &Settings) -> Result<(), String> {
         .map_err(|e| format!("could not serialize settings: {e}"))?;
     atomic_write(&settings_path(dir), &json)
         .map_err(|e| format!("could not write {SETTINGS_FILE}: {e}"))
+}
+
+// -------------------------------------------------------------------------------------------
+// SPEC.md §10 step 5 — registry validation. Lives here, not only in the Add/Edit dialog, so a
+// frontend that skipped its own check still cannot corrupt the registry (plan 005).
+// -------------------------------------------------------------------------------------------
+
+/// SPEC.md §10 step 5: "no two projects may register the same port — show which project owns
+/// it." `exclude_id` is the project being edited, so it may keep its own port unchanged.
+///
+/// Deliberately does NOT check `path` — SPEC.md §10 step 5 also says two projects **may share a
+/// path** (e.g. `dev` and `storybook` from one repo on different ports); that is allowed and must
+/// never be rejected here.
+pub fn port_conflict<'a>(
+    projects: &'a [Project],
+    port: u16,
+    exclude_id: Option<&str>,
+) -> Option<&'a Project> {
+    projects
+        .iter()
+        .find(|p| p.port == port && Some(p.id.as_str()) != exclude_id)
+}
+
+/// SPEC.md §5: "Ready-check, busy-check, and duplicate-port validation always use `port`,
+/// regardless of `url`. If a provided `url` contains an explicit port different from `port`, show
+/// a non-blocking validation warning." Returns `None` when there is nothing to warn about
+/// (no url, a blank url, or a url with no explicit port at all — `url` is not required to name
+/// one).
+///
+/// Non-blocking by construction: this returns a message, never a `Result`, so nothing that calls
+/// it can accidentally turn it into a rejection.
+pub fn url_port_mismatch_warning(url: Option<&str>, port: u16) -> Option<String> {
+    let url = url?.trim();
+    if url.is_empty() {
+        return None;
+    }
+    let url_port = extract_url_port(url)?;
+    if url_port == port {
+        None
+    } else {
+        Some("URL port differs from the ready-check port.".to_string())
+    }
+}
+
+/// Pulls an explicit `:<port>` out of a URL's authority section, if any. Deliberately not a full
+/// URL parser (no crate is added for one call site) — just enough to find `host:port` between the
+/// scheme and the next `/`, `?` or `#`.
+fn extract_url_port(url: &str) -> Option<u16> {
+    let after_scheme = match url.find("://") {
+        Some(idx) => &url[idx + 3..],
+        None => url,
+    };
+    let authority_end = after_scheme
+        .find(['/', '?', '#'])
+        .unwrap_or(after_scheme.len());
+    let authority = &after_scheme[..authority_end];
+    // rsplit_once so an IPv6 literal's own colons (`[::1]:3000`) don't confuse the split — the
+    // port is always after the LAST colon in the authority.
+    let (_, port_str) = authority.rsplit_once(':')?;
+    port_str.parse::<u16>().ok()
+}
+
+// -------------------------------------------------------------------------------------------
+// SPEC.md §7 `read_package_json` / §10 steps 2-4, 6 — the Add dialog's script/port suggestions.
+// -------------------------------------------------------------------------------------------
+
+/// SPEC.md §7 `read_package_json`'s `packageManager` field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PackageManager {
+    Npm,
+    Pnpm,
+    Yarn,
+}
+
+/// SPEC.md §7 `read_package_json` return shape.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackageJsonInfo {
+    pub scripts: BTreeMap<String, String>,
+    pub package_manager: PackageManager,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port_suggestion: Option<u16>,
+}
+
+/// SPEC.md §9 step 3 / §10 step 3: "the detected package manager (from which lockfile is
+/// present)". `package-lock.json` and "no lockfile at all" both fall through to npm, which is
+/// also §10 step 3's base case ("Command becomes `npm run <script>`").
+pub fn detect_package_manager(dir: &Path) -> PackageManager {
+    if dir.join("pnpm-lock.yaml").is_file() {
+        PackageManager::Pnpm
+    } else if dir.join("yarn.lock").is_file() {
+        PackageManager::Yarn
+    } else {
+        PackageManager::Npm
+    }
+}
+
+/// SPEC.md §10 step 4: "Port field, prefilled by dependency sniffing only: `next` → 3000, `vite`
+/// → 5173, `react-scripts` → 3000, otherwise empty and required. This is a *suggestion*, never
+/// silent magic." Checks both `dependencies` and `devDependencies` — Vite-based projects
+/// typically list `vite` under `devDependencies`, Next/CRA under `dependencies`.
+fn sniff_port_suggestion(package_json: &serde_json::Value) -> Option<u16> {
+    let has_dep = |name: &str| {
+        ["dependencies", "devDependencies"].iter().any(|section| {
+            package_json
+                .get(section)
+                .and_then(|deps| deps.as_object())
+                .is_some_and(|deps| deps.contains_key(name))
+        })
+    };
+
+    if has_dep("next") {
+        Some(3000)
+    } else if has_dep("vite") {
+        Some(5173)
+    } else if has_dep("react-scripts") {
+        Some(3000)
+    } else {
+        None
+    }
+}
+
+/// SPEC.md §7 `read_package_json` / §10 steps 2, 4, 6: "A missing or unparseable `package.json`
+/// is not an error — it returns empty scripts so the dialog falls back to manual command + port
+/// entry." The package-manager detection is independent of `package.json` and still runs off the
+/// lockfiles on disk.
+pub fn read_package_json(dir: &Path) -> PackageJsonInfo {
+    let package_manager = detect_package_manager(dir);
+
+    let parsed = std::fs::read(dir.join("package.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+
+    let Some(package_json) = parsed else {
+        return PackageJsonInfo {
+            scripts: BTreeMap::new(),
+            package_manager,
+            port_suggestion: None,
+        };
+    };
+
+    let scripts = package_json
+        .get("scripts")
+        .and_then(|v| v.as_object())
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+
+    PackageJsonInfo {
+        scripts,
+        package_manager,
+        port_suggestion: sniff_port_suggestion(&package_json),
+    }
 }
 
 #[cfg(test)]
@@ -479,6 +675,16 @@ mod tests {
             backup_path: Some("/tmp/projects.json.broken-123".into()),
             error: "boom".into(),
         };
+        // Plan 005 addition: `read_package_json`'s return shape (SPEC.md §7). `scripts` stays
+        // empty here on purpose: it is a `Record<string, string>` with caller-defined keys (npm
+        // script names), not a fixed set of properties, so `assert_keys_in`'s presence check
+        // (built for named struct fields) cannot be pointed at it the way `project_view`'s fixed
+        // fields are above. `portSuggestion` still exercises its Some/None branch.
+        let package_json_info = PackageJsonInfo {
+            scripts: BTreeMap::new(),
+            package_manager: PackageManager::Pnpm,
+            port_suggestion: Some(5173),
+        };
 
         let samples: Vec<serde_json::Value> = vec![
             serde_json::to_value(&project_view).unwrap(),
@@ -486,6 +692,7 @@ mod tests {
             serde_json::to_value(&log_lines).unwrap(),
             serde_json::to_value(&settings).unwrap(),
             serde_json::to_value(&registry_error).unwrap(),
+            serde_json::to_value(&package_json_info).unwrap(),
         ];
         for sample in &samples {
             assert_keys_in(sample, types_ts);
@@ -510,6 +717,165 @@ mod tests {
                  in src/types.ts"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Plan 005 step 1 — `read_package_json`: lockfile → package-manager detection, dependency
+    // sniffing → port suggestion, and the "missing/unparseable package.json is not an error" rule.
+    // -----------------------------------------------------------------------------------------
+
+    #[test]
+    fn package_manager_is_detected_per_lockfile() {
+        let dir = scratch("pm-npm");
+        std::fs::write(dir.join("package-lock.json"), "{}").unwrap();
+        assert_eq!(detect_package_manager(&dir), PackageManager::Npm);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let dir = scratch("pm-pnpm");
+        std::fs::write(dir.join("pnpm-lock.yaml"), "").unwrap();
+        assert_eq!(detect_package_manager(&dir), PackageManager::Pnpm);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let dir = scratch("pm-yarn");
+        std::fs::write(dir.join("yarn.lock"), "").unwrap();
+        assert_eq!(detect_package_manager(&dir), PackageManager::Yarn);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let dir = scratch("pm-none");
+        assert_eq!(
+            detect_package_manager(&dir),
+            PackageManager::Npm,
+            "no lockfile at all falls back to npm, §10 step 3's base case"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn port_suggestion_is_sniffed_per_dependency() {
+        assert_eq!(
+            sniff_port_suggestion(&serde_json::json!({"dependencies": {"next": "14.0.0"}})),
+            Some(3000)
+        );
+        assert_eq!(
+            sniff_port_suggestion(&serde_json::json!({"devDependencies": {"vite": "5.0.0"}})),
+            Some(5173)
+        );
+        assert_eq!(
+            sniff_port_suggestion(&serde_json::json!({"dependencies": {"react-scripts": "5.0.1"}})),
+            Some(3000)
+        );
+        assert_eq!(
+            sniff_port_suggestion(&serde_json::json!({"dependencies": {"express": "4.0.0"}})),
+            None,
+            "an unrecognised dependency is empty and required, never silent magic (§10 step 4)"
+        );
+        assert_eq!(sniff_port_suggestion(&serde_json::json!({})), None);
+    }
+
+    #[test]
+    fn read_package_json_lists_scripts_and_suggests_a_port() {
+        let dir = scratch("read-pkg");
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{
+                "scripts": { "dev": "vite", "build": "vite build" },
+                "devDependencies": { "vite": "5.0.0" }
+            }"#,
+        )
+        .unwrap();
+
+        let info = read_package_json(&dir);
+        assert_eq!(info.scripts.get("dev"), Some(&"vite".to_string()));
+        assert_eq!(info.scripts.get("build"), Some(&"vite build".to_string()));
+        assert_eq!(info.package_manager, PackageManager::Npm);
+        assert_eq!(info.port_suggestion, Some(5173));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_package_json_is_not_an_error() {
+        let dir = scratch("no-pkg");
+        let info = read_package_json(&dir);
+        assert!(info.scripts.is_empty());
+        assert_eq!(info.port_suggestion, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unparseable_package_json_is_not_an_error() {
+        let dir = scratch("bad-pkg");
+        std::fs::write(dir.join("package.json"), "{ not json at all").unwrap();
+        let info = read_package_json(&dir);
+        assert!(info.scripts.is_empty());
+        assert_eq!(info.port_suggestion, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Plan 005 step 2 — registry validation: duplicate-port rejection, same-path acceptance,
+    // and the non-blocking url-port mismatch warning.
+    // -----------------------------------------------------------------------------------------
+
+    #[test]
+    fn duplicate_port_is_rejected_and_names_the_owner() {
+        let owner = Project {
+            id: "owner".into(),
+            name: "IELTS Coach".into(),
+            ..sample()
+        };
+        let projects = vec![owner.clone()];
+
+        let conflict = port_conflict(&projects, 3000, None);
+        assert_eq!(conflict.map(|p| p.name.as_str()), Some("IELTS Coach"));
+    }
+
+    #[test]
+    fn editing_a_project_may_keep_its_own_port() {
+        let projects = vec![sample()];
+        // `sample()`'s id is "abc123" and its port is 3000 — excluding that same id must not
+        // report a conflict against itself.
+        assert!(port_conflict(&projects, 3000, Some("abc123")).is_none());
+    }
+
+    #[test]
+    fn two_projects_may_share_a_path_on_different_ports() {
+        // SPEC.md §10 step 5: "Two projects may share a path ... allowed, no error." There is no
+        // path-uniqueness check at all — `port_conflict` only ever looks at `port` — so two
+        // projects at the same path with different ports simply never conflict.
+        let dev = Project {
+            id: "dev".into(),
+            port: 3000,
+            ..sample()
+        };
+        let storybook = Project {
+            id: "storybook".into(),
+            port: 6006,
+            path: dev.path.clone(),
+            ..sample()
+        };
+        let projects = vec![dev, storybook];
+        assert!(port_conflict(&projects, 6006, Some("storybook")).is_none());
+        assert!(port_conflict(&projects, 3000, Some("dev")).is_none());
+    }
+
+    #[test]
+    fn url_port_mismatch_warns_without_blocking() {
+        assert_eq!(
+            url_port_mismatch_warning(Some("http://localhost:3001"), 3000),
+            Some("URL port differs from the ready-check port.".to_string())
+        );
+        // Matching port: no warning.
+        assert_eq!(url_port_mismatch_warning(Some("http://localhost:3000"), 3000), None);
+        // No url at all, or a blank one: nothing to warn about.
+        assert_eq!(url_port_mismatch_warning(None, 3000), None);
+        assert_eq!(url_port_mismatch_warning(Some("   "), 3000), None);
+        // A url with no explicit port names nothing to compare against.
+        assert_eq!(url_port_mismatch_warning(Some("http://localhost"), 3000), None);
+        // IPv6 literal: the port is after the LAST colon, not confused by the literal's own.
+        assert_eq!(
+            url_port_mismatch_warning(Some("http://[::1]:3001"), 3000),
+            Some("URL port differs from the ready-check port.".to_string())
+        );
     }
 
     /// Recursively asserts every object key in `value` is declared as a TypeScript property

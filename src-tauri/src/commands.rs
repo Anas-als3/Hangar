@@ -156,6 +156,15 @@ pub async fn get_registry_error(
     Ok(state.registry_error.clone())
 }
 
+/// SPEC.md §7 `read_package_json` — the Add dialog's script list, package-manager detection and
+/// port suggestion (§10 steps 2-4, 6). Never errors: a missing/unparseable `package.json` reads
+/// as empty scripts (see `registry::read_package_json`'s doc comment), which is what lets the
+/// dialog fall back to manual command + port entry.
+#[tauri::command]
+pub async fn read_package_json(path: String) -> Result<registry::PackageJsonInfo, String> {
+    Ok(registry::read_package_json(Path::new(&path)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

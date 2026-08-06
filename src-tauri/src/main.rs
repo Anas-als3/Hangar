@@ -69,6 +69,7 @@ fn main() {
             commands::open_in_browser,
             commands::get_log_buffer,
             commands::clear_log_buffer,
+            commands::read_package_json,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
