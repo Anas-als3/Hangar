@@ -123,15 +123,24 @@ caught and reported the discrepancy — the correct baseline is 67.)
 
 ## Verification gates (every plan, every milestone)
 
-Run from the repo root. All four must exit 0 before a plan is DONE.
+Run from the repo root. All five must exit 0 before a plan is DONE. As of plan
+009, `npm run verify` runs the first, third, fourth and fifth rows in one
+shot (everything except the Windows-target typecheck, which stays a manual
+local step — see the note below); CI (`.github/workflows/ci.yml`) runs
+`verify` on every push/PR plus a Windows job that actually compiles and runs
+the `#[cfg(windows)]` unit tests.
 
-| Purpose | Command | Expected |
-|---|---|---|
-| Rust (host) | `cargo check --manifest-path src-tauri/Cargo.toml` | exit 0, no errors |
-| Rust (Windows paths) | `cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc` | exit 0 — **see note** |
-| Rust unit tests | `cargo test --manifest-path src-tauri/Cargo.toml` | all pass |
-| TypeScript | `npx tsc --noEmit` | exit 0, no errors |
-| Frontend build | `npm run build` | exit 0 |
+| Purpose | npm script (canonical) | Raw command (CI-less contexts) | Expected |
+|---|---|---|---|
+| Rust (host) | `npm run check:rust` | `cargo check --manifest-path src-tauri/Cargo.toml` | exit 0, no errors |
+| Rust (Windows paths) | — (no script; local-only, see note) | `PATH="/opt/homebrew/opt/llvm/bin:$PATH" cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc` | exit 0 — **see note** |
+| Rust unit tests | `npm run test:rust` | `cargo test --manifest-path src-tauri/Cargo.toml` | all pass |
+| TypeScript | `npm run typecheck` | `npx tsc --noEmit` | exit 0, no errors |
+| Frontend build | `npm run build` | `npm run build` | exit 0 |
+| Acceptance tests (§15, ignored by default) | `npm run test:acceptance` | `cargo test --manifest-path src-tauri/Cargo.toml -- --ignored --nocapture --test-threads=1` | all pass — **serial, spawns real node processes** |
+
+Shells without `cargo` on `PATH` (e.g. a fresh non-login shell) need
+`PATH="$HOME/.cargo/bin:$PATH"` prefixed to any of the above.
 
 **Windows-target note (important).** This project is being built on macOS arm64. Rust does
 not compile `#[cfg(windows)]` blocks for the host target, so the Windows half of SPEC.md §8

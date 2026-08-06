@@ -1,0 +1,101 @@
+name: CI
+
+# No Linux job: a Tauri Linux build needs a webkitgtk apt setup that is real
+# work on its own (see plan 009's maintenance notes). Deliberately deferred.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  host:
+    name: host (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run verify (cargo check, cargo test, tsc, frontend build)
+        run: npm run verify
+
+  acceptance:
+    name: acceptance (macOS, serial)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Runners have `node` on PATH, and --test-threads=1 (baked into the
+      # npm script) makes the machine-wide `pgrep` process counting safe on
+      # a fresh runner.
+      - name: Run ignored acceptance tests
+        run: npm run test:acceptance
+
+  windows:
+    name: windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Builds the frontend into dist/, which cargo test may expect to exist
+      # even though it doesn't need to run it (tauri::generate_context! reads
+      # frontendDist at compile time).
+      - name: Build frontend
+        run: npm run build
+
+      # First place the #[cfg(windows)] kill path (Job Object creation,
+      # assignment, TerminateJobObject extern) actually compiles AND runs its
+      # unit tests, not just typechecks. Deliberately not running
+      # test:acceptance here — those tests use pgrep/Unix fixtures.
+      - name: Run cargo test
+        run: cargo test --manifest-path src-tauri/Cargo.toml
