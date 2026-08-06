@@ -78,6 +78,102 @@ pub async fn get_projects(state: State<'_, AppState>) -> Result<Vec<ProjectView>
     Ok(projects.iter().map(|p| to_view(p, &runtime)).collect())
 }
 
+/// SPEC.md §7 `add_project` / §10 steps 1-6. The one place a fresh registry entry is created —
+/// the duplicate-port rejection (§10 step 5) is enforced here, in Rust, so a frontend that skipped
+/// its own check still cannot register a second project on a port already in use.
+#[tauri::command]
+pub async fn add_project(
+    input: registry::NewProject,
+    state: State<'_, AppState>,
+) -> Result<ProjectView, String> {
+    let mut projects = state.projects.lock().await;
+
+    if let Some(owner) = registry::port_conflict(&projects, input.port, None) {
+        return Err(format!(
+            "Port {} is already used by {}.",
+            input.port, owner.name
+        ));
+    }
+
+    let project = Project {
+        id: registry::generate_id(),
+        name: input.name,
+        path: input.path,
+        command: input.command,
+        port: input.port,
+        url: input.url,
+        update_on_run: input.update_on_run,
+        ready_timeout_sec: input.ready_timeout_sec,
+        last_lockfile_hash: None,
+        last_run_at: None,
+    };
+
+    projects.push(project.clone());
+    registry::save_projects(&state.config_dir, &projects)?;
+
+    // A brand-new project has never run, so `stopped` (the runtime map's default for an absent
+    // entry) is the truthful status — no need to touch the runtime lock to prove it.
+    let runtime = state.runtime.lock().await;
+    Ok(to_view(&project, &runtime))
+}
+
+/// SPEC.md §7 `update_project` / §6 / §10 step 7: "Remove/Edit while status ∉ {stopped, crashed}
+/// first shows a confirm ... confirming runs the full §8 kill and waits for verification before
+/// removing/saving." The frontend's confirm dialog already called `stop_project` and awaited its
+/// verified death before calling this — `guard_mutation` here is what makes that real: a frontend
+/// that skipped the confirm (or raced it) cannot save over a project whose tree is still alive.
+#[tauri::command]
+pub async fn update_project(
+    project: Project,
+    state: State<'_, AppState>,
+) -> Result<ProjectView, String> {
+    let mut projects = state.projects.lock().await;
+    let runtime = state.runtime.lock().await;
+
+    let index = projects
+        .iter()
+        .position(|p| p.id == project.id)
+        .ok_or_else(|| format!("no project with id {}", project.id))?;
+
+    let status = runtime
+        .get(&project.id)
+        .map(|r| r.status)
+        .unwrap_or(Status::Stopped);
+    crate::run::guard_mutation(status, &projects[index].name)?;
+
+    if let Some(owner) = registry::port_conflict(&projects, project.port, Some(&project.id)) {
+        return Err(format!(
+            "Port {} is already used by {}.",
+            project.port, owner.name
+        ));
+    }
+
+    projects[index] = project.clone();
+    registry::save_projects(&state.config_dir, &projects)?;
+
+    Ok(to_view(&project, &runtime))
+}
+
+/// SPEC.md §7 `remove_project`: "rejected with a message if status ∉ {stopped, crashed}". Same
+/// `guard_mutation` as `update_project`, for the same reason — see its doc comment.
+#[tauri::command]
+pub async fn remove_project(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let mut projects = state.projects.lock().await;
+    let runtime = state.runtime.lock().await;
+
+    let index = projects
+        .iter()
+        .position(|p| p.id == id)
+        .ok_or_else(|| format!("no project with id {id}"))?;
+
+    let status = runtime.get(&id).map(|r| r.status).unwrap_or(Status::Stopped);
+    crate::run::guard_mutation(status, &projects[index].name)?;
+
+    projects.remove(index);
+    registry::save_projects(&state.config_dir, &projects)?;
+    Ok(())
+}
+
 /// SPEC.md §7: fire-and-forget from the frontend's point of view — all progress arrives via the
 /// `status-changed` and `log-lines` events. The returned error is the toast for a rejected Run
 /// (wrong status, missing folder, spawn failure).
@@ -112,6 +208,25 @@ pub async fn open_in_browser(
             .ok_or_else(|| format!("no project with id {id}"))?
     };
     crate::run::open_in_browser(&app, &project).await
+}
+
+/// SPEC.md §7 `open_in_editor` / §10 step 7. Goes through `run::open_in_editor`, which uses the
+/// ONE §8 spawn helper — never a bare `Command` (`code` is a `.cmd` shim on Windows).
+#[tauri::command]
+pub async fn open_in_editor(
+    id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let project = {
+        let projects = state.projects.lock().await;
+        projects
+            .iter()
+            .find(|p| p.id == id)
+            .cloned()
+            .ok_or_else(|| format!("no project with id {id}"))?
+    };
+    crate::run::open_in_editor(&app, &project).await
 }
 
 /// SPEC.md §8: Rust owns the buffer; the panel backfills from it on open.

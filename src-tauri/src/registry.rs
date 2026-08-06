@@ -330,6 +330,14 @@ pub fn port_conflict<'a>(
 ///
 /// Non-blocking by construction: this returns a message, never a `Result`, so nothing that calls
 /// it can accidentally turn it into a rejection.
+///
+/// Not called from `add_project`/`update_project`: SPEC.md §7 freezes both commands' return type
+/// as `ProjectView`, which has no field for an advisory message, and this warning must never
+/// become a rejection either — wiring it into a `Result<_, String>` command would risk exactly
+/// that the next time someone edits the error path. `AddEditDialog.tsx` mirrors this exact
+/// wording as the user types, live, which is what SPEC.md §5 asks for ("show a non-blocking
+/// validation warning"). This function stays the tested, canonical definition of the rule.
+#[allow(dead_code)]
 pub fn url_port_mismatch_warning(url: Option<&str>, port: u16) -> Option<String> {
     let url = url?.trim();
     if url.is_empty() {
