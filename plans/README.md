@@ -133,7 +133,7 @@ the `#[cfg(windows)]` unit tests.
 | Purpose | npm script (canonical) | Raw command (CI-less contexts) | Expected |
 |---|---|---|---|
 | Rust (host) | `npm run check:rust` | `cargo check --manifest-path src-tauri/Cargo.toml` | exit 0, no errors |
-| Rust (Windows paths) | — (no script; local-only, see note) | `PATH="/opt/homebrew/opt/llvm/bin:$PATH" cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc` | exit 0 — **see note** |
+| Rust (Windows paths) | — (no script; local-only, see note) | `PATH="/opt/homebrew/opt/llvm/bin:$PATH" cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc --all-targets` | exit 0 — **see note** |
 | Rust unit tests | `npm run test:rust` | `cargo test --manifest-path src-tauri/Cargo.toml` | all pass |
 | TypeScript | `npm run typecheck` | `npx tsc --noEmit` | exit 0, no errors |
 | Frontend build | `npm run build` | `npm run build` | exit 0 |
@@ -161,7 +161,7 @@ it keg-only, so run the gate with:
 
 ```sh
 PATH="/opt/homebrew/opt/llvm/bin:$PATH" \
-  cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc
+  cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc --all-targets
 ```
 
 With `llvm-rc` on `PATH` the gate exits 0 and **does** compile our crate. Verified by
@@ -170,6 +170,15 @@ temporarily inserting a deliberate type error inside a `#[cfg(windows)]` fn in
 101, and passed again once removed. Plan 003's executor can therefore trust this gate to
 catch type errors in the Job Object / `raw_arg` / `CREATE_NO_WINDOW` blocks. It still
 cannot *link* or *run* them — see the paragraph below.
+
+**`--all-targets` is required (added by plan 015).** Plain `cargo check --target
+x86_64-pc-windows-msvc` only typechecks the library, not test code — it is blind to
+`#[cfg]` mistakes in `#[test]` functions and their helpers. That is exactly how a Unix-only
+acceptance test missing `#[cfg(unix)]` (`the_orphan_test_leaves_no_node_processes_behind` in
+`src-tauri/src/process.rs`) survived three milestones locally and was only caught when CI's
+`windows` job tried to build the test binary and failed with four `E0425` errors. With
+`--all-targets`, this local gate now reproduces that failure in seconds instead of relying
+on CI to find it.
 
 Nothing on this machine can *execute* the Windows paths. Their runtime correctness is
 explicitly deferred to a human test on a Windows machine (SPEC.md §15 test 3).

@@ -1936,8 +1936,14 @@ My Dev Server.exe                1 Console                    1     45,678 K
     /// - the server spawns a child that **never listens on the port** (an esbuild-service / watcher
     ///   stand-in), so a port-only verification would call this stop a success while it still runs;
     /// - that child **ignores SIGTERM**, so the kill has to escalate to SIGKILL on the group.
+    ///
+    /// Unix only: the fixture and its measurement shell out to `pgrep`/`lsof`, which are the
+    /// SPEC.md §15 measurement and have no Windows equivalent here. This gating is what lets the
+    /// test binary compile on Windows at all — the Windows kill path's own coverage is the
+    /// `#[cfg(windows)]` unit tests, which this allows to compile and run.
     #[test]
     #[ignore]
+    #[cfg(unix)]
     fn the_orphan_test_leaves_no_node_processes_behind() {
         const PORT: u16 = 39117;
 
