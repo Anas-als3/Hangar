@@ -2079,4 +2079,26 @@ http.createServer((_req, res) => res.end('ok')).listen(39117, () => console.log(
         .unwrap();
         assert_eq!(json, r#"{"projectId":"abc","status":"crashed"}"#);
     }
+
+    #[test]
+    fn log_lines_payload_is_camel_case() {
+        let json = serde_json::to_string(&LogLinesPayload {
+            project_id: "abc".into(),
+            lines: vec![
+                LogLine {
+                    stream: Stream::Stdout,
+                    line: "starting".into(),
+                },
+                LogLine {
+                    stream: Stream::Stderr,
+                    line: "warning".into(),
+                },
+            ],
+        })
+        .unwrap();
+        assert_eq!(
+            json,
+            r#"{"projectId":"abc","lines":[{"stream":"stdout","line":"starting"},{"stream":"stderr","line":"warning"}]}"#
+        );
+    }
 }
