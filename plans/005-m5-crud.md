@@ -5,8 +5,11 @@
 > conditions" section occurs, stop and report — do not improvise. When done, update the
 > status row for this plan in `plans/README.md`.
 >
-> **Drift check (run first)**: `plans/README.md` must show 001–004 as DONE and
-> `cargo check --manifest-path src-tauri/Cargo.toml` must exit 0 before you change anything.
+> **Drift check (run first)**: `plans/README.md` must show 001–004 as DONE, and
+> `npm run verify` must exit 0 before you change anything. Also run
+> `git diff --stat 2243d40..HEAD -- src-tauri/src/commands.rs src-tauri/src/registry.rs src/api.ts src/store.ts src/App.tsx src/components/`
+> — on any change, compare the "Current state" section below against the live
+> code; on a mismatch, treat it as a STOP condition.
 
 ## Status
 
@@ -16,6 +19,10 @@
 - **Depends on**: plans/004-m4-ready-browser.md
 - **Category**: dx
 - **Planned at**: commit `e74666e`, 2026-08-05
+- **Reconciled at**: commit `2243d40`, 2026-08-06 — this plan was authored before any
+  code existed. The step-by-step body was written against SPEC.md and is still correct;
+  the "Current state" and "Commands" sections below were refreshed against the real
+  codebase after M1–M4, the CI work (plan 009) and the audit fixes (007/008/015).
 
 ## Why this matters
 
@@ -30,16 +37,52 @@ port verification the same way.
 
 Plans 001–004 produced the scaffold and storage, the spawn helper and log pipeline, the kill
 paths and state machine, and the full run sequence with ready-detection and browser hand-off.
-The Add button in the empty state and the card's overflow menu render but are not wired.
+Verified against the codebase at `2243d40`:
+
+**Already implemented — do NOT rebuild these:**
+- `src-tauri/src/main.rs` registers 10 commands: `get_projects`, `get_settings`,
+  `set_settings`, `get_registry_error`, `run_project`, `stop_project`, `open_in_browser`,
+  `get_log_buffer`, `clear_log_buffer`. **`get_settings`/`set_settings` already exist**
+  (M1) — this plan builds their *dialog*, not the commands.
+- `src/components/ProjectCard.tsx` overflow menu is a `MENU_ITEMS` array of
+  `{ label, action }`; **"Open in browser" and "Show logs" are already wired**. Only
+  "Open in editor", "Edit" and "Remove" have `action: null` and render disabled. Wire
+  those three by giving them actions — do not restructure the array.
+- `src/App.tsx` renders an Add button in both the empty state and the header; both are
+  inert (documented at the top of the file as "open nothing yet (plan 005)").
+- `src/components/AddEditDialog.tsx` and `SettingsDialog.tsx` exist as stubs.
+
+**Things that will bite you if you don't know them:**
+- **Wire-contract tests exist (plan 008).** `src-tauri/src/registry.rs` has
+  `every_wire_key_the_backend_emits_appears_in_types_ts`, which asserts every JSON key the
+  backend emits is declared as a property (`key:` / `key?:`) in `src/types.ts`. When you add
+  §7 payloads (`read_package_json`'s return type, `NewProject`), you MUST add matching
+  declarations to `src/types.ts` AND extend that test's sample list — otherwise the new
+  shapes are simply uncovered. Its maintenance note says exactly this.
+- `src-tauri/src/commands.rs` now has a test module (`to_view` derived-field tests). Keep
+  them passing; `to_view` is what computes `path_exists`.
+- Registry writes currently happen while the `projects` async mutex is held. Plan 010 (TODO)
+  will reshape that to snapshot-then-save. **Match the existing shape** — do not pre-empt
+  010, and do not make it worse by adding more work under the lock.
+- `npm run dev` now means `tauri dev` (plan 009). `npm run dev:web` is bare Vite.
 
 **Read before writing code**: SPEC.md §10 (add/edit/remove flow), §5 (data model, `url`
-semantics, `pathExists`), §7 (frozen command API — `add_project`, `update_project`,
-`remove_project`, `read_package_json`, `open_in_editor`, `get_settings`, `set_settings`),
-§6 (the Remove/Edit-while-running rule), §11 (dialog and settings UI).
+semantics, `pathExists`), §7 (frozen command API — the commands still MISSING are
+`add_project`, `update_project`, `remove_project`, `read_package_json`, `open_in_editor`),
+§6 (the Remove/Edit-while-running rule), §11 (dialog and settings UI — palette, fonts and
+tokens are already defined in `src/index.css`; reuse them, no generic defaults).
 
 ## Commands you will need
 
-See the gate table in `plans/README.md`. All five gates apply.
+| Purpose | Command | Expected on success |
+|---|---|---|
+| Full verify (4 gates in one) | `npm run verify` | exit 0 |
+| Rust tests | `npm run test:rust` | 76 pass, 3 ignored |
+| Acceptance (Unix, serial) | `npm run test:acceptance` | 3 pass |
+| TypeScript | `npm run typecheck` | exit 0 |
+| Windows typecheck (incl. tests) | `PATH="/opt/homebrew/opt/llvm/bin:$PATH" cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc --all-targets` | exit 0 |
+
+`cargo` lives in `~/.cargo/bin`; prefix `PATH="$HOME/.cargo/bin:$PATH"` if not found.
 
 ## Scope
 
@@ -120,7 +163,9 @@ project, click Remove, confirm → process count returns to baseline and the car
 
 ### Step 5: Wire the overflow menu and settings
 
-Per SPEC.md §10 step 7 and §11: Open in browser, Open in editor, Show logs, Edit, Remove.
+Per SPEC.md §10 step 7 and §11. **"Open in browser" and "Show logs" are already wired** —
+give the remaining three (`Open in editor`, `Edit`, `Remove`) actions in the existing
+`MENU_ITEMS` array in `src/components/ProjectCard.tsx`; do not restructure it.
 
 `open_in_editor` runs `<editorCommand> <path>` **through plan 002's spawn helper** (never a
 bare `Command`, which cannot execute `code` on Windows — it is a `.cmd` shim). On failure,
@@ -153,7 +198,10 @@ Manual acceptance tests as in step 6.
 
 ## Done criteria
 
-- [ ] All five gates in `plans/README.md` pass
+- [ ] `npm run verify` exits 0, and `npm run test:acceptance` still reports 3 passed
+- [ ] The Windows typecheck command in the table above exits 0 (it now covers test code)
+- [ ] Every new §7 payload is declared in `src/types.ts` AND added to the sample list in
+      `every_wire_key_the_backend_emits_appears_in_types_ts` (plan 008's guard)
 - [ ] `cargo test` passes with the validation and sniffing tests
 - [ ] §15 test 6 verified manually and reported
 - [ ] A project can be added, run, edited, and removed entirely through the UI
