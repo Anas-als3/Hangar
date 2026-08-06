@@ -25,6 +25,7 @@ conditions, and update your row below when done.
 | 012 | settings.json corruption rescue + atomic_write hardening | — | P2 | S | 010 | TODO |
 | 013 | Restrictive webview CSP | — | P2 | S | — | TODO |
 | 014 | Un-brick stop-failed on foreign port owners | — | P2 | M | 007 | TODO |
+| 015 | Gate the Unix-only orphan test; Windows gate sees test code | — | P1 | S | 009 | DONE (merged) |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
 
