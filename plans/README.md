@@ -17,8 +17,8 @@ conditions, and update your row below when done.
 | 004 | Ready-detection and browser hand-off | M4 | P1 | M | 003 | DONE |
 | 005 | Add / Edit / Remove and settings | M5 | P2 | M | 004 | TODO |
 | 006 | Update-on-run and full UI pass | M6 | P2 | L | 005 | TODO |
-| 007 | Ready-timeout owns its crash — deliver the §9 step 7 toast | — | P1 | S | — | DONE (unmerged — worktree `worktree-agent-a5c6ce3a6ffb691f5`, commit `cad593e`; §15 GUI toast check still unverified) |
-| 008 | Wire-contract tests + types.ts drift guard | — | P1 | S | — | DONE (unmerged — worktree `worktree-agent-a2359d0bf3d5755c8`, commit `d8ec103`) |
+| 007 | Ready-timeout owns its crash — deliver the §9 step 7 toast | — | P1 | S | — | DONE (merged `347b96d`; §15 test 7 verified live) |
+| 008 | Wire-contract tests + types.ts drift guard | — | P1 | S | — | DONE (merged `5f1db9c`) |
 | 009 | Verify entrypoint, CI (incl. Windows job), de-trapped `dev` script | — | P1 | M | — | TODO |
 | 010 | Blocking I/O out from under the async state locks | — | P1 | S | — | TODO |
 | 011 | LineSplitter buffer cap | — | P1 | S | — | TODO |
@@ -66,9 +66,21 @@ one revision round. **Not merged — that is the maintainer's call.**
   one line can silently reintroduce the bug. Closing this properly needs a token type
   only obtainable via the claim; judged over-engineering for one call site. Whoever
   touches `on_ready_timeout` next should re-read this note.
-- **Still unverified**: plan 007 step 5, the manual GUI check (observe the §9 toast in a
-  running app). A subagent cannot drive a native window; the executor reported this
-  honestly rather than fabricating it. Needs a human run of `npm run tauri dev`.
+- **Step 5 VERIFIED by the maintainer, 2026-08-06** (it was open through execution and
+  review — a subagent cannot drive a native window, and the executor reported that
+  honestly rather than fabricating it). Observed in a real `npm run tauri dev` session
+  against a "Timeout Probe" fixture (`node -e 'setInterval(()=>{},1000)'`, port 39999,
+  `readyTimeoutSec: 5`): after ~5 s the card went `crashed` and the toast read, verbatim
+  per SPEC.md §9 step 7:
+
+  > Server didn't answer on port 39999 within 5 s, so it was stopped. If it just needs
+  > longer (e.g. a first cold compile), raise Ready timeout in Edit. Check the log — did
+  > it start on another port? Pin it in Edit.
+
+  Reviewer checked the process half in the same moment: no surviving probe processes,
+  port 39999 free. **This closes SPEC.md §15 test 7 in the real application**, not just
+  in the `a_ready_timeout_kills_the_tree_and_leaves_no_orphans` integration test — the
+  kill-then-report ordering and the user-facing guidance are both confirmed live.
 
 ### 008 execution record (2026-08-06)
 
