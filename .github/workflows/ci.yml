@@ -67,6 +67,12 @@ jobs:
   windows:
     name: windows
     runs-on: windows-latest
+    # Informative, not blocking: macOS is the current development platform
+    # (SPEC.md §15 test 9). This job still compiles and RUNS the #[cfg(windows)]
+    # kill path — Job Objects, TerminateJobObject, the taskkill fallback — and a
+    # red result here is a real finding worth a plan. Flip this back to blocking
+    # when Windows becomes a supported target in earnest.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -92,6 +98,13 @@ jobs:
       # frontendDist at compile time).
       - name: Build frontend
         run: npm run build
+
+      # Cheap, fast check before the full test build below: --all-targets
+      # typechecks test code too, not just the library, so a #[cfg] mistake
+      # (e.g. a Unix-only test missing #[cfg(unix)]) fails here in seconds
+      # with a clear E0425 instead of midway through compiling the test binary.
+      - name: Check (all targets, including tests)
+        run: cargo check --manifest-path src-tauri/Cargo.toml --all-targets
 
       # First place the #[cfg(windows)] kill path (Job Object creation,
       # assignment, TerminateJobObject extern) actually compiles AND runs its
