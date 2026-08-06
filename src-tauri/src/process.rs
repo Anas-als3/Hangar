@@ -274,6 +274,18 @@ impl ProjectRuntime {
         }
     }
 
+    /// Plan 007: the ready-timeout's kill claim. Sets the same `user_stop` flag `claim_stop` sets
+    /// (SPEC.md §6's "someone else owns this exit's announcement") AND hands back the kill target,
+    /// so a timeout kill cannot be started without holding the exit watcher's announcement. Making
+    /// it one call is deliberate: the two halves were separable, and a caller that took the target
+    /// without claiming ownership silently lost the §9 step 7 toast to the watcher's generic
+    /// message — that is exactly the bug this plan exists to fix, and it must not be reintroducible
+    /// by a future edit that calls `take_kill_target` directly from the timeout path.
+    pub fn claim_timeout_kill(&mut self) -> KillTarget {
+        self.user_stop = true;
+        self.take_kill_target()
+    }
+
     /// Everything the kill needs, taken **out** of the runtime map so the async mutex is never held
     /// across the (up to 5 s) kill (SPEC.md §4). `kill_pid` is copied rather than taken: it is the
     /// retry's only handle on the tree and is cleared solely by [`Self::clear_kill_target`].
@@ -1841,6 +1853,39 @@ My Dev Server.exe                1 Console                    1     45,678 K
         entry.clear_kill_target();
         assert_eq!(entry.kill_pid, None);
         assert!(!entry.child_registered);
+    }
+
+    /// Plan 007 (review round): guards the ready-timeout's ownership claim structurally, not just
+    /// as documentation. `claim_timeout_kill` must do BOTH halves — set `user_stop` so the exit
+    /// watcher holds its announcement, AND hand back a usable kill target — or the §9 step 7 toast
+    /// silently loses its race to the watcher's generic message again. A mutation that drops the
+    /// `self.user_stop = true;` line from `claim_timeout_kill` must fail this test.
+    #[test]
+    fn a_timeout_kill_claim_holds_the_exit_watcher() {
+        let (mut entry, _claim) = started_run();
+        let (_exit_tx, exit_rx) = watch::channel(false);
+        entry.register_child(Some(4321), exit_rx, "/usr/bin".to_string());
+        entry.status = Status::Starting;
+
+        // Before the claim: an ordinary exit still reads as an ordinary crash — nothing is held.
+        assert!(
+            !entry.observe_child_exit(),
+            "an unclaimed entry must not hold the watcher — that would mislabel every ordinary crash"
+        );
+
+        let target = entry.claim_timeout_kill();
+
+        // The kill can actually run: the target is not empty.
+        assert_eq!(target.pid, Some(4321), "the timeout kill must have a process group to signal");
+        assert!(target.had_child);
+
+        // The watcher is held: this is the whole point of Plan 007. If `claim_timeout_kill` ever
+        // regresses to taking the target without setting the flag, this goes back to `false` and
+        // the exit watcher announces `crashed` itself, racing out the §9 step 7 toast again.
+        assert!(
+            entry.observe_child_exit(),
+            "claim_timeout_kill must hold the exit watcher's announcement"
+        );
     }
 
     #[test]

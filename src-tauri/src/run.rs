@@ -334,8 +334,15 @@ pub fn timeout_message(port: u16, ready_timeout_sec: u32, death_confirmed: bool)
     if death_confirmed {
         base
     } else {
-        // §8: never silently pretend it stopped.
-        format!("{base} Some of its processes could not be confirmed dead — press Stop to retry.")
+        // §8: never silently pretend it stopped. The status this message rides on is `crashed`,
+        // where §6 refuses Stop and the card shows Run — a "press Stop to retry" would point at a
+        // button that does not exist. What actually happens on the next click is `run_project`'s
+        // §9 step 1 pre-check: it refuses to spawn while the port is still held and names the
+        // process holding it (see `port_owner`), so that is what this tells the user to expect.
+        format!(
+            "{base} Some of its processes could not be confirmed dead. Run will refuse to start \
+             while the port is still held and will name the process holding it."
+        )
     }
 }
 
@@ -455,16 +462,28 @@ async fn on_ready_timeout(app: &AppHandle, project: &Project) {
     .await;
 
     // Taken out of the map before the kill, exactly as `stop_project` does (SPEC.md §4: the async
-    // mutex is never held across a multi-second kill). `take_kill_target` is the same accessor the
-    // Stop path uses, so a timeout kill and a user Stop cannot drift apart — including `had_child`,
-    // which is what stops a lost primitive being reported as a confirmed death.
+    // mutex is never held across a multi-second kill). `claim_timeout_kill` is one call that both
+    // sets the same flag Stop's `claim_stop` sets (SPEC.md §6's "someone else owns this exit's
+    // announcement") and hands back the kill target — under this SAME lock acquisition, no window
+    // between the two halves. With the flag set, the exit watcher's `observe_child_exit()` holds
+    // its announcement instead of racing us to `crashed` with its own generic message, which
+    // leaves the `Trigger::Failed` transition below real (`Starting` -> `Crashed`) — what makes it
+    // emit `status-changed` and deliver the §9 step 7 toast. One call rather than two also closes
+    // off a future edit that takes the target without claiming ownership first.
+    //
+    // Race invariant: if the child already exited and the exit watcher's lock acquisition happens
+    // to land BEFORE this one, the flag is still false when it reads `observe_child_exit()` — it
+    // has already applied `crashed` with its own diagnosis and announced it. Our `apply(...,
+    // Trigger::Failed, ...)` below then finds `from == to == Crashed`, a documented no-op (§6:
+    // "already settled") that emits nothing. That is fine: the watcher's diagnosis was accurate and
+    // was delivered, so there is exactly one `crashed` event either way, never zero.
     let target = {
         let state = app.state::<AppState>();
         let mut runtime = state.runtime.lock().await;
         runtime
             .entry(project.id.clone())
             .or_default()
-            .take_kill_target()
+            .claim_timeout_kill()
     };
 
     kill_then_crash(
@@ -1315,9 +1334,54 @@ mod tests {
         assert!(verified.contains("did it start on another port? Pin it in Edit."));
         assert!(!verified.contains("press Stop to retry"));
 
-        // §8: never silently pretend it stopped.
+        // §8: never silently pretend it stopped. Plan 007: the old wording ("press Stop to retry")
+        // pointed at a button that does not exist — the status here is `crashed`, where §6 refuses
+        // Stop and the card shows Run. The replacement names what Run's own §9 step 1 pre-check
+        // actually does.
         let unverified = timeout_message(3000, 60, false);
-        assert!(unverified.contains("could not be confirmed dead — press Stop to retry."));
+        assert!(unverified.contains(
+            "Run will refuse to start while the port is still held and will name the process \
+             holding it."
+        ));
+        assert!(!unverified.contains("press Stop to retry"));
+    }
+
+    /// Plan 007: the ownership mechanics that make the §9 step 7 toast reach the user, at the
+    /// state-machine level — no live Tauri app needed, same style as
+    /// `the_timeout_kills_the_tree_before_it_says_crashed`.
+    ///
+    /// With `claim_timeout_kill` called (mirrored here as `ChildExit { user_stop: true }`, the
+    /// same flag `claim_stop` sets), the exit watcher holds `Starting` instead of announcing —
+    /// leaving the timeout path's own `Failed` trigger to fire a REAL `Starting -> Crashed`
+    /// transition, which is what makes `apply_with` emit `status-changed` at all. The structural
+    /// guard that this can't be dropped by a future edit lives in process.rs's
+    /// `a_timeout_kill_claim_holds_the_exit_watcher`; this test documents the §6 rows it relies on.
+    #[test]
+    fn claiming_exit_ownership_holds_the_watcher_so_the_timeout_transition_is_real() {
+        // The exit watcher's half: with the flag set, it announces nothing and `Starting` holds.
+        assert_eq!(
+            next_status(Status::Starting, Trigger::ChildExit { user_stop: true }),
+            Ok(Status::Starting)
+        );
+        // The timeout path's half: its own `Failed` trigger is then a real, emitting transition.
+        assert_eq!(
+            next_status(Status::Starting, Trigger::Failed),
+            Ok(Status::Crashed)
+        );
+    }
+
+    /// The documented loser of the race (Plan 007 step 2): if the exit watcher's lock acquisition
+    /// lands before the timeout path claims ownership, the watcher has already diagnosed and
+    /// announced the exit — the timeout path's later `Failed` trigger is then `Crashed -> Crashed`,
+    /// a no-op (`from == to`) that `apply_with` deliberately does not emit. Pinned here as the
+    /// accepted, documented no-toast case: exactly one `crashed` event either way, never zero.
+    #[test]
+    fn without_ownership_the_watchers_announcement_stands_and_the_timeout_transition_is_silent() {
+        assert_eq!(
+            next_status(Status::Starting, Trigger::ChildExit { user_stop: false }),
+            Ok(Status::Crashed)
+        );
+        assert_eq!(next_status(Status::Crashed, Trigger::Failed), Ok(Status::Crashed));
     }
 
     // -----------------------------------------------------------------------------------------
