@@ -155,3 +155,55 @@ pub async fn get_registry_error(
 ) -> Result<Option<RegistryError>, String> {
     Ok(state.registry_error.clone())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::process::ProjectRuntime;
+
+    fn sample_project(path: &str) -> Project {
+        Project {
+            id: "abc123".into(),
+            name: "IELTS Coach".into(),
+            path: path.into(),
+            command: "npm run dev".into(),
+            port: 3000,
+            url: None,
+            update_on_run: true,
+            ready_timeout_sec: 60,
+            last_lockfile_hash: None,
+            last_run_at: None,
+        }
+    }
+
+    #[test]
+    fn a_project_absent_from_the_runtime_map_reads_stopped() {
+        let runtime = RuntimeMap::new();
+        // Deliberately not created — `to_view` must report `pathExists: false` without touching
+        // the filesystem beyond a plain existence check.
+        let missing_path = std::env::temp_dir().join("hangar-commands-test-does-not-exist");
+        let project = sample_project(missing_path.to_str().unwrap());
+
+        let view = to_view(&project, &runtime);
+
+        assert_eq!(view.status, Status::Stopped);
+        assert!(!view.path_exists);
+    }
+
+    #[test]
+    fn a_project_present_in_the_runtime_map_reflects_its_status() {
+        let project = sample_project("/tmp/ielts");
+        let mut runtime = RuntimeMap::new();
+        runtime.insert(
+            project.id.clone(),
+            ProjectRuntime {
+                status: Status::Running,
+                ..ProjectRuntime::default()
+            },
+        );
+
+        let view = to_view(&project, &runtime);
+
+        assert_eq!(view.status, Status::Running);
+    }
+}

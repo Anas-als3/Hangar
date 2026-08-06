@@ -398,4 +398,154 @@ mod tests {
         assert_eq!(load_settings(&dir).editor_command, "subl");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn project_view_flattens_project_and_adds_derived_fields() {
+        let view = ProjectView {
+            project: sample(),
+            status: Status::Running,
+            path_exists: true,
+        };
+        let json = serde_json::to_string(&view).unwrap();
+        assert_eq!(
+            json,
+            concat!(
+                r#"{"id":"abc123","name":"IELTS Coach","path":"/tmp/ielts","command":"npm run dev","port":3000,"#,
+                r#""url":"http://localhost:3000","updateOnRun":true,"readyTimeoutSec":60,"#,
+                r#""lastLockfileHash":"deadbeef","lastRunAt":"2026-08-05T10:00:00Z","#,
+                r#""status":"running","pathExists":true}"#
+            )
+        );
+        assert!(
+            !json.contains("\"project\""),
+            "the flatten must stay flat — no nested project key: got {json}"
+        );
+    }
+
+    #[test]
+    fn registry_error_serializes_backup_path_as_nullable_camel_case() {
+        let with_backup = RegistryError {
+            backup_path: Some("/tmp/projects.json.broken-123".into()),
+            error: "unexpected EOF".into(),
+        };
+        assert_eq!(
+            serde_json::to_string(&with_backup).unwrap(),
+            r#"{"backupPath":"/tmp/projects.json.broken-123","error":"unexpected EOF"}"#
+        );
+
+        // `types.ts` declares `backupPath: string | null` — not optional — so `None` must
+        // serialize as an explicit `null`, never be omitted from the object.
+        let without_backup = RegistryError {
+            backup_path: None,
+            error: "could not read projects.json".into(),
+        };
+        assert_eq!(
+            serde_json::to_string(&without_backup).unwrap(),
+            r#"{"backupPath":null,"error":"could not read projects.json"}"#
+        );
+    }
+
+    /// The §7 contract is frozen and mirrored BY HAND in `src/types.ts`; this test is the only
+    /// thing linking the two sides. It is deliberately key-presence only — exact-shape
+    /// assertions live in the per-struct wire tests above (and in `process.rs`).
+    ///
+    /// Limitation, noted rather than fixed: this only catches Rust-side keys missing from TS. It
+    /// cannot catch TS-side keys the backend never emits — that direction is already protected by
+    /// `tsc --noEmit` failing when the frontend reads a field it never declared.
+    #[test]
+    fn every_wire_key_the_backend_emits_appears_in_types_ts() {
+        let types_ts = include_str!("../../src/types.ts");
+
+        // Every Option = Some, so `skip_serializing_if` fields are present in the sample.
+        let project_view = ProjectView {
+            project: sample(),
+            status: Status::Running,
+            path_exists: true,
+        };
+        let status_changed = crate::process::StatusChangedPayload {
+            project_id: "abc".into(),
+            status: Status::Running,
+            message: Some("boom".into()),
+        };
+        let log_lines = crate::process::LogLinesPayload {
+            project_id: "abc".into(),
+            lines: vec![crate::process::LogLine {
+                stream: crate::process::Stream::Stdout,
+                line: "hi".into(),
+            }],
+        };
+        let settings = Settings::default();
+        let registry_error = RegistryError {
+            backup_path: Some("/tmp/projects.json.broken-123".into()),
+            error: "boom".into(),
+        };
+
+        let samples: Vec<serde_json::Value> = vec![
+            serde_json::to_value(&project_view).unwrap(),
+            serde_json::to_value(&status_changed).unwrap(),
+            serde_json::to_value(&log_lines).unwrap(),
+            serde_json::to_value(&settings).unwrap(),
+            serde_json::to_value(&registry_error).unwrap(),
+        ];
+        for sample in &samples {
+            assert_keys_in(sample, types_ts);
+        }
+
+        // Covers the kebab-case `Status` union separately: its values are strings, not object keys.
+        for status in [
+            Status::Stopped,
+            Status::Updating,
+            Status::Installing,
+            Status::Starting,
+            Status::Running,
+            Status::Stopping,
+            Status::Crashed,
+            Status::StopFailed,
+        ] {
+            let wire = serde_json::to_value(status).unwrap();
+            let wire_str = wire.as_str().expect("Status serializes to a string");
+            assert!(
+                types_ts.contains(wire_str),
+                "Status::{status:?} serializes to {wire_str:?}, which does not appear anywhere \
+                 in src/types.ts"
+            );
+        }
+    }
+
+    /// Recursively asserts every object key in `value` is declared as a TypeScript property
+    /// somewhere in `types_ts`'s source text. Presence-only: it does not check nesting,
+    /// optionality or type.
+    ///
+    /// Deliberately NOT a bare `types_ts.contains(key)`: a short key like `id` or `url` is a
+    /// substring of plenty of unrelated identifiers (`projectId`, `backupPath`'s doc comment,
+    /// …), so a bare substring search can never fail on a renamed short key — it just finds the
+    /// rename hiding inside some other word. Interface properties in this file are always
+    /// written `key: type;` or, for the optional ones, `key?: type;`, so requiring the trailing
+    /// colon anchors the match to an actual property declaration instead.
+    ///
+    /// This does NOT apply to the `Status` union check in the test above: those eight strings
+    /// are string-literal *members* of a type union (`| "stopped" | …`), not object keys, and
+    /// have no `key:` form to anchor on — plain `contains` is correct for them.
+    fn assert_keys_in(value: &serde_json::Value, types_ts: &str) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (key, v) in map {
+                    let declared = types_ts.contains(&format!("{key}:"))
+                        || types_ts.contains(&format!("{key}?:"));
+                    assert!(
+                        declared,
+                        "wire key {key:?} is not declared as a property in src/types.ts — \
+                         the frozen §7 contract and its hand-written mirror have drifted"
+                    );
+                    assert_keys_in(v, types_ts);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for v in items {
+                    assert_keys_in(v, types_ts);
+                }
+            }
+            _ => {}
+        }
+    }
 }
