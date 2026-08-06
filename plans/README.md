@@ -19,7 +19,7 @@ conditions, and update your row below when done.
 | 006 | Update-on-run and full UI pass | M6 | P2 | L | 005 | TODO |
 | 007 | Ready-timeout owns its crash — deliver the §9 step 7 toast | — | P1 | S | — | DONE (merged `347b96d`; §15 test 7 verified live) |
 | 008 | Wire-contract tests + types.ts drift guard | — | P1 | S | — | DONE (merged `5f1db9c`) |
-| 009 | Verify entrypoint, CI (incl. Windows job), de-trapped `dev` script | — | P1 | M | — | TODO |
+| 009 | Verify entrypoint, CI (incl. Windows job), de-trapped `dev` script | — | P1 | M | — | DONE (merged `15bfa69`) |
 | 010 | Blocking I/O out from under the async state locks | — | P1 | S | — | TODO |
 | 011 | LineSplitter buffer cap | — | P1 | S | — | TODO |
 | 012 | settings.json corruption rescue + atomic_write hardening | — | P2 | S | 010 | TODO |
