@@ -806,9 +806,8 @@ impl LockfileKind {
 }
 
 /// SPEC.md §9 step 3: "hash the lockfile (`package-lock.json` | `pnpm-lock.yaml` | `yarn.lock`,
-/// first found)". Pure path logic — the caller does the actual `exists()` check via
-/// [`LockfileKind::install_command`]'s sibling below, kept separate so it is testable without a
-/// real filesystem for the ordering itself.
+/// first found)". The order itself is testable on its own ([`find_lockfile`] below does the actual
+/// `is_file()` check against it).
 pub const LOCKFILE_SEARCH_ORDER: [(&str, LockfileKind); 3] = [
     ("package-lock.json", LockfileKind::Npm),
     ("pnpm-lock.yaml", LockfileKind::Pnpm),
