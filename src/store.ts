@@ -122,6 +122,13 @@ export function setSearch(value: string): void {
   setState({ search: value });
 }
 
+/** Case-insensitive substring match on name, order preserved (SPEC.md §11). */
+export function filterProjects(projects: ProjectView[], search: string): ProjectView[] {
+  const q = search.trim().toLowerCase();
+  if (q === "") return projects;
+  return projects.filter((p) => p.name.toLowerCase().includes(q));
+}
+
 /** One initial fetch at startup. All later status changes arrive via events (§7) — never polling. */
 export async function loadRegistry(): Promise<void> {
   setState({ loading: true, loadError: null });
