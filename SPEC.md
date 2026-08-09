@@ -243,7 +243,7 @@ Steam-library energy, but its own identity — a launch bay for code. Dark, dens
   - colour/opacity transitions on status pills and phase segments when a status actually changes, ≤200 ms;
   - card enter/exit when a project is added or removed.
 
-  Everything else stays still. Still banned: gradients, glassmorphism, confetti, parallax, scroll-linked effects, looping/idle animation (the `stopping` spinner and the amber pulse on transitional statuses are the only loops), and any motion that delays interaction — a control must be usable on the frame it appears.
+  Everything else stays still. Still banned: gradients, glassmorphism, confetti, parallax, scroll-linked effects, looping/idle animation (the `stopping` spinner and the accent pulse on transitional statuses are the only loops), and any motion that delays interaction — a control must be usable on the frame it appears.
 
   Implement with **CSS transitions**, not JS animation loops or animation libraries. This is a performance requirement, not a style preference: the store notifies every subscriber on every log flush, so cards re-render frequently; CSS transitions are unaffected by re-render, JS-driven animation is not. No new dependency for motion (§4).
 
