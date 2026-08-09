@@ -128,6 +128,7 @@ The single source of truth for what is legal. The backend **enforces** it (a com
 
 - `lastRunAt` is set when entering `starting`.
 - Remove/Edit while status ∉ {`stopped`, `crashed`} first shows a confirm ("<name> is running. Stop it first?"); confirming runs the full §8 kill and **waits for verification** before removing/saving.
+  - **Exception — a notes-only change is not guarded** (added 2026-08-09). This rule exists because mutating a project mid-run can break the run itself: changing `port` breaks Stop's port verification, changing `path` or `command` breaks the kill path. §5's `notes` is never parsed or acted on, so a change to it alone provably cannot affect a running project — and notes are written precisely *while* testing one. An update that differs from the stored record in **any** other field is still guarded; the comparison must be structural (compare the records with `notes` normalised out), never a hand-written field list, so a field added later is guarded by default.
 - Exception inside the run sequence: a `git pull` failure during `updating` does **not** crash the run (§9 step 2 — warn and continue). An install failure during `installing` does (§9 step 3).
 
 ## 7. Command API & event contract (FROZEN)
