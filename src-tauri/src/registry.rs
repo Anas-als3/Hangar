@@ -740,6 +740,7 @@ mod tests {
                 r#""url":"http://localhost:3000","updateOnRun":true,"readyTimeoutSec":60,"#,
                 r#""lastLockfileHash":"deadbeef","lastRunAt":"2026-08-05T10:00:00Z","#,
                 r#""notes":"Remember to try the staging flag next time.","#,
+                r#""stack":{"framework":"Next","libraries":["React","Tailwind"],"detectedAt":"2026-08-05T10:00:00Z"},"#,
                 r#""status":"running","pathExists":true}"#
             )
         );
