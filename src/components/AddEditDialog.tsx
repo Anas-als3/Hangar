@@ -67,6 +67,31 @@ export function AddEditDialog() {
 
   if (!isOpen) return null;
 
+  async function handleBrowse() {
+    const selected = await openFolderDialog({ directory: true });
+    if (typeof selected !== "string") return; // cancelled
+    setPath(selected);
+    if (!name.trim()) setName(selected.split(/[\\/]/).filter(Boolean).pop() ?? selected);
+    try {
+      const info = await readPackageJson(selected);
+      setScripts(info.scripts);
+      setPackageManager(info.packageManager);
+      const defaultScript = pickDefaultScript(info.scripts);
+      setSelectedScript(defaultScript);
+      if (defaultScript) setCommand(commandFor(info.packageManager, defaultScript));
+      if (info.portSuggestion !== undefined) setPort(String(info.portSuggestion));
+    } catch {
+      // §10 step 6: no/unparseable package.json falls back to manual command + port entry.
+      setScripts({});
+      setSelectedScript(null);
+    }
+  }
+
+  function handleScriptChange(script: string) {
+    setSelectedScript(script);
+    setCommand(commandFor(packageManager, script));
+  }
+
   return (
     <div className="fixed inset-0 z-20 flex items-center justify-center" role="presentation">
       <div className="absolute inset-0 bg-black/40" onClick={closeDialog} aria-hidden="true" />
