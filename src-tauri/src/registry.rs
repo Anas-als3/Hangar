@@ -609,6 +609,13 @@ mod tests {
             // which would let `every_wire_key_the_backend_emits_appears_in_types_ts` pass while
             // never actually checking that `src/types.ts` declares `notes`.
             notes: Some("Remember to try the staging flag next time.".into()),
+            // Same non-empty-on-purpose reasoning as `notes` above, for `stack` and its nested
+            // `framework`/`libraries`/`detectedAt` keys.
+            stack: Some(ProjectStack {
+                framework: Some("Next".into()),
+                libraries: vec!["React".into(), "Tailwind".into()],
+                detected_at: "2026-08-05T10:00:00Z".into(),
+            }),
         }
     }
 
