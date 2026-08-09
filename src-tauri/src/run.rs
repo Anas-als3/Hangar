@@ -705,33 +705,84 @@ pub async fn run_project(app: &AppHandle, project_id: &str) -> Result<(), String
         });
     }
 
+    // ---- SPEC.md §9 step 3: serialize against any sibling project on the same folder -----------
+    // Held across the phase decision below AND both phases that follow; dropped once `starting`
+    // begins (SPEC.md §9 step 3: "steps 2-3 take a per-canonical-path mutex").
+    let _path_guard = process::lock_project_path(Path::new(&project.path)).await;
+
+    // ---- §8 environment resolution, needed early: the git-repo-check below spawns `git` ---------
+    let (env, path_searched, notes) = {
+        let dev_env = state.dev_env.get().await;
+        (
+            dev_env.vars.clone(),
+            dev_env.effective_path(),
+            dev_env.notes.clone(),
+        )
+    };
+
+    // ---- SPEC.md §9 steps 2-3: decide, once, which phases this run actually performs ------------
+    // Computed under the mutex (so a sibling's just-finished install is visible — the "re-check"
+    // SPEC.md §9 step 3 asks for) and BEFORE the claim below, because §12's "skip pull silently" /
+    // "no lockfile found — skipping install" both mean the corresponding status is never entered
+    // at all — see `Trigger::Run`'s doc.
+    let update_plan = plan_update(&project, &env).await;
+    let install_plan = plan_install(&project);
+    let first_phase = if update_plan == UpdatePlan::Pull {
+        Status::Updating
+    } else if matches!(install_plan, InstallPlan::Run { .. }) {
+        Status::Installing
+    } else {
+        Status::Starting
+    };
+
     // ---- §6 guard + claim, atomically ---------------------------------------------------------
     //
-    // The claim moves the card to `starting`, which is precisely what makes Stop legal (§6). Every
-    // await below therefore runs inside a window where the user can press Stop but there is no
-    // child to kill yet — the `lastRunAt` write, the login-shell environment resolution (a cold
-    // cell shells out with a 5 s budget) and, once plans 004/006 land, the whole pull/install
-    // phase. `spawn_in_flight` is the run sequence's claim on that window: a Stop arriving inside
-    // it parks on this receiver rather than verifying a death that has not happened, and the run
-    // sequence cancels itself the moment it notices (SPEC.md §12, "Stop clicked during
-    // updating/installing/starting").
+    // The claim moves the card into its first real phase, which is precisely what makes Stop legal
+    // (§6). Every await below therefore runs inside a window where the user can press Stop but
+    // there is no child to kill yet. `spawn_in_flight` is the run sequence's claim on that window: a
+    // Stop arriving inside it parks on this receiver rather than verifying a death that has not
+    // happened, and the run sequence cancels itself the moment it notices (SPEC.md §12, "Stop
+    // clicked during updating/installing/starting").
     //
     // The sender is held for the whole body of this function: every return path drops it, which
     // releases a parked Stop even on a path that forgot to.
     let (spawn_claim, spawn_in_flight) = tokio::sync::watch::channel(false);
-    // TODO(seam): `first_phase` is a placeholder — the PLAN 006 SEAM below computes the real value
-    // (SPEC.md §9 steps 2-3 decide it before this claim) and this becomes that computation's result.
-    let first_phase = Status::Starting;
     apply_with(app, &project.id, Trigger::Run(first_phase), None, |entry| {
         entry.begin_run(spawn_in_flight)
     })
     .await
     .map_err(|rejection| rejection.for_project(&project.name))?;
+    for note in notes {
+        process::append_system(app, &project.id, note).await;
+    }
 
-    // PLAN 006 SEAM. SPEC.md §9 steps 2-3 — `updating` (git pull --ff-only) and `installing`
-    // (lockfile hash + npm/pnpm/yarn install), both stoppable, both taking the per-canonical-path
-    // mutex — insert here, between the claim and the spawn below. The §6 machine already treats
-    // both statuses as legal and stoppable; nothing enters them yet.
+    // ---- SPEC.md §9 steps 2-3: run whichever phases were actually planned above -----------------
+    let mut spawn_registered = false;
+    if let ControlFlow::Break(result) = advance_through_update(
+        app,
+        &project,
+        &env,
+        update_plan,
+        &install_plan,
+        &mut spawn_registered,
+    )
+    .await
+    {
+        return result;
+    }
+    if let ControlFlow::Break(result) = advance_through_install(
+        app,
+        &project,
+        &env,
+        &path_searched,
+        &install_plan,
+        &mut spawn_registered,
+    )
+    .await
+    {
+        return result;
+    }
+    drop(_path_guard);
 
     // ---- §5/§6: lastRunAt is set when entering `starting` -------------------------------------
     let started_at = iso8601_utc(SystemTime::now());
@@ -746,26 +797,13 @@ pub async fn run_project(app: &AppHandle, project_id: &str) -> Result<(), String
         process::append_system(app, &project.id, format!("could not save lastRunAt: {e}")).await;
     }
 
-    // ---- §8 environment resolution ------------------------------------------------------------
-    let (env, path_searched, notes) = {
-        let dev_env = state.dev_env.get().await;
-        (
-            dev_env.vars.clone(),
-            dev_env.effective_path(),
-            dev_env.notes.clone(),
-        )
-    };
-    for note in notes {
-        process::append_system(app, &project.id, note).await;
-    }
-
     // ---- §9 step 4: spawn ---------------------------------------------------------------------
     //
-    // Last look before anything is created: a Stop that landed while the environment was resolving
-    // costs zero processes if it is noticed here. `had_child: false` is the honest input to §8
-    // verification — there demonstrably never was a child for this run.
-    if stop_is_pending(app, &project.id).await {
-        return cancel_run(app, &project, KillTarget::default()).await;
+    // Last look before anything is created (SPEC.md §9): a Stop that landed during the phases above
+    // — or while `lastRunAt` was being persisted — costs zero *new* processes if it is noticed here.
+    // `env`/`path_searched` were already resolved above (needed for the git-repo-check).
+    if let Some(result) = bail_if_stop_pending(app, &project, spawn_registered).await {
+        return result;
     }
 
     process::append_system(app, &project.id, format!("$ {}", project.command)).await;
