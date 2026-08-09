@@ -73,6 +73,24 @@ export function AddEditDialog() {
     setReadyTimeoutSec(editing?.readyTimeoutSec ?? 60);
     setStack(editing?.stack);
     setSaving(false);
+    // Plan 025: opening Edit on a project that predates plan 023 (or whose package.json has
+    // changed since) should pick up its stack without forcing a re-browse. `setStack` above
+    // seeds from `editing?.stack` so the dialog renders immediately; this overwrites once the
+    // read resolves. §12: a moved/deleted folder must still open in Edit, so a failed read is
+    // swallowed and whatever stack was already seeded is left alone.
+    let cancelled = false;
+    if (editing?.path) {
+      void readPackageJson(editing.path)
+        .then((info) => {
+          if (!cancelled) setStack(info.stack);
+        })
+        .catch(() => {
+          // no-op: keep the seeded editing?.stack
+        });
+    }
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dialog]);
 
