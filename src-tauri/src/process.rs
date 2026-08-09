@@ -1605,6 +1605,32 @@ pub fn spawn_exit_watcher(
     });
 }
 
+/// The `updating`/`installing` phase children's own reaper (SPEC.md §9 steps 2-3). Unlike
+/// [`spawn_exit_watcher`], it applies no §6 transition — a git-pull or install exit is not
+/// automatically a crash (git failures warn-and-continue; install failures get their own `crashed`
+/// wording) — `run.rs` decides that once it has the exit code via `done`. What it still does,
+/// identically to the dev command's watcher, is reap the child, drain its log pipeline and signal
+/// `exited`. Crucially it runs **detached**: a `run_project` future dropped by the §9 step 2 10 s
+/// git timeout stops awaiting `done`, but this task keeps running and still reaps the child once
+/// the timeout handler's kill lands on it — no zombie, no abandoned `Child` (SPEC.md §8).
+pub fn spawn_phase_reaper(
+    app: AppHandle,
+    project_id: String,
+    child: Child,
+    pipeline: LogPipeline,
+    exited: watch::Sender<bool>,
+    done: tokio::sync::oneshot::Sender<Option<i32>>,
+) {
+    tauri::async_runtime::spawn(async move {
+        let mut child = child;
+        let result = child.wait().await;
+        pipeline.drain(&app, &project_id).await;
+        let exit_code = result.ok().and_then(|status| status.code());
+        let _ = exited.send(true);
+        let _ = done.send(exit_code);
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
