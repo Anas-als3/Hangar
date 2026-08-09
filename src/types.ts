@@ -32,6 +32,8 @@ export interface Project {
   lastLockfileHash?: string;
   /** ISO — set when entering `starting` */
   lastRunAt?: string;
+  /** Free-text scratchpad, user-owned; never parsed or acted on (SPEC.md §5). */
+  notes?: string;
 }
 
 /** What the frontend receives; derived fields are computed by the backend, never persisted. */
