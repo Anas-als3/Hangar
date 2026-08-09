@@ -49,6 +49,10 @@ pub struct Project {
     pub last_lockfile_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_run_at: Option<String>,
+    /// SPEC.md §5: free-text scratchpad, user-owned. Nothing in the app parses
+    /// or acts on it — it exists only to be shown and edited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
 }
 
 fn default_update_on_run() -> bool {
@@ -75,6 +79,10 @@ pub struct NewProject {
     pub update_on_run: bool,
     #[serde(default = "default_ready_timeout_sec")]
     pub ready_timeout_sec: u32,
+    /// SPEC.md §5: free-text scratchpad. A brand-new project has none yet, but the field is
+    /// accepted here (mirroring `Project`) rather than hardcoded to `None` in the command layer.
+    #[serde(default)]
+    pub notes: Option<String>,
 }
 
 /// SPEC.md §5 `id: string // nanoid`. No id-generation crate is added for this one call site
@@ -153,6 +161,7 @@ fn seed_projects() -> Vec<Project> {
         ready_timeout_sec: 60,
         last_lockfile_hash: None,
         last_run_at: None,
+        notes: None,
     }]
 }
 
@@ -494,6 +503,10 @@ mod tests {
             ready_timeout_sec: 60,
             last_lockfile_hash: Some("deadbeef".into()),
             last_run_at: Some("2026-08-05T10:00:00Z".into()),
+            // Non-empty on purpose: `skip_serializing_if` would omit the key entirely for `None`,
+            // which would let `every_wire_key_the_backend_emits_appears_in_types_ts` pass while
+            // never actually checking that `src/types.ts` declares `notes`.
+            notes: Some("Remember to try the staging flag next time.".into()),
         }
     }
 
@@ -617,6 +630,7 @@ mod tests {
                 r#"{"id":"abc123","name":"IELTS Coach","path":"/tmp/ielts","command":"npm run dev","port":3000,"#,
                 r#""url":"http://localhost:3000","updateOnRun":true,"readyTimeoutSec":60,"#,
                 r#""lastLockfileHash":"deadbeef","lastRunAt":"2026-08-05T10:00:00Z","#,
+                r#""notes":"Remember to try the staging flag next time.","#,
                 r#""status":"running","pathExists":true}"#
             )
         );

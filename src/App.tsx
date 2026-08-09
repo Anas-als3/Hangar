@@ -11,6 +11,7 @@
 import { useEffect } from "react";
 import AddEditDialog from "./components/AddEditDialog";
 import LogPanel from "./components/LogPanel";
+import NotesPanel from "./components/NotesPanel";
 import ProjectGrid from "./components/ProjectGrid";
 import SettingsDialog from "./components/SettingsDialog";
 import {
@@ -167,6 +168,7 @@ function App() {
       </main>
 
       <LogPanel />
+      <NotesPanel />
       <AddEditDialog />
       <SettingsDialog />
       {toast && <Toast message={toast} />}

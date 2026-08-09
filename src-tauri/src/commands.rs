@@ -106,6 +106,7 @@ pub async fn add_project(
         ready_timeout_sec: input.ready_timeout_sec,
         last_lockfile_hash: None,
         last_run_at: None,
+        notes: input.notes,
     };
 
     projects.push(project.clone());
@@ -117,11 +118,43 @@ pub async fn add_project(
     Ok(to_view(&project, &runtime))
 }
 
+/// SPEC.md §6 mutation guard vs. §5 notes (plan 020 revision): `guard_mutation` exists because
+/// mutating a *running* project can break the run itself — a changed `port` breaks Stop's port
+/// verification, a changed `path`/`command` breaks the kill path. §5 now defines `notes` as "a
+/// free-text scratchpad, user-owned; never parsed or acted on", so a change that touches only
+/// `notes` provably cannot affect a running project — it is exempt from the guard.
+///
+/// Deliberately not a hand-enumerated field list: normalising `notes` out of both sides and
+/// comparing the rest with the derived `PartialEq` means any other field — including ones a
+/// future plan adds — is covered by the guard automatically, with nothing to remember to update
+/// here.
+fn is_notes_only_change(stored: &Project, incoming: &Project) -> bool {
+    let mut stored = stored.clone();
+    let mut incoming = incoming.clone();
+    stored.notes = None;
+    incoming.notes = None;
+    stored == incoming
+}
+
 /// SPEC.md §7 `update_project` / §6 / §10 step 7: "Remove/Edit while status ∉ {stopped, crashed}
 /// first shows a confirm ... confirming runs the full §8 kill and waits for verification before
 /// removing/saving." The frontend's confirm dialog already called `stop_project` and awaited its
 /// verified death before calling this — `guard_mutation` here is what makes that real: a frontend
 /// that skipped the confirm (or raced it) cannot save over a project whose tree is still alive.
+///
+/// Exception: a notes-only change (see `is_notes_only_change`) skips the guard, so the Notes
+/// slide-over can autosave while a project is running — the whole point of per-project notes is
+/// to record something while or right after testing it (SPEC.md §11).
+///
+/// Pulled out of `update_project` as plain data in, `Result` out — no `State`/`AppHandle` — so
+/// the decision itself is unit-testable without standing up a Tauri app in the test harness.
+fn guard_update(stored: &Project, incoming: &Project, status: Status) -> Result<(), String> {
+    if is_notes_only_change(stored, incoming) {
+        return Ok(());
+    }
+    crate::run::guard_mutation(status, &stored.name)
+}
+
 #[tauri::command]
 pub async fn update_project(
     project: Project,
@@ -139,7 +172,7 @@ pub async fn update_project(
         .get(&project.id)
         .map(|r| r.status)
         .unwrap_or(Status::Stopped);
-    crate::run::guard_mutation(status, &projects[index].name)?;
+    guard_update(&projects[index], &project, status)?;
 
     if let Some(owner) = registry::port_conflict(&projects, project.port, Some(&project.id)) {
         return Err(format!(
@@ -297,6 +330,7 @@ mod tests {
             ready_timeout_sec: 60,
             last_lockfile_hash: None,
             last_run_at: None,
+            notes: None,
         }
     }
 
@@ -329,5 +363,70 @@ mod tests {
         let view = to_view(&project, &runtime);
 
         assert_eq!(view.status, Status::Running);
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Plan 020 revision — `guard_update`: a notes-only `update_project` call bypasses the
+    // running-project guard (SPEC.md §6 vs. §5); any other field change still goes through it.
+    // -----------------------------------------------------------------------------------------
+
+    #[test]
+    fn a_notes_only_change_is_permitted_while_running() {
+        let stored = sample_project("/tmp/ielts");
+        let incoming = Project {
+            notes: Some("tried the staging flag".into()),
+            ..stored.clone()
+        };
+        assert!(guard_update(&stored, &incoming, Status::Running).is_ok());
+    }
+
+    #[test]
+    fn a_change_to_any_other_field_is_still_rejected_while_running() {
+        let stored = sample_project("/tmp/ielts");
+        let incoming = Project {
+            port: 3001,
+            ..stored.clone()
+        };
+        let err = guard_update(&stored, &incoming, Status::Running)
+            .expect_err("a port change must still be guarded while running");
+        assert!(err.contains("stop it first"), "got {err:?}");
+    }
+
+    #[test]
+    fn both_kinds_of_change_are_permitted_while_stopped() {
+        let stored = sample_project("/tmp/ielts");
+        let notes_only = Project {
+            notes: Some("tried the staging flag".into()),
+            ..stored.clone()
+        };
+        let port_changed = Project {
+            port: 3001,
+            ..stored.clone()
+        };
+        assert!(guard_update(&stored, &notes_only, Status::Stopped).is_ok());
+        assert!(guard_update(&stored, &port_changed, Status::Stopped).is_ok());
+    }
+
+    #[test]
+    fn clearing_notes_back_to_none_still_counts_as_notes_only() {
+        // The Notes panel sends `undefined` (omitted from the wire JSON) for an emptied
+        // textarea, which deserializes as `None` — `Some(..)` -> `None` must be notes-only too,
+        // not just the `None` -> `Some(..)` direction.
+        let stored = Project {
+            notes: Some("old note".into()),
+            ..sample_project("/tmp/ielts")
+        };
+        let incoming = Project {
+            notes: None,
+            ..stored.clone()
+        };
+        assert!(guard_update(&stored, &incoming, Status::Running).is_ok());
+    }
+
+    #[test]
+    fn an_identical_project_is_a_no_op_permitted_while_running() {
+        let stored = sample_project("/tmp/ielts");
+        let incoming = stored.clone();
+        assert!(guard_update(&stored, &incoming, Status::Running).is_ok());
     }
 }
