@@ -53,6 +53,23 @@ pub struct Project {
     /// or acts on it — it exists only to be shown and edited.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
+    /// SPEC.md §5: detected from `package.json` dependencies — app-owned, never hand-edited.
+    /// Refreshed on Add, on Edit, and during the install phase (plan 023). `None` for a project
+    /// added before this field existed, or one whose folder has no `package.json` at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stack: Option<ProjectStack>,
+}
+
+/// SPEC.md §5 `stack` / §7 `read_package_json`'s `stack` field: detected from `package.json`
+/// `dependencies`/`devDependencies` only — no source file is ever parsed (SPEC.md §1, §3; this
+/// plan's "Scope of detection"). App-owned: nothing in the UI can hand-edit it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectStack {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub framework: Option<String>,
+    pub libraries: Vec<String>,
+    pub detected_at: String,
 }
 
 fn default_update_on_run() -> bool {
