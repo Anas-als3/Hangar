@@ -2,7 +2,7 @@
  * App shell — SPEC.md §11.
  *
  * Header, the corrupt-registry banner, the grid, the empty state, and (M2) the log slide-over.
- * The Add button and the settings gear open nothing yet (plan 005).
+ * M5 (this plan) wires the Add buttons and the settings gear to the AddEditDialog/SettingsDialog.
  *
  * Status arrives from one `get_projects()` call plus the `status-changed` event — never polling
  * (§7). Both event listeners are registered once at startup in `src/main.tsx`, not here and
