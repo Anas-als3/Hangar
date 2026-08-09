@@ -187,6 +187,14 @@ export function AddEditDialog() {
           </button>
         </div>
 
+        {/* §5/§11: app-owned, read-only — never an input. Edit dialog only, beneath the path. */}
+        {editing && stack && stack.libraries.length > 0 && (
+          <p className="mt-1.5 text-xs text-muted">
+            {stack.libraries.join(" · ")}
+            <span className="text-muted/60"> · detected {relativeTime(stack.detectedAt)}</span>
+          </p>
+        )}
+
         {Object.keys(scripts).length > 0 && (
           <>
             <label className="mt-5 block text-sm text-muted" htmlFor="project-script">
