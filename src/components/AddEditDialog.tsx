@@ -39,6 +39,10 @@ export function AddEditDialog() {
   const [path, setPath] = useState(editing?.path ?? "");
   const [command, setCommand] = useState(editing?.command ?? "");
   const [port, setPort] = useState(editing ? String(editing.port) : "");
+  // §5 `url`: "shown only in the Edit dialog (placeholder shows the computed default)".
+  const [url, setUrl] = useState(editing?.url ?? "");
+  const [updateOnRun, setUpdateOnRun] = useState(editing?.updateOnRun ?? true);
+  const [readyTimeoutSec, setReadyTimeoutSec] = useState(editing?.readyTimeoutSec ?? 60);
   const [saving, setSaving] = useState(false);
   const [scripts, setScripts] = useState<Record<string, string>>({});
   const [selectedScript, setSelectedScript] = useState<string | null>(null);
@@ -52,6 +56,9 @@ export function AddEditDialog() {
     setPath(editing?.path ?? "");
     setCommand(editing?.command ?? "");
     setPort(editing ? String(editing.port) : "");
+    setUrl(editing?.url ?? "");
+    setUpdateOnRun(editing?.updateOnRun ?? true);
+    setReadyTimeoutSec(editing?.readyTimeoutSec ?? 60);
     setSaving(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dialog]);
