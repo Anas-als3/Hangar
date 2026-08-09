@@ -123,12 +123,17 @@ export function AddEditDialog() {
 
   return (
     <div className="fixed inset-0 z-20 flex items-center justify-center" role="presentation">
-      <div className="absolute inset-0 bg-black/40" onClick={closeDialog} aria-hidden="true" />
+      {/* §11 enter transition: backdrop fades, dialog eases in — enter only, see plan 018. */}
+      <div
+        className="hangar-fade-in absolute inset-0 bg-black/40"
+        onClick={closeDialog}
+        aria-hidden="true"
+      />
       <div
         role="dialog"
         aria-modal="true"
         aria-label={editing ? `Edit ${editing.name}` : "Add project"}
-        className="relative z-10 max-h-[90vh] w-[min(32rem,92vw)] overflow-y-auto rounded-lg border border-white/10 bg-surface p-6 shadow-2xl"
+        className="hangar-dialog-in relative z-10 max-h-[90vh] w-[min(32rem,92vw)] overflow-y-auto rounded-lg border border-white/10 bg-surface p-6 shadow-2xl"
       >
         <h2 className="font-display text-lg font-medium text-text">
           {editing ? "Edit project" : "Add project"}
