@@ -19,6 +19,32 @@
 - **Depends on**: plans/005-m5-crud.md
 - **Category**: dx + direction
 - **Planned at**: commit `e74666e`, 2026-08-05
+- **Reconciled at**: commit `3a5c012`, 2026-08-09 — authored before any code existed. The
+  step bodies were written against SPEC.md and remain correct; the integration facts below
+  were verified against the real codebase after M1–M5 and the audit fixes (007–009, 015).
+
+## Integration facts (verified at `3a5c012` — do not re-derive)
+
+- **The insertion point exists and is marked.** `src-tauri/src/run.rs` line ~641 contains a
+  `// PLAN 006 SEAM.` comment inside `run_project`, between the §6 Run claim and the spawn.
+  Steps 1–3 go exactly there. Replace the comment with the real phases.
+- **§6 already supports these statuses.** `next_status` already treats `Updating` and
+  `Installing` as legal, stoppable, and crashable — no state-machine change is needed, and
+  changing it is out of scope. Nothing enters them yet; this plan is what does.
+- **`sha2` is NOT a direct dependency.** §9 step 3 requires SHA-256 lockfile hashing. `sha2`
+  is present in `Cargo.lock` transitively (via tauri) but must be added to
+  `src-tauri/Cargo.toml` to be used directly. CLAUDE.md requires a one-line justification
+  comment at the dependency, in the style of the existing `libc` and `win32job` entries.
+- **`PhaseStrip.tsx` is a 7-line stub.** Build it out; do not create a new component.
+- **Plan 008's wire guard**: any new §7 payload must be declared in `src/types.ts` AND added
+  to the sample list in `every_wire_key_the_backend_emits_appears_in_types_ts` in
+  `src-tauri/src/registry.rs`, or the new shape ships untested.
+- **Plan 010 (TODO) will reshape registry writes** to snapshot-then-save. Match the existing
+  shape when you store the lockfile hash; do not pre-empt 010.
+- **Verification** uses the plan 009 npm scripts: `npm run verify`, `npm run test:rust`,
+  `npm run test:acceptance`, `npm run typecheck`. `cargo` needs
+  `PATH="$HOME/.cargo/bin:$PATH"`. Baseline at `3a5c012`: verify exits 0, 85 tests pass,
+  3 ignored, acceptance 3 passed.
 
 ## Why this matters
 
