@@ -27,6 +27,18 @@ function pickDefaultScript(scripts: Record<string, string>): string | null {
   return keys.length > 0 ? keys[0] : null;
 }
 
+/** §5 `stack.detectedAt`: coarse relative time, same tone as §11's "no ticking seconds" rule. */
+function relativeTime(iso: string): string {
+  const then = Date.parse(iso);
+  if (Number.isNaN(then)) return "unknown time";
+  const minutes = Math.floor((Date.now() - then) / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} h ago`;
+  return `${Math.floor(hours / 24)} d ago`;
+}
+
 export function AddEditDialog() {
   const { dialog } = useHangarStore();
   const editing = dialog?.kind === "edit" ? dialog.project : null;
