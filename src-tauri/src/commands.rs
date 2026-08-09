@@ -145,6 +145,16 @@ fn is_notes_only_change(stored: &Project, incoming: &Project) -> bool {
 /// Exception: a notes-only change (see `is_notes_only_change`) skips the guard, so the Notes
 /// slide-over can autosave while a project is running — the whole point of per-project notes is
 /// to record something while or right after testing it (SPEC.md §11).
+///
+/// Pulled out of `update_project` as plain data in, `Result` out — no `State`/`AppHandle` — so
+/// the decision itself is unit-testable without standing up a Tauri app in the test harness.
+fn guard_update(stored: &Project, incoming: &Project, status: Status) -> Result<(), String> {
+    if is_notes_only_change(stored, incoming) {
+        return Ok(());
+    }
+    crate::run::guard_mutation(status, &stored.name)
+}
+
 #[tauri::command]
 pub async fn update_project(
     project: Project,
@@ -158,13 +168,11 @@ pub async fn update_project(
         .position(|p| p.id == project.id)
         .ok_or_else(|| format!("no project with id {}", project.id))?;
 
-    if !is_notes_only_change(&projects[index], &project) {
-        let status = runtime
-            .get(&project.id)
-            .map(|r| r.status)
-            .unwrap_or(Status::Stopped);
-        crate::run::guard_mutation(status, &projects[index].name)?;
-    }
+    let status = runtime
+        .get(&project.id)
+        .map(|r| r.status)
+        .unwrap_or(Status::Stopped);
+    guard_update(&projects[index], &project, status)?;
 
     if let Some(owner) = registry::port_conflict(&projects, project.port, Some(&project.id)) {
         return Err(format!(
