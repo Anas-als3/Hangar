@@ -555,6 +555,7 @@ pub fn read_package_json(dir: &Path) -> PackageJsonInfo {
             scripts: BTreeMap::new(),
             package_manager,
             port_suggestion: None,
+            stack: detect_stack(&serde_json::Value::Null),
         };
     };
 
@@ -572,6 +573,7 @@ pub fn read_package_json(dir: &Path) -> PackageJsonInfo {
         scripts,
         package_manager,
         port_suggestion: sniff_port_suggestion(&package_json),
+        stack: detect_stack(&package_json),
     }
 }
 
