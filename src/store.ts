@@ -305,3 +305,42 @@ export function openSettingsDialog(): void {
 export function closeDialog(): void {
   setState({ dialog: null });
 }
+
+/** §7 `add_project`. On success, refresh the registry and close the dialog; on rejection, toast. */
+export async function addProjectAction(input: NewProject): Promise<boolean> {
+  try {
+    await addProject(input);
+    await loadRegistry();
+    setState({ dialog: null });
+    return true;
+  } catch (err) {
+    setToast(errorMessage(err));
+    return false;
+  }
+}
+
+/**
+ * §7 `update_project`. Rejected if the project is not `stopped`/`crashed` — callers must run
+ * `stopIfRunningWithConfirm` first (see below).
+ */
+export async function updateProjectAction(project: Project): Promise<boolean> {
+  try {
+    await updateProject(project);
+    await loadRegistry();
+    setState({ dialog: null });
+    return true;
+  } catch (err) {
+    setToast(errorMessage(err));
+    return false;
+  }
+}
+
+/** §7 `remove_project`. Same not-running precondition as update. */
+export async function removeProjectAction(projectId: string): Promise<void> {
+  try {
+    await removeProject(projectId);
+    await loadRegistry();
+  } catch (err) {
+    setToast(errorMessage(err));
+  }
+}
