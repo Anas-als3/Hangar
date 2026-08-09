@@ -30,7 +30,7 @@ conditions, and update your row below when done.
 | 017 | Project search field | — | P3 | S | — | DONE (merged) |
 | 018 | UI polish: the motion §11 now permits + a card visual pass | — | P3 | M | 016 | DONE (merged) |
 | 019 | New palette (graphite/violet) + compact cards | — | P3 | S | — | DONE (merged) |
-| 020 | Per-project notes slide-over + add tile at the end of the grid | — | P3 | M | — | TODO |
+| 020 | Per-project notes slide-over + add tile at the end of the grid | — | P3 | M | — | DONE (merged) |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
 
