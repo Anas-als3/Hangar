@@ -155,6 +155,8 @@ export function ProjectCard({ project }: { project: ProjectView }) {
   const stopping = project.status === "stopping";
   const stopFailed = project.status === "stop-failed";
   const runDisabled = !project.pathExists;
+  // §4/§5: notes are a free-text scratchpad, never parsed — this only checks for presence.
+  const hasNotes = Boolean(project.notes && project.notes.trim() !== "");
   const isRunning = project.status === "running";
   const now = useCoarseNow(isRunning);
   const timeSlot =
@@ -181,13 +183,22 @@ export function ProjectCard({ project }: { project: ProjectView }) {
         <div className="relative" ref={menuRef}>
           <button
             type="button"
-            aria-label={`Actions for ${project.name}`}
+            aria-label={
+              hasNotes ? `Actions for ${project.name} (has notes)` : `Actions for ${project.name}`
+            }
             aria-haspopup="menu"
             aria-expanded={menuOpen}
             onClick={() => setMenuOpen((open) => !open)}
-            className="rounded px-2 py-1 text-muted transition-colors hover:bg-white/5 hover:text-text"
+            className="relative rounded px-2 py-1 text-muted transition-colors hover:bg-white/5 hover:text-text"
           >
             <span aria-hidden="true">⋯</span>
+            {/* §11: a property of the existing control, not a new card element — quiet on purpose. */}
+            {hasNotes && (
+              <span
+                aria-hidden="true"
+                className="absolute right-0.5 top-0.5 size-1.5 rounded-full bg-muted"
+              />
+            )}
           </button>
           {menuOpen && (
             <div
@@ -230,7 +241,21 @@ export function ProjectCard({ project }: { project: ProjectView }) {
         >
           <span aria-hidden="true" className="size-1.5 rounded-full bg-current" />
           <span>{STATUS_LABEL[project.status]}</span>
-          <span className="font-mono text-xs font-medium">:{project.port}</span>
+          {/* §11: the port is the natural click target for the browser — an existing element made
+              actionable, not a new one. Inert text when not running: no dead-looking button. */}
+          {isRunning ? (
+            <button
+              type="button"
+              onClick={() => void openInBrowserAction(project.id)}
+              title={`Open localhost:${project.port} in your browser`}
+              aria-label={`Open ${project.name} in your browser on port ${project.port}`}
+              className="rounded-sm border-0 bg-transparent p-0 font-mono text-xs font-medium text-current underline-offset-2 hover:underline focus-visible:underline"
+            >
+              :{project.port}
+            </button>
+          ) : (
+            <span className="font-mono text-xs font-medium">:{project.port}</span>
+          )}
         </span>
 
         {!project.pathExists && (

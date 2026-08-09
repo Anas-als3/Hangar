@@ -15,13 +15,14 @@ import NotesPanel from "./components/NotesPanel";
 import ProjectGrid from "./components/ProjectGrid";
 import SettingsDialog from "./components/SettingsDialog";
 import {
-  filterProjects,
   loadRegistry,
   openAddDialog,
   openSettingsDialog,
+  runningCount,
   setSearch,
   setToast,
   useHangarStore,
+  visibleProjects,
 } from "./store";
 
 function CorruptRegistryBanner({
@@ -115,10 +116,27 @@ function App() {
     void loadRegistry();
   }, []);
 
+  // SPEC.md §5: pathExists must refresh "at startup, on registry change, and when Run is
+  // clicked". Window focus is the natural "user came back from the browser" moment for a folder
+  // that moved while Hangar sat in the background — no timer, so this never polls.
+  useEffect(() => {
+    const onFocus = () => {
+      void loadRegistry();
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, []);
+
   return (
     <div className="flex min-h-full flex-col bg-bg text-text">
       <header className="flex items-center justify-between border-b border-white/5 px-8 py-5">
-        <h1 className="font-display text-xl font-bold tracking-tight text-text">Hangar</h1>
+        <div className="flex items-center gap-3">
+          <h1 className="font-display text-xl font-bold tracking-tight text-text">Hangar</h1>
+          {/* SPEC.md §11: a quiet aggregate — how many projects are running right now. */}
+          {runningCount(projects) > 0 && (
+            <span className="text-sm text-muted">{runningCount(projects)} running</span>
+          )}
+        </div>
         <div className="flex items-center gap-2">
           {projects.length > 0 && <SearchInput value={search} />}
           <button
@@ -160,10 +178,10 @@ function App() {
           <p className="text-sm text-muted">Loading…</p>
         ) : projects.length === 0 ? (
           <EmptyState />
-        ) : filterProjects(projects, search).length === 0 ? (
+        ) : visibleProjects(projects, search).length === 0 ? (
           <p className="text-sm text-muted">No projects match &quot;{search.trim()}&quot;.</p>
         ) : (
-          <ProjectGrid projects={filterProjects(projects, search)} />
+          <ProjectGrid projects={visibleProjects(projects, search)} />
         )}
       </main>
 

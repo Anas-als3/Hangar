@@ -676,10 +676,12 @@ pub async fn run_project(app: &AppHandle, project_id: &str) -> Result<(), String
     };
 
     if !Path::new(&project.path).exists() {
-        return Err(format!(
+        let message = format!(
             "{} can't run: the folder {} no longer exists.",
             project.name, project.path
-        ));
+        );
+        process::append_system(app, &project.id, message.clone()).await;
+        return Err(message);
     }
 
     // ---- §9 step 1: the port must be free before anything is spawned --------------------------
@@ -692,7 +694,7 @@ pub async fn run_project(app: &AppHandle, project_id: &str) -> Result<(), String
         // user's own terminal, and killing what Hangar did not spawn is exactly what §8 is careful
         // never to claim.
         let owner = process::port_owner(project.port, &env).await;
-        return Err(match owner {
+        let message = match owner {
             Some(owner) => format!(
                 "Port {} is in use by {owner} — is this project running elsewhere?",
                 project.port
@@ -702,7 +704,9 @@ pub async fn run_project(app: &AppHandle, project_id: &str) -> Result<(), String
                 "Port {} is already in use — is this project running elsewhere?",
                 project.port
             ),
-        });
+        };
+        process::append_system(app, &project.id, message.clone()).await;
+        return Err(message);
     }
 
     // ---- §6: fail a double-click fast, before touching the mutex below -------------------------
@@ -717,7 +721,9 @@ pub async fn run_project(app: &AppHandle, project_id: &str) -> Result<(), String
         runtime.get(&project.id).map(|e| e.status).unwrap_or(Status::Stopped)
     };
     if let Err(rejection) = next_status(peeked_status, Trigger::Run(Status::Starting)) {
-        return Err(rejection.for_project(&project.name));
+        let message = rejection.for_project(&project.name);
+        process::append_system(app, &project.id, message.clone()).await;
+        return Err(message);
     }
 
     // ---- SPEC.md §9 step 3: serialize against any sibling project on the same folder -----------
