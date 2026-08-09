@@ -35,6 +35,7 @@ conditions, and update your row below when done.
 | 022 | Visibility fixes: log rejections, search keeps running projects, pathExists refresh, notes indicator, running count | — | P2 | M | — | DONE (merged) |
 | 023 | Project stack detection + framework badge on the card | — | P3 | M | — | DONE (merged) |
 | 024 | Distribution: how to share Hangar (decision plan, mostly not buildable yet) | — | P3 | S-L | 021 | AWAITING MAINTAINER |
+| 025 | Stack backfill: refresh on every Run and on Edit-open, not only after an install | — | P2 | S | 023 | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
 
