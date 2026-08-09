@@ -6,9 +6,10 @@
  */
 import { useEffect, useState } from "react";
 import { getSettings } from "../api";
-import { closeDialog, saveSettingsAction } from "../store";
+import { closeDialog, saveSettingsAction, useHangarStore } from "../store";
 
 export function SettingsDialog() {
+  const { dialog } = useHangarStore();
   const [editorCommand, setEditorCommand] = useState("code");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -33,6 +34,10 @@ export function SettingsDialog() {
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, []);
+
+  // Guard sits after both hooks above — React forbids conditional hooks — same placement
+  // as AddEditDialog's early-return-when-closed guard.
+  if (dialog?.kind !== "settings") return null;
 
   async function handleSave() {
     setSaving(true);
