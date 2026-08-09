@@ -40,6 +40,10 @@ export function AddEditDialog() {
   const [command, setCommand] = useState(editing?.command ?? "");
   const [port, setPort] = useState(editing ? String(editing.port) : "");
   const [saving, setSaving] = useState(false);
+  const [scripts, setScripts] = useState<Record<string, string>>({});
+  const [selectedScript, setSelectedScript] = useState<string | null>(null);
+  const [packageManager, setPackageManager] =
+    useState<PackageJsonInfo["packageManager"]>("npm");
 
   // Re-initialize whenever the dialog target changes (opened for a different project, or
   // switched from Edit back to Add).
