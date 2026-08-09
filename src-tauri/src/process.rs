@@ -1667,6 +1667,59 @@ mod tests {
     }
 
     #[test]
+    fn find_lockfile_falls_back_pnpm_then_yarn_then_none() {
+        let dir = scratch_dir("lockfile-pnpm");
+        std::fs::write(dir.join("pnpm-lock.yaml"), "").unwrap();
+        std::fs::write(dir.join("yarn.lock"), "").unwrap();
+        assert_eq!(find_lockfile(&dir).map(|(k, _)| k), Some(LockfileKind::Pnpm));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let dir = scratch_dir("lockfile-yarn");
+        std::fs::write(dir.join("yarn.lock"), "").unwrap();
+        assert_eq!(find_lockfile(&dir).map(|(k, _)| k), Some(LockfileKind::Yarn));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let dir = scratch_dir("lockfile-none");
+        assert!(find_lockfile(&dir).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hash_lockfile_is_sha256_hex() {
+        let dir = scratch_dir("hash");
+        let file = dir.join("package-lock.json");
+        std::fs::write(&file, b"hello").unwrap();
+        // sha256("hello"), verified against `shasum -a 256` — a well-known test vector.
+        assert_eq!(
+            hash_lockfile(&file).unwrap(),
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn needs_install_covers_all_four_branches() {
+        // (a) lastLockfileHash unset.
+        assert!(needs_install(None, "abc", true));
+        // (b) hash differs from the stored one.
+        assert!(needs_install(Some("old"), "new", true));
+        // (c) node_modules missing, even though the hash matches.
+        assert!(needs_install(Some("abc"), "abc", false));
+        // None of the three: skip.
+        assert!(!needs_install(Some("abc"), "abc", true));
+    }
+
+    #[test]
+    fn interpret_git_check_covers_repo_missing_and_not_repo() {
+        assert_eq!(interpret_git_check(Some(0)), GitAvailability::IsRepo);
+        // `git rev-parse` outside a work tree exits 128.
+        assert_eq!(interpret_git_check(Some(128)), GitAvailability::NotRepo);
+        assert_eq!(interpret_git_check(Some(127)), GitAvailability::GitMissing);
+        assert_eq!(interpret_git_check(Some(126)), GitAvailability::GitMissing);
+        assert_eq!(interpret_git_check(None), GitAvailability::NotRepo);
+    }
+
+    #[test]
     fn strips_color_sequences() {
         assert_eq!(strip_ansi("\x1b[32mready in 300 ms\x1b[0m"), "ready in 300 ms");
         assert_eq!(strip_ansi("\x1b[1;31mERR\x1b[39;49m!"), "ERR!");
