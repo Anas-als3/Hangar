@@ -264,7 +264,9 @@ export function AddEditDialog() {
           </button>
           <button
             type="button"
-            disabled={saving}
+            disabled={saving || !canSave}
+            onClick={() => void handleSave()}
+            title={!canSave ? "Name, folder, command and a valid port are required" : undefined}
             className="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-bg transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {saving ? "Saving…" : "Save"}
