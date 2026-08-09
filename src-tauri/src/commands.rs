@@ -391,4 +391,42 @@ mod tests {
             .expect_err("a port change must still be guarded while running");
         assert!(err.contains("stop it first"), "got {err:?}");
     }
+
+    #[test]
+    fn both_kinds_of_change_are_permitted_while_stopped() {
+        let stored = sample_project("/tmp/ielts");
+        let notes_only = Project {
+            notes: Some("tried the staging flag".into()),
+            ..stored.clone()
+        };
+        let port_changed = Project {
+            port: 3001,
+            ..stored.clone()
+        };
+        assert!(guard_update(&stored, &notes_only, Status::Stopped).is_ok());
+        assert!(guard_update(&stored, &port_changed, Status::Stopped).is_ok());
+    }
+
+    #[test]
+    fn clearing_notes_back_to_none_still_counts_as_notes_only() {
+        // The Notes panel sends `undefined` (omitted from the wire JSON) for an emptied
+        // textarea, which deserializes as `None` — `Some(..)` -> `None` must be notes-only too,
+        // not just the `None` -> `Some(..)` direction.
+        let stored = Project {
+            notes: Some("old note".into()),
+            ..sample_project("/tmp/ielts")
+        };
+        let incoming = Project {
+            notes: None,
+            ..stored.clone()
+        };
+        assert!(guard_update(&stored, &incoming, Status::Running).is_ok());
+    }
+
+    #[test]
+    fn an_identical_project_is_a_no_op_permitted_while_running() {
+        let stored = sample_project("/tmp/ielts");
+        let incoming = stored.clone();
+        assert!(guard_update(&stored, &incoming, Status::Running).is_ok());
+    }
 }
