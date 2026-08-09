@@ -160,13 +160,15 @@ export function ProjectCard({ project }: { project: ProjectView }) {
     lastRunLabel(project.lastRunAt);
 
   return (
-    <article className="hangar-fade-in relative flex flex-col gap-4 rounded-lg border border-white/5 bg-surface p-5 transition-transform duration-150 hover:-translate-y-0.5">
+    <article className="hangar-fade-in relative flex flex-col gap-3 rounded-lg border border-white/5 bg-surface p-5 transition-transform duration-150 hover:-translate-y-0.5">
       <header className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <h2 className="truncate font-display text-lg font-medium text-text">
+          {/* §11 visual pass (plan 018): name is the primary hierarchy element — weight only,
+              still Space Grotesk / same size, no new element. */}
+          <h2 className="truncate font-display text-lg font-bold tracking-tight text-text">
             {project.name}
           </h2>
-          <p className="mt-1 truncate font-mono text-xs text-muted" title={project.path}>
+          <p className="mt-0.5 truncate font-mono text-xs text-muted/80" title={project.path}>
             {project.path}
           </p>
         </div>
