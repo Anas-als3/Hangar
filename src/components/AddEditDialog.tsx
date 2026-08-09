@@ -10,7 +10,7 @@ import { useEffect, useState } from "react";
 import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
 import { readPackageJson } from "../api";
 import { addProjectAction, closeDialog, updateProjectAction, useHangarStore } from "../store";
-import type { PackageJsonInfo } from "../types";
+import type { PackageJsonInfo, ProjectStack } from "../types";
 
 /** §10 step 3: `npm run <script>` / `pnpm run <script>` / `yarn <script>` per package manager. */
 function commandFor(pm: PackageJsonInfo["packageManager"], script: string): string {
