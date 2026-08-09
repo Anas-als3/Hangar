@@ -117,6 +117,7 @@ export function AddEditDialog() {
       url: url.trim() === "" ? undefined : url.trim(),
       updateOnRun,
       readyTimeoutSec,
+      stack,
     };
     const ok = editing
       ? await updateProjectAction({
