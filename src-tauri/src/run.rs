@@ -1065,6 +1065,65 @@ async fn warn_pull_failure(app: &AppHandle, project_id: &str, exit_code: Option<
     }
 }
 
+/// SPEC.md §9 step 2, run once `entry.status` is already `updating` (the caller claimed
+/// `Trigger::Run(Status::Updating)` because `plan` was already known to be [`UpdatePlan::Pull`]).
+/// Advances to whichever phase comes next when done — a pull failure or timeout warns and
+/// continues (SPEC.md §9 step 2), it never crashes the run, so this never returns `Break` for that
+/// reason; it only does when a Stop has claimed the outcome.
+async fn advance_through_update(
+    app: &AppHandle,
+    project: &Project,
+    env: &EnvMap,
+    plan: UpdatePlan,
+    install_plan: &InstallPlan,
+    spawn_registered: &mut bool,
+) -> ControlFlow<Result<(), String>> {
+    if plan == UpdatePlan::GitMissing {
+        process::append_system(app, &project.id, "git not found — skipping update").await;
+    }
+    if plan != UpdatePlan::Pull {
+        return ControlFlow::Continue(());
+    }
+
+    let spec = SpawnSpec {
+        command: "git pull --ff-only".to_string(),
+        cwd: Some(PathBuf::from(&project.path)),
+        env: env.clone(),
+        extra_env: git_pull_env(),
+        long_lived: true,
+        kill_on_drop: false,
+        shell: ShellKind::Default,
+    };
+
+    match tokio::time::timeout(GIT_PULL_TIMEOUT, run_phase_child(app, project, spec, spawn_registered))
+        .await
+    {
+        Ok(Err(result)) => return ControlFlow::Break(result),
+        Ok(Ok(PhaseOutcome::Exited(Some(0)))) => {}
+        Ok(Ok(PhaseOutcome::Exited(code))) => warn_pull_failure(app, &project.id, code).await,
+        Ok(Ok(PhaseOutcome::SpawnFailed(e))) => {
+            process::append_system(
+                app,
+                &project.id,
+                format!("could not start git pull: {e} — continuing without updating"),
+            )
+            .await;
+        }
+        Err(_elapsed) => kill_timed_out_pull(app, project).await,
+    }
+
+    if let Some(result) = bail_if_stop_pending(app, project, *spawn_registered).await {
+        return ControlFlow::Break(result);
+    }
+    let next = if matches!(install_plan, InstallPlan::Run { .. }) {
+        Status::Installing
+    } else {
+        Status::Starting
+    };
+    let _ = apply(app, &project.id, Trigger::PhaseAdvance(next), None).await;
+    ControlFlow::Continue(())
+}
+
 // ---------------------------------------------------------------------------------------------
 // SPEC.md §8 — the Stop sequence: kill the tree, verify death, then the port, then the status
 // ---------------------------------------------------------------------------------------------
