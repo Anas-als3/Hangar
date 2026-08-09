@@ -118,9 +118,41 @@ export function AddEditDialog() {
         />
 
         <p className="mt-5 text-sm text-muted">Folder</p>
-        <p className="mt-1.5 truncate rounded-md border border-white/10 bg-bg px-3 py-2 font-mono text-xs text-text">
-          {path || "No folder selected"}
-        </p>
+        <div className="mt-1.5 flex items-center gap-2">
+          <p
+            className="min-w-0 flex-1 truncate rounded-md border border-white/10 bg-bg px-3 py-2 font-mono text-xs text-text"
+            title={path}
+          >
+            {path || "No folder selected"}
+          </p>
+          <button
+            type="button"
+            onClick={() => void handleBrowse()}
+            className="shrink-0 rounded-md border border-white/10 px-3 py-2 text-sm text-text transition-colors hover:bg-white/5"
+          >
+            Browse…
+          </button>
+        </div>
+
+        {Object.keys(scripts).length > 0 && (
+          <>
+            <label className="mt-5 block text-sm text-muted" htmlFor="project-script">
+              Script
+            </label>
+            <select
+              id="project-script"
+              value={selectedScript ?? ""}
+              onChange={(e) => handleScriptChange(e.target.value)}
+              className="mt-1.5 w-full rounded-md border border-white/10 bg-bg px-3 py-2 text-sm text-text outline-none focus:border-accent"
+            >
+              {Object.entries(scripts).map(([scriptName, scriptCmd]) => (
+                <option key={scriptName} value={scriptName}>
+                  {scriptName} — {scriptCmd}
+                </option>
+              ))}
+            </select>
+          </>
+        )}
 
         <div className="mt-6 flex justify-end gap-2">
           <button
