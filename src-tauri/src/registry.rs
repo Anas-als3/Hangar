@@ -816,6 +816,13 @@ mod tests {
             scripts: BTreeMap::new(),
             package_manager: PackageManager::Pnpm,
             port_suggestion: Some(5173),
+            // Non-empty on purpose — see the `sample()`/`notes` comment above; `framework: None`
+            // here would let `skip_serializing_if` hide the key and defeat the guard.
+            stack: ProjectStack {
+                framework: Some("Vite".into()),
+                libraries: vec!["React".into()],
+                detected_at: "2026-08-05T10:00:00Z".into(),
+            },
         };
 
         let samples: Vec<serde_json::Value> = vec![
