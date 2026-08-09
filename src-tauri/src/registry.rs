@@ -911,6 +911,37 @@ mod tests {
         assert_eq!(sniff_port_suggestion(&serde_json::json!({})), None);
     }
 
+    // -----------------------------------------------------------------------------------------
+    // Plan 023 — stack detection: framework is a first-match ordered list, libraries are a
+    // fixed allow-list iterated in a stable order (never the dependency map's own order).
+    // -----------------------------------------------------------------------------------------
+
+    #[test]
+    fn detects_a_next_project() {
+        let stack = detect_stack(&serde_json::json!({
+            "dependencies": { "next": "14.0.0", "react": "18.2.0" }
+        }));
+        assert_eq!(stack.framework.as_deref(), Some("Next"));
+        assert_eq!(stack.libraries, vec!["React".to_string()]);
+    }
+
+    #[test]
+    fn detects_a_vite_project() {
+        let stack = detect_stack(&serde_json::json!({
+            "devDependencies": { "vite": "5.0.0" },
+            "dependencies": { "vue": "3.4.0" }
+        }));
+        assert_eq!(stack.framework.as_deref(), Some("Vite"));
+        assert_eq!(stack.libraries, vec!["Vue".to_string()]);
+    }
+
+    #[test]
+    fn an_unrecognised_dependency_set_has_no_framework() {
+        let stack = detect_stack(&serde_json::json!({"dependencies": {"express": "4.0.0"}}));
+        assert_eq!(stack.framework, None);
+        assert_eq!(stack.libraries, vec!["Express".to_string()]);
+    }
+
     #[test]
     fn read_package_json_lists_scripts_and_suggests_a_port() {
         let dir = scratch("read-pkg");
