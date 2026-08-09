@@ -1971,6 +1971,36 @@ mod tests {
     }
 
     #[test]
+    fn plan_install_re_reads_after_a_sibling_projects_install_lands() {
+        // SPEC.md §9 step 3: "the project that went first has usually already installed, so the
+        // second should skip". The mechanism is simply that `plan_install` never caches — it
+        // re-reads the hash and `node_modules` fresh on every call, which is what makes the
+        // per-canonical-path mutex's "re-check after acquiring it" meaningful.
+        let dir = std::env::temp_dir().join(format!(
+            "hangar-plan-install-test-{}",
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("package-lock.json"), "{}").unwrap();
+        let hash = process::hash_lockfile(&dir.join("package-lock.json")).unwrap();
+
+        let mut project = project_fixture(None);
+        project.path = dir.to_string_lossy().into_owned();
+        project.last_lockfile_hash = Some(hash);
+
+        // Before the sibling's install: node_modules is missing, so this project still needs one.
+        assert!(matches!(plan_install(&project), InstallPlan::Run { .. }));
+
+        // The sibling project's install lands.
+        std::fs::create_dir_all(dir.join("node_modules")).unwrap();
+
+        // Re-checked: same project, same lockfile hash, but node_modules exists now — up to date.
+        assert!(matches!(plan_install(&project), InstallPlan::UpToDate));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_url_override_is_honoured_but_blank_is_not() {
         assert_eq!(
             project_url(&project_fixture(Some("http://localhost:3000/dashboard"))),
