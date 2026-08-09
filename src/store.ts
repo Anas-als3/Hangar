@@ -92,6 +92,14 @@ function getSnapshot(): HangarState {
   return state;
 }
 
+/**
+ * Looks up a project outside a React render — e.g. from a `ProjectCard` menu action, which the
+ * frozen §7 `MENU_ITEMS` shape (SPEC.md §13) hands only an id, not the full `ProjectView`.
+ */
+export function findProject(id: string): ProjectView | undefined {
+  return state.projects.find((p) => p.id === id);
+}
+
 export function useHangarStore(): HangarState {
   return useSyncExternalStore(subscribe, getSnapshot);
 }
