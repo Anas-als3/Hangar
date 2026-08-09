@@ -61,6 +61,8 @@ export interface HangarState {
   toast: string | null;
   /** Which dialog (add/edit/settings) is open — see `DialogState`. */
   dialog: DialogState;
+  /** Ephemeral header search term (plan 017) — never persisted, filters by name only. */
+  search: string;
 }
 
 let state: HangarState = {
@@ -72,6 +74,7 @@ let state: HangarState = {
   openLogsFor: null,
   toast: null,
   dialog: null,
+  search: "",
 };
 
 const listeners = new Set<() => void>();
@@ -112,6 +115,18 @@ function errorMessage(err: unknown): string {
 
 export function setToast(message: string | null): void {
   setState({ toast: message });
+}
+
+/** Header search box (plan 017) — ephemeral view state, never written to disk. */
+export function setSearch(value: string): void {
+  setState({ search: value });
+}
+
+/** Case-insensitive substring match on name, order preserved (SPEC.md §11). */
+export function filterProjects(projects: ProjectView[], search: string): ProjectView[] {
+  const q = search.trim().toLowerCase();
+  if (q === "") return projects;
+  return projects.filter((p) => p.name.toLowerCase().includes(q));
 }
 
 /** One initial fetch at startup. All later status changes arrive via events (§7) — never polling. */

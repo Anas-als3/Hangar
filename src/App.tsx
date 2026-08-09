@@ -13,7 +13,15 @@ import AddEditDialog from "./components/AddEditDialog";
 import LogPanel from "./components/LogPanel";
 import ProjectGrid from "./components/ProjectGrid";
 import SettingsDialog from "./components/SettingsDialog";
-import { loadRegistry, openAddDialog, openSettingsDialog, setToast, useHangarStore } from "./store";
+import {
+  filterProjects,
+  loadRegistry,
+  openAddDialog,
+  openSettingsDialog,
+  setSearch,
+  setToast,
+  useHangarStore,
+} from "./store";
 
 function CorruptRegistryBanner({
   backupPath,
@@ -82,8 +90,25 @@ function Toast({ message }: { message: string }) {
   );
 }
 
+/** Header search box (plan 017). Hidden by the caller when the registry is empty. */
+function SearchInput({ value }: { value: string }) {
+  return (
+    <input
+      type="search"
+      aria-label="Search projects"
+      placeholder="Search projects"
+      value={value}
+      onChange={(e) => setSearch(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") setSearch("");
+      }}
+      className="rounded-md border border-white/10 bg-bg px-3 py-2 text-sm text-text outline-none focus:border-accent"
+    />
+  );
+}
+
 function App() {
-  const { projects, registryError, loading, loadError, toast } = useHangarStore();
+  const { projects, registryError, loading, loadError, toast, search } = useHangarStore();
 
   useEffect(() => {
     void loadRegistry();
@@ -94,6 +119,7 @@ function App() {
       <header className="flex items-center justify-between border-b border-white/5 px-8 py-5">
         <h1 className="font-display text-xl font-bold tracking-tight text-text">Hangar</h1>
         <div className="flex items-center gap-2">
+          {projects.length > 0 && <SearchInput value={search} />}
           <button
             type="button"
             onClick={openAddDialog}
@@ -133,8 +159,10 @@ function App() {
           <p className="text-sm text-muted">Loading…</p>
         ) : projects.length === 0 ? (
           <EmptyState />
+        ) : filterProjects(projects, search).length === 0 ? (
+          <p className="text-sm text-muted">No projects match &quot;{search.trim()}&quot;.</p>
         ) : (
-          <ProjectGrid projects={projects} />
+          <ProjectGrid projects={filterProjects(projects, search)} />
         )}
       </main>
 
