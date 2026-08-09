@@ -1641,6 +1641,31 @@ pub fn spawn_phase_reaper(
 mod tests {
     use super::*;
 
+    // -------------------------------------------------------------------------------------------
+    // SPEC.md §9 steps 2-3 — the pure parts: lockfile selection/hashing, the install decision,
+    // and the git-check interpretation.
+    // -------------------------------------------------------------------------------------------
+
+    fn scratch_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "hangar-process-test-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create scratch dir");
+        dir
+    }
+
+    #[test]
+    fn find_lockfile_prefers_npm_over_pnpm_and_yarn() {
+        let dir = scratch_dir("lockfile-order");
+        std::fs::write(dir.join("yarn.lock"), "").unwrap();
+        std::fs::write(dir.join("pnpm-lock.yaml"), "").unwrap();
+        std::fs::write(dir.join("package-lock.json"), "{}").unwrap();
+        assert_eq!(find_lockfile(&dir).map(|(k, _)| k), Some(LockfileKind::Npm));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn strips_color_sequences() {
         assert_eq!(strip_ansi("\x1b[32mready in 300 ms\x1b[0m"), "ready in 300 ms");
