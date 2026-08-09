@@ -14,8 +14,9 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -695,6 +696,37 @@ pub fn parse_tasklist_name(stdout: &str, pid: u32) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------------------------
+// SPEC.md §9 step 3 — the per-canonical-path mutex ("Two projects on one repo ... is a legitimate
+// setup ... and without this they would run `git pull` and `npm install` in the same directory
+// simultaneously").
+// ---------------------------------------------------------------------------------------------
+
+/// Deliberately a process-wide static rather than a field on `AppState`: the single-instance
+/// plugin (SPEC.md §4) already guarantees there is exactly one Hangar process per machine, every
+/// `run_project` call goes through this same module, and it keeps this plan's diff to `run.rs` /
+/// `process.rs` / `registry.rs` / `Cargo.toml` rather than also touching `commands.rs`'s state
+/// struct for one coordination primitive with no UI-visible shape.
+static PATH_MUTEXES: LazyLock<StdMutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>> =
+    LazyLock::new(|| StdMutex::new(HashMap::new()));
+
+/// SPEC.md §9 step 3: one mutex per **canonicalized** path, so `/foo` and `/foo/` (or a symlink)
+/// serialize against each other too. Held across both the `updating` and `installing` phases by
+/// the caller; re-checking the lockfile hash after acquiring it (not done here — that is the
+/// caller's job once it holds the guard) is what lets a second project skip a now-redundant
+/// install.
+pub async fn lock_project_path(path: &Path) -> tokio::sync::OwnedMutexGuard<()> {
+    // Canonicalize on a best-effort basis: a path that fails to canonicalize (already gone, a
+    // permissions quirk) still gets a mutex, just keyed on its literal form — worse serialization
+    // in that corner case, never a panic or a skipped lock.
+    let key = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mutex = {
+        let mut mutexes = PATH_MUTEXES.lock().unwrap_or_else(|e| e.into_inner());
+        mutexes.entry(key).or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))).clone()
+    };
+    mutex.lock_owned().await
+}
+
+// ---------------------------------------------------------------------------------------------
 // SPEC.md §9 step 2 — the `updating` phase: is this folder even a git repo?
 // ---------------------------------------------------------------------------------------------
 
@@ -717,7 +749,7 @@ const GIT_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 /// SPEC.md §9 step 2 / §12: decides whether the pull phase should run at all, before anything is
 /// narrated or `updating` is entered — a skipped phase must never flash the status (SPEC.md §12
 /// "Not a git repo | Skip pull silently").
-pub async fn check_git_repo(path: &std::path::Path, env: &EnvMap) -> GitAvailability {
+pub async fn check_git_repo(path: &Path, env: &EnvMap) -> GitAvailability {
     let spec = SpawnSpec {
         command: "git rev-parse --is-inside-work-tree".to_string(),
         cwd: Some(path.to_path_buf()),
@@ -779,7 +811,7 @@ pub const LOCKFILE_SEARCH_ORDER: [(&str, LockfileKind); 3] = [
 
 /// Finds the first lockfile present in `project_dir`, per SPEC.md §9 step 3's fixed search order.
 /// `None` means "no lockfile at all" — SPEC.md §9: "skip hashing and installing entirely".
-pub fn find_lockfile(project_dir: &std::path::Path) -> Option<(LockfileKind, PathBuf)> {
+pub fn find_lockfile(project_dir: &Path) -> Option<(LockfileKind, PathBuf)> {
     LOCKFILE_SEARCH_ORDER.iter().find_map(|(name, kind)| {
         let candidate = project_dir.join(name);
         candidate.is_file().then_some((*kind, candidate))
@@ -788,7 +820,7 @@ pub fn find_lockfile(project_dir: &std::path::Path) -> Option<(LockfileKind, Pat
 
 /// SPEC.md §9 step 3: "SHA-256" of the lockfile's bytes, as a lowercase hex string — the same shape
 /// `Project.last_lockfile_hash` is stored in.
-pub fn hash_lockfile(path: &std::path::Path) -> Result<String, String> {
+pub fn hash_lockfile(path: &Path) -> Result<String, String> {
     use sha2::{Digest, Sha256};
     let bytes = std::fs::read(path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
     let digest = Sha256::digest(&bytes);
