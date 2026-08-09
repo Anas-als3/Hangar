@@ -975,6 +975,31 @@ async fn run_phase_child(
     }
 }
 
+/// SPEC.md §9 step 3: an install failure crashes the run (unlike a pull failure, which never
+/// does). Applies the §6 transition and hands back the `Err` `run_project` returns.
+async fn crash_run(app: &AppHandle, project_id: &str, message: String) -> ControlFlow<Result<(), String>> {
+    let _ = apply_with(app, project_id, Trigger::Failed, Some(message.clone()), |_| {}).await;
+    ControlFlow::Break(Err(message))
+}
+
+/// SPEC.md §9 step 3: "Store the new hash only after success." Same snapshot-then-save shape as
+/// the `lastRunAt` write in `run_project` (plan 010's maintenance note: new registry writers
+/// should follow it).
+async fn store_lockfile_hash(app: &AppHandle, project: &Project, hash: &str) {
+    let state = app.state::<AppState>();
+    let persist_error = {
+        let mut projects = state.projects.lock().await;
+        if let Some(p) = projects.iter_mut().find(|p| p.id == project.id) {
+            p.last_lockfile_hash = Some(hash.to_string());
+        }
+        registry::save_projects(&state.config_dir, &projects).err()
+    };
+    if let Some(e) = persist_error {
+        process::append_system(app, &project.id, format!("could not save the lockfile hash: {e}"))
+            .await;
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // SPEC.md §8 — the Stop sequence: kill the tree, verify death, then the port, then the status
 // ---------------------------------------------------------------------------------------------
