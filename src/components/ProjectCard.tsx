@@ -241,7 +241,21 @@ export function ProjectCard({ project }: { project: ProjectView }) {
         >
           <span aria-hidden="true" className="size-1.5 rounded-full bg-current" />
           <span>{STATUS_LABEL[project.status]}</span>
-          <span className="font-mono text-xs font-medium">:{project.port}</span>
+          {/* §11: the port is the natural click target for the browser — an existing element made
+              actionable, not a new one. Inert text when not running: no dead-looking button. */}
+          {isRunning ? (
+            <button
+              type="button"
+              onClick={() => void openInBrowserAction(project.id)}
+              title={`Open localhost:${project.port} in your browser`}
+              aria-label={`Open ${project.name} in your browser on port ${project.port}`}
+              className="rounded-sm border-0 bg-transparent p-0 font-mono text-xs font-medium text-current underline-offset-2 hover:underline focus-visible:underline"
+            >
+              :{project.port}
+            </button>
+          ) : (
+            <span className="font-mono text-xs font-medium">:{project.port}</span>
+          )}
         </span>
 
         {!project.pathExists && (
