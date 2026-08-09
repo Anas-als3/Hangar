@@ -630,6 +630,7 @@ mod tests {
                 r#"{"id":"abc123","name":"IELTS Coach","path":"/tmp/ielts","command":"npm run dev","port":3000,"#,
                 r#""url":"http://localhost:3000","updateOnRun":true,"readyTimeoutSec":60,"#,
                 r#""lastLockfileHash":"deadbeef","lastRunAt":"2026-08-05T10:00:00Z","#,
+                r#""notes":"Remember to try the staging flag next time.","#,
                 r#""status":"running","pathExists":true}"#
             )
         );
