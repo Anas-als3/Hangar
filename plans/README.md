@@ -16,7 +16,7 @@ conditions, and update your row below when done.
 | 003 | Guaranteed process-tree kill | M3 | P1 | L | 002 | DONE |
 | 004 | Ready-detection and browser hand-off | M4 | P1 | M | 003 | DONE |
 | 005 | Add / Edit / Remove and settings | M5 | P2 | M | 004 | DONE (merged; §15 test 6 + manual UI acceptance outstanding) |
-| 006 | Update-on-run and full UI pass | M6 | P2 | L | 005 | TODO |
+| 006 | Update-on-run and full UI pass | M6 | P2 | L | 005 | DONE (merged; §15 test 5 manual acceptance outstanding) |
 | 007 | Ready-timeout owns its crash — deliver the §9 step 7 toast | — | P1 | S | — | DONE (merged `347b96d`; §15 test 7 verified live) |
 | 008 | Wire-contract tests + types.ts drift guard | — | P1 | S | — | DONE (merged `5f1db9c`) |
 | 009 | Verify entrypoint, CI (incl. Windows job), de-trapped `dev` script | — | P1 | M | — | DONE (merged `15bfa69`) |
