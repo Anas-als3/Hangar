@@ -1720,6 +1720,44 @@ mod tests {
     }
 
     #[test]
+    fn lock_project_path_serializes_two_concurrent_holders() {
+        // SPEC.md §9 step 3: "two projects sharing a folder cannot pull or install concurrently".
+        let dir = scratch_dir("mutex-serialize");
+        let cleanup_dir = dir.clone();
+        // `block_on` uses Tauri's runtime — SPEC.md §4 forbids creating one of our own.
+        tauri::async_runtime::block_on(async move {
+            let order: Arc<StdMutex<Vec<&'static str>>> = Arc::new(StdMutex::new(Vec::new()));
+
+            let dir_a = dir.clone();
+            let order_a = order.clone();
+            let first = tauri::async_runtime::spawn(async move {
+                let _guard = lock_project_path(&dir_a).await;
+                order_a.lock().unwrap().push("a-acquired");
+                tokio::time::sleep(Duration::from_millis(80)).await;
+                order_a.lock().unwrap().push("a-released");
+            });
+
+            // Head start so the first task is demonstrably holding the guard before the second asks.
+            tokio::time::sleep(Duration::from_millis(20)).await;
+
+            let order_b = order.clone();
+            let second = tauri::async_runtime::spawn(async move {
+                let _guard = lock_project_path(&dir).await;
+                order_b.lock().unwrap().push("b-acquired");
+            });
+
+            first.await.unwrap();
+            second.await.unwrap();
+
+            // "b-acquired" must never appear before "a-released": the second holder could not
+            // acquire the mutex until the first one's guard — held across its sleep — was dropped.
+            let recorded = order.lock().unwrap().clone();
+            assert_eq!(recorded, vec!["a-acquired", "a-released", "b-acquired"]);
+        });
+        let _ = std::fs::remove_dir_all(&cleanup_dir);
+    }
+
+    #[test]
     fn strips_color_sequences() {
         assert_eq!(strip_ansi("\x1b[32mready in 300 ms\x1b[0m"), "ready in 300 ms");
         assert_eq!(strip_ansi("\x1b[1;31mERR\x1b[39;49m!"), "ERR!");
