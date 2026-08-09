@@ -139,6 +139,8 @@ function App() {
       </main>
 
       <LogPanel />
+      <AddEditDialog />
+      <SettingsDialog />
       {toast && <Toast message={toast} />}
     </div>
   );
