@@ -705,6 +705,21 @@ pub async fn run_project(app: &AppHandle, project_id: &str) -> Result<(), String
         });
     }
 
+    // ---- §6: fail a double-click fast, before touching the mutex below -------------------------
+    // A real double-click must still be rejected near-instantly (§6: "impossible to double-spawn"),
+    // not after waiting out a contended per-path mutex or a git-repo-check that a rejected Run will
+    // throw away. This is a peek, not the atomic claim — `Status::Starting` is a placeholder target
+    // that only matters if `from` turns out legal, in which case the real work below decides the
+    // real one. The claim a few lines down is what actually enforces §6; a race that slips past this
+    // peek is still caught there.
+    let peeked_status = {
+        let runtime = state.runtime.lock().await;
+        runtime.get(&project.id).map(|e| e.status).unwrap_or(Status::Stopped)
+    };
+    if let Err(rejection) = next_status(peeked_status, Trigger::Run(Status::Starting)) {
+        return Err(rejection.for_project(&project.name));
+    }
+
     // ---- SPEC.md §9 step 3: serialize against any sibling project on the same folder -----------
     // Held across the phase decision below AND both phases that follow; dropped once `starting`
     // begins (SPEC.md §9 step 3: "steps 2-3 take a per-canonical-path mutex").
