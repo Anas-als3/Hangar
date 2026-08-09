@@ -9,9 +9,11 @@
  * certainly not in `LogPanel`.
  */
 import { useEffect } from "react";
+import AddEditDialog from "./components/AddEditDialog";
 import LogPanel from "./components/LogPanel";
 import ProjectGrid from "./components/ProjectGrid";
-import { loadRegistry, setToast, useHangarStore } from "./store";
+import SettingsDialog from "./components/SettingsDialog";
+import { loadRegistry, openAddDialog, openSettingsDialog, setToast, useHangarStore } from "./store";
 
 function CorruptRegistryBanner({
   backupPath,
