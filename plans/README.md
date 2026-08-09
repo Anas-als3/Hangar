@@ -31,7 +31,7 @@ conditions, and update your row below when done.
 | 018 | UI polish: the motion §11 now permits + a card visual pass | — | P3 | M | 016 | DONE (merged) |
 | 019 | New palette (graphite/violet) + compact cards | — | P3 | S | — | DONE (merged) |
 | 020 | Per-project notes slide-over + add tile at the end of the grid | — | P3 | M | — | DONE (merged) |
-| 021 | Installable build: bundle script, CI bundle job, human README | — | P1 | S-M | — | TODO |
+| 021 | Installable build: bundle script, CI bundle job, human README | — | P1 | S-M | — | DONE (merged; .app + .dmg built, §15 test 9 now startable) |
 | 022 | Visibility fixes: log rejections, search keeps running projects, pathExists refresh, notes indicator, running count | — | P2 | M | — | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
