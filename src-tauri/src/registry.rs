@@ -422,8 +422,9 @@ pub struct PackageJsonInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub port_suggestion: Option<u16>,
     /// SPEC.md §7 (added 2026-08-09): always present, possibly empty — unlike `port_suggestion`
-    /// this is never `skip_serializing_if`'d away, so an empty detection still round-trips as
-    /// `{"framework":null,"libraries":[],"detectedAt":"..."}` rather than vanishing.
+    /// this field itself is never `skip_serializing_if`'d away, so an empty detection still
+    /// round-trips as `{"libraries":[],"detectedAt":"..."}` (no `framework` key) rather than the
+    /// whole `stack` key vanishing.
     pub stack: ProjectStack,
 }
 
