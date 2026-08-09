@@ -7,8 +7,37 @@
  * uptime slot with plan 006.
  */
 import { useEffect, useRef, useState } from "react";
-import { openInBrowserAction, openLogs, startProject, stopProjectAction } from "../store";
+import {
+  findProject,
+  openEditDialog,
+  openInBrowserAction,
+  openInEditorAction,
+  openLogs,
+  removeProjectAction,
+  startProject,
+  stopIfRunningWithConfirm,
+  stopProjectAction,
+} from "../store";
 import type { ProjectView, Status } from "../types";
+
+/** §6/§10 step 7: Edit — confirm-and-stop first if the project isn't stopped/crashed. */
+async function handleEdit(projectId: string): Promise<void> {
+  const project = findProject(projectId);
+  if (!project) return;
+  const okToProceed = await stopIfRunningWithConfirm(project);
+  if (!okToProceed) return;
+  openEditDialog(project);
+}
+
+/** §6/§10 step 7: Remove — same confirm-and-stop, plus a plain destructive-action confirm. */
+async function handleRemove(projectId: string): Promise<void> {
+  const project = findProject(projectId);
+  if (!project) return;
+  const okToProceed = await stopIfRunningWithConfirm(project);
+  if (!okToProceed) return;
+  if (!window.confirm(`Remove ${project.name}? This cannot be undone.`)) return;
+  await removeProjectAction(projectId);
+}
 
 const STATUS_LABEL: Record<Status, string> = {
   stopped: "Stopped",
