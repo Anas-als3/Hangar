@@ -190,6 +190,47 @@ export function AddEditDialog() {
           className="mt-1.5 w-full rounded-md border border-white/10 bg-bg px-3 py-2 font-mono text-sm text-text outline-none focus:border-accent"
         />
 
+        {/* §5: url is "shown only in the Edit dialog (placeholder shows the computed default)". */}
+        {editing && (
+          <>
+            <label className="mt-5 block text-sm text-muted" htmlFor="project-url">
+              URL override
+            </label>
+            <input
+              id="project-url"
+              type="text"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              placeholder={`http://localhost:${port || editing.port}`}
+              className="mt-1.5 w-full rounded-md border border-white/10 bg-bg px-3 py-2 font-mono text-sm text-text outline-none focus:border-accent"
+            />
+          </>
+        )}
+
+        <div className="mt-5 flex items-center justify-between gap-4">
+          <label className="text-sm text-muted" htmlFor="project-ready-timeout">
+            Ready timeout (seconds)
+          </label>
+          <input
+            id="project-ready-timeout"
+            type="number"
+            min={1}
+            value={readyTimeoutSec}
+            onChange={(e) => setReadyTimeoutSec(Number(e.target.value))}
+            className="w-24 rounded-md border border-white/10 bg-bg px-3 py-2 font-mono text-sm text-text outline-none focus:border-accent"
+          />
+        </div>
+
+        <label className="mt-4 flex items-center gap-2 text-sm text-text">
+          <input
+            type="checkbox"
+            checked={updateOnRun}
+            onChange={(e) => setUpdateOnRun(e.target.checked)}
+            className="size-4 rounded border-white/20 bg-bg accent-accent"
+          />
+          Pull updates and reinstall when this project runs
+        </label>
+
         <div className="mt-6 flex justify-end gap-2">
           <button
             type="button"
