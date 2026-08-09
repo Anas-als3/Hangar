@@ -118,11 +118,33 @@ pub async fn add_project(
     Ok(to_view(&project, &runtime))
 }
 
+/// SPEC.md §6 mutation guard vs. §5 notes (plan 020 revision): `guard_mutation` exists because
+/// mutating a *running* project can break the run itself — a changed `port` breaks Stop's port
+/// verification, a changed `path`/`command` breaks the kill path. §5 now defines `notes` as "a
+/// free-text scratchpad, user-owned; never parsed or acted on", so a change that touches only
+/// `notes` provably cannot affect a running project — it is exempt from the guard.
+///
+/// Deliberately not a hand-enumerated field list: normalising `notes` out of both sides and
+/// comparing the rest with the derived `PartialEq` means any other field — including ones a
+/// future plan adds — is covered by the guard automatically, with nothing to remember to update
+/// here.
+fn is_notes_only_change(stored: &Project, incoming: &Project) -> bool {
+    let mut stored = stored.clone();
+    let mut incoming = incoming.clone();
+    stored.notes = None;
+    incoming.notes = None;
+    stored == incoming
+}
+
 /// SPEC.md §7 `update_project` / §6 / §10 step 7: "Remove/Edit while status ∉ {stopped, crashed}
 /// first shows a confirm ... confirming runs the full §8 kill and waits for verification before
 /// removing/saving." The frontend's confirm dialog already called `stop_project` and awaited its
 /// verified death before calling this — `guard_mutation` here is what makes that real: a frontend
 /// that skipped the confirm (or raced it) cannot save over a project whose tree is still alive.
+///
+/// Exception: a notes-only change (see `is_notes_only_change`) skips the guard, so the Notes
+/// slide-over can autosave while a project is running — the whole point of per-project notes is
+/// to record something while or right after testing it (SPEC.md §11).
 #[tauri::command]
 pub async fn update_project(
     project: Project,
@@ -136,11 +158,13 @@ pub async fn update_project(
         .position(|p| p.id == project.id)
         .ok_or_else(|| format!("no project with id {}", project.id))?;
 
-    let status = runtime
-        .get(&project.id)
-        .map(|r| r.status)
-        .unwrap_or(Status::Stopped);
-    crate::run::guard_mutation(status, &projects[index].name)?;
+    if !is_notes_only_change(&projects[index], &project) {
+        let status = runtime
+            .get(&project.id)
+            .map(|r| r.status)
+            .unwrap_or(Status::Stopped);
+        crate::run::guard_mutation(status, &projects[index].name)?;
+    }
 
     if let Some(owner) = registry::port_conflict(&projects, project.port, Some(&project.id)) {
         return Err(format!(
