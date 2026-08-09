@@ -217,7 +217,7 @@ export function ProjectCard({ project }: { project: ProjectView }) {
 
       <div className="flex items-center gap-2 text-sm">
         <span
-          className={`inline-flex items-center gap-2 rounded-full bg-white/5 px-2.5 py-1 ${STATUS_TONE[project.status]}`}
+          className={`inline-flex items-center gap-2 rounded-full bg-white/5 px-2.5 py-1 transition-colors duration-200 ${STATUS_TONE[project.status]}`}
         >
           <span aria-hidden="true" className="size-1.5 rounded-full bg-current" />
           <span>{STATUS_LABEL[project.status]}</span>
