@@ -943,6 +943,41 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_or_absent_package_json_is_an_empty_stack_not_an_error() {
+        // §10 step 6 / this plan: no `package.json` at all must still work — an empty stack, not
+        // an error — so a manual-entry project (no folder scan) never crashes detection.
+        let absent = detect_stack(&serde_json::Value::Null);
+        assert_eq!(absent.framework, None);
+        assert!(absent.libraries.is_empty());
+        assert!(!absent.detected_at.is_empty());
+
+        let empty = detect_stack(&serde_json::json!({}));
+        assert_eq!(empty.framework, None);
+        assert!(empty.libraries.is_empty());
+    }
+
+    #[test]
+    fn library_order_is_stable_regardless_of_dependency_map_order() {
+        let a = detect_stack(&serde_json::json!({
+            "dependencies": { "react": "18.2.0", "axios": "1.0.0", "zod": "3.0.0" }
+        }));
+        let b = detect_stack(&serde_json::json!({
+            "dependencies": { "zod": "3.0.0", "axios": "1.0.0", "react": "18.2.0" }
+        }));
+        let expected = vec!["React".to_string(), "Axios".to_string(), "Zod".to_string()];
+        assert_eq!(a.libraries, expected);
+        assert_eq!(b.libraries, expected, "same deps, different map order, same output order");
+    }
+
+    #[test]
+    fn prisma_and_prisma_client_dedupe_to_one_library_entry() {
+        let stack = detect_stack(&serde_json::json!({
+            "dependencies": { "prisma": "5.0.0", "@prisma/client": "5.0.0" }
+        }));
+        assert_eq!(stack.libraries, vec!["Prisma".to_string()]);
+    }
+
+    #[test]
     fn read_package_json_lists_scripts_and_suggests_a_port() {
         let dir = scratch("read-pkg");
         std::fs::write(
