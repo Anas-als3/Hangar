@@ -694,7 +694,7 @@ pub async fn run_project(app: &AppHandle, project_id: &str) -> Result<(), String
         // user's own terminal, and killing what Hangar did not spawn is exactly what §8 is careful
         // never to claim.
         let owner = process::port_owner(project.port, &env).await;
-        return Err(match owner {
+        let message = match owner {
             Some(owner) => format!(
                 "Port {} is in use by {owner} — is this project running elsewhere?",
                 project.port
@@ -704,7 +704,9 @@ pub async fn run_project(app: &AppHandle, project_id: &str) -> Result<(), String
                 "Port {} is already in use — is this project running elsewhere?",
                 project.port
             ),
-        });
+        };
+        process::append_system(app, &project.id, message.clone()).await;
+        return Err(message);
     }
 
     // ---- §6: fail a double-click fast, before touching the mutex below -------------------------
