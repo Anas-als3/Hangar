@@ -31,6 +31,7 @@ conditions, and update your row below when done.
 | 018 | UI polish: the motion §11 now permits + a card visual pass | — | P3 | M | 016 | DONE (merged) |
 | 019 | New palette (graphite/violet) + compact cards | — | P3 | S | — | DONE (merged) |
 | 020 | Per-project notes slide-over + add tile at the end of the grid | — | P3 | M | — | DONE (merged) |
+| 021 | Installable build: bundle script, CI bundle job, human README | — | P1 | S-M | — | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
 
@@ -233,6 +234,49 @@ do not re-audit:
 - **Retained `kill_pid` addressing a recycled pgid**: real but documented as an accepted risk in
   code; plan 014 step 1 removes the sharpest edge (retiring the pid at death-confirmation);
   the full identity check stays parked in SPEC.md §16.
+
+## Gap analysis, 2026-08-09 (direction audit at `cc6172c`) — confirmed, unplanned
+
+Ordered by leverage. Plan 021 covers only the first; the rest are recorded so
+they are not re-derived. All were vetted against the code, not taken from a
+subagent report.
+
+1. **Run rejections never reach the log.** `run_project`'s three rejection paths
+   (project missing, folder gone, §9 step 1 port pre-check) all `return Err`
+   with no `append_system` first. The most actionable message the app produces —
+   "Port 3000 is in use by node (PID 4321)" — exists only in a single
+   overwritable toast slot and is unrecoverable once dismissed or replaced.
+   Contradicts §11's "Errors always say what happened and what to do next". S.
+2. **Search hides running projects.** `filterProjects` (store.ts) matches name
+   only and `App.tsx` feeds the filtered list straight to the grid, so a running
+   project whose name does not match unmounts — resetting its PhaseStrip `seen`
+   set and uptime clock. Introduced by plan 017, missed in its review. S.
+3. **`pathExists` goes stale.** Computed only in `to_view` (commands.rs) and
+   `loadRegistry()` runs once on mount, so a moved folder keeps an enabled Run
+   button until restart. §5 requires the check "at startup, on registry change,
+   and when Run is clicked"; §12's "Project path deleted/moved" row is
+   undelivered live. Fix: refresh on window focus and on a rejected Run. S.
+4. **The log buffer is cleared every Run** (§8 mandates it), so a failure cannot
+   be compared against the retry that was meant to fix it. This is the most
+   concrete reason to keep a terminal open beside Hangar — i.e. the thing §15
+   test 9 measures. A filter box is frontend-only; retaining the previous run
+   needs a §8 amendment. S–M.
+5. **Notes are invisible.** Nothing on the card indicates a project has any, and
+   search does not reach them, so a note written today is unfindable among
+   twenty projects. An indicator tests `notes != null`, which is not parsing;
+   extending *search* to note text would mean the app reads them, which §5/§11
+   say it never does — that one needs a ruling. S.
+6. **No aggregate view.** The header is title + search + Add + gear; "what is
+   still running?" requires scrolling every card. The `:{port}` pill is inert
+   text where it could be the click target for `open_in_browser` (§11 fixes the
+   card's elements and their order, not their visual treatment). S.
+
+**§16 items whose promotion criteria are NOT met** (do not build from the
+parking lot): Restart ("promote if two-week use shows frequent manual Stop→Run
+cycles" — §16's own top candidate), Stop All ("promote on real multi-project
+sessions"; `run::stop_all` already exists and is unexposed, but exposing it
+amends the frozen §7), `readyCheck: http`, Unix crash recovery, port repin,
+cloud-sync warnings. All six wait on §15 test 9, which waits on plan 021.
 
 ## Audited, confirmed, deliberately unplanned (2026-08-06 — candidates for a later run)
 
