@@ -45,6 +45,9 @@ export function AddEditDialog() {
   const [selectedScript, setSelectedScript] = useState<string | null>(null);
   const [packageManager, setPackageManager] =
     useState<PackageJsonInfo["packageManager"]>("npm");
+  // §5: app-owned, never hand-edited here — only ever set from a `readPackageJson` result
+  // (below) or carried through unchanged from the project being edited.
+  const [stack, setStack] = useState<ProjectStack | undefined>(editing?.stack);
 
   // Re-initialize whenever the dialog target changes (opened for a different project, or
   // switched from Edit back to Add).
@@ -56,6 +59,7 @@ export function AddEditDialog() {
     setUrl(editing?.url ?? "");
     setUpdateOnRun(editing?.updateOnRun ?? true);
     setReadyTimeoutSec(editing?.readyTimeoutSec ?? 60);
+    setStack(editing?.stack);
     setSaving(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dialog]);
