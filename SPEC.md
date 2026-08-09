@@ -82,6 +82,11 @@ interface Project {
   lastLockfileHash?: string; // internal
   lastRunAt?: string;    // ISO — set when entering `starting`
   notes?: string;        // free-text scratchpad, user-owned; never parsed or acted on
+  stack?: {              // detected from package.json — app-owned, never hand-edited (added 2026-08-09)
+    framework?: string;      // "next" | "vite" | "react-scripts" | "astro" | ... | undefined
+    libraries: string[];     // notable deps incl. API clients: react, vue, express, tailwindcss, axios, trpc, prisma…
+    detectedAt: string;      // ISO — refreshed on Add, on Edit, and on the install phase; staleness is visible, not hidden
+  };
 }
 
 // What the frontend receives (derived fields are computed by the backend, never persisted):
@@ -148,7 +153,8 @@ clear_log_buffer(id: string): void
 read_package_json(path: string): {                   // for the Add dialog
   scripts: Record<string, string>,
   packageManager: "npm" | "pnpm" | "yarn",
-  portSuggestion?: number
+  portSuggestion?: number,
+  stack: { framework?: string, libraries: string[], detectedAt: string }  // added 2026-08-09
 }
 open_in_editor(id: string): void
 open_in_browser(id: string): void
@@ -235,7 +241,7 @@ Steam-library energy, but its own identity — a launch bay for code. Dark, dens
 
 - **Palette:** background `#0C0D11`, cards `#16181E`, text `#E9EAEE`, muted `#8A8F9C` — a neutral graphite base. Single accent: violet `#8B7BF7` (Run button, active phase). Status colors are functional only and do **not** follow the accent: running `#34D399`, starting/updating pulse in the accent, crashed & stop-failed `#F87171`, stopped slate. (Amended 2026-08-09 from the original blue-grey/amber palette; the *structure* — dark base, one raised surface, one accent, functional status colors — is the part that is load-bearing, not the specific hues.)
 - **Type:** Space Grotesk for the app title and project names; Inter for UI; JetBrains Mono for logs and ports. Bundled via Fontsource (§4) — no CDN.
-- **Card contents:** project name, status pill with port (`:3000` in mono), time slot — **state-dependent: while running it shows uptime ("up 12 m", refreshed at 30 s granularity or coarser — no ticking seconds); otherwise last-run relative time** — primary Run/Stop button, overflow menu: Open in browser · Open in editor · Show logs · Notes · Edit · Remove. A `crashed` card's primary button is **Run** (retry). While `stopping`, the button shows a spinner and is disabled. Cards render in `projects.json` array order; new projects append; Remove preserves the order of the rest — no automatic re-sorting, ever. The elements above and their order are fixed; their visual treatment (spacing, hierarchy, weight, borders, the exact composition within the card) is not, provided it uses the §11 palette tokens and type scale and keeps the card readable at a glance in a dense grid.
+- **Card contents:** project name, status pill with port (`:3000` in mono), time slot — **state-dependent: while running it shows uptime ("up 12 m", refreshed at 30 s granularity or coarser — no ticking seconds); otherwise last-run relative time** — primary Run/Stop button, overflow menu: Open in browser · Open in editor · Show logs · Notes · Edit · Remove. A `crashed` card's primary button is **Run** (retry). While `stopping`, the button shows a spinner and is disabled. Cards render in `projects.json` array order; new projects append; Remove preserves the order of the rest — no automatic re-sorting, ever. One further element is permitted (added 2026-08-09): a compact **stack badge** showing the detected framework, e.g. `Next` or `Vite`, placed with the status pill. It is display-only and derived — never an input, never a control. Otherwise the elements above and their order are fixed; their visual treatment (spacing, hierarchy, weight, borders, the exact composition within the card) is not, provided it uses the §11 palette tokens and type scale and keeps the card readable at a glance in a dense grid.
 - **Signature element:** when Run is clicked, a slim **phase strip** appears along the card's bottom edge — labeled segments `Pull → Install → Start → Ready` that light up in the accent colour as each real phase completes (mapping: updating / installing / starting / running). Phases skipped this run (not a git repo, no install needed) render dimmed, not lit. This is the one memorable element; it encodes the actual sequence, not decoration. Keep everything else quiet.
 - **Logs:** slide-over panel, mono font, autoscroll with pause-on-scroll-up, **Copy button** (copies the entire retained buffer with stream prefixes — `navigator.clipboard.writeText` with an `execCommand('copy')` fallback; brief "Copied" confirmation), Clear button, stderr lines tinted, `system` lines muted. **Esc closes the slide-over.** No other keyboard shortcuts in v0.
 - **Motion:** restrained and functional — motion exists to explain a state change, never to decorate. Allowed:
