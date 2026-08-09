@@ -53,6 +53,7 @@ function EmptyState() {
       <p className="font-display text-xl text-text">No projects yet. Add your first one.</p>
       <button
         type="button"
+        onClick={openAddDialog}
         className="rounded-md bg-accent px-5 py-2 text-sm font-semibold text-bg transition-opacity hover:opacity-90"
       >
         Add project
