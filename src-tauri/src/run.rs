@@ -1000,6 +1000,71 @@ async fn store_lockfile_hash(app: &AppHandle, project: &Project, hash: &str) {
     }
 }
 
+/// SPEC.md §9 step 2: "10 s timeout; on timeout kill the git tree — git spawns ssh and
+/// credential-helper children."
+const GIT_PULL_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// SPEC.md §9 step 2: "auth must fail fast, never prompt" — all four non-interactive variables.
+fn git_pull_env() -> Vec<(String, String)> {
+    vec![
+        ("GIT_TERMINAL_PROMPT".to_string(), "0".to_string()),
+        ("GIT_ASKPASS".to_string(), "echo".to_string()),
+        ("GIT_SSH_COMMAND".to_string(), "ssh -oBatchMode=yes".to_string()),
+        ("GCM_INTERACTIVE".to_string(), "never".to_string()),
+    ]
+}
+
+/// SPEC.md §9 step 2's timeout branch: tree-kill via the same §8 path `on_ready_timeout` uses. The
+/// primitive is still registered even though `run_phase_child`'s future was just dropped by the
+/// `tokio::time::timeout` that raced it — `spawn_phase_reaper` runs detached and keeps reaping.
+async fn kill_timed_out_pull(app: &AppHandle, project: &Project) {
+    let target = {
+        let state = app.state::<AppState>();
+        let mut runtime = state.runtime.lock().await;
+        runtime.entry(project.id.clone()).or_default().take_kill_target()
+    };
+    let outcome = process::kill_tree(target).await;
+    for note in outcome.notes {
+        process::append_system(app, &project.id, note).await;
+    }
+    process::append_system(
+        app,
+        &project.id,
+        format!(
+            "git pull timed out after {} s — stopped it and continuing without updating",
+            GIT_PULL_TIMEOUT.as_secs()
+        ),
+    )
+    .await;
+}
+
+/// SPEC.md §9 step 2: "On any failure … write a warning to the log and continue anyway." A failure
+/// mentioning `index.lock` gets a named hint — SPEC.md: "never delete it automatically".
+async fn warn_pull_failure(app: &AppHandle, project_id: &str, exit_code: Option<i32>) {
+    let message = match exit_code {
+        Some(code) => format!("git pull failed (exit {code}) — continuing without updating"),
+        None => "git pull was terminated — continuing without updating".to_string(),
+    };
+    process::append_system(app, project_id, message).await;
+
+    let mentions_lock = {
+        let state = app.state::<AppState>();
+        let runtime = state.runtime.lock().await;
+        runtime.get(project_id).is_some_and(|entry| {
+            entry.logs.snapshot().iter().any(|l| l.line.contains("index.lock"))
+        })
+    };
+    if mentions_lock {
+        process::append_system(
+            app,
+            project_id,
+            "the pull output mentioned index.lock — another git process may be using this repo; \
+             Hangar will not delete it automatically",
+        )
+        .await;
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // SPEC.md §8 — the Stop sequence: kill the tree, verify death, then the port, then the status
 // ---------------------------------------------------------------------------------------------
