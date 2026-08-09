@@ -18,6 +18,7 @@ import {
   loadRegistry,
   openAddDialog,
   openSettingsDialog,
+  runningCount,
   setSearch,
   setToast,
   useHangarStore,
@@ -129,7 +130,13 @@ function App() {
   return (
     <div className="flex min-h-full flex-col bg-bg text-text">
       <header className="flex items-center justify-between border-b border-white/5 px-8 py-5">
-        <h1 className="font-display text-xl font-bold tracking-tight text-text">Hangar</h1>
+        <div className="flex items-center gap-3">
+          <h1 className="font-display text-xl font-bold tracking-tight text-text">Hangar</h1>
+          {/* SPEC.md §11: a quiet aggregate — how many projects are running right now. */}
+          {runningCount(projects) > 0 && (
+            <span className="text-sm text-muted">{runningCount(projects)} running</span>
+          )}
+        </div>
         <div className="flex items-center gap-2">
           {projects.length > 0 && <SearchInput value={search} />}
           <button
