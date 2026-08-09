@@ -84,3 +84,37 @@
 .hangar-spin {
   animation: hangar-spin 0.8s linear infinite;
 }
+
+/* §11 amended Motion bullet: enter-only transitions for overlays, toasts and new cards.
+   Plain one-shot keyframe animations, not JS — cheap, unaffected by store re-renders, and
+   naturally neutralised by the prefers-reduced-motion block above (it targets `*`). */
+@keyframes hangar-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.hangar-fade-in {
+  animation: hangar-fade-in 150ms ease-out;
+}
+
+@keyframes hangar-dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+.hangar-dialog-in {
+  animation: hangar-dialog-in 160ms ease-out;
+}
+
+@keyframes hangar-slide-in {
+  from {
+    transform: translateX(100%);
+  }
+}
+
+.hangar-slide-in {
+  animation: hangar-slide-in 180ms ease-out;
+}
