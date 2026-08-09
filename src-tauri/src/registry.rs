@@ -421,6 +421,10 @@ pub struct PackageJsonInfo {
     pub package_manager: PackageManager,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub port_suggestion: Option<u16>,
+    /// SPEC.md §7 (added 2026-08-09): always present, possibly empty — unlike `port_suggestion`
+    /// this is never `skip_serializing_if`'d away, so an empty detection still round-trips as
+    /// `{"framework":null,"libraries":[],"detectedAt":"..."}` rather than vanishing.
+    pub stack: ProjectStack,
 }
 
 /// SPEC.md §9 step 3 / §10 step 3: "the detected package manager (from which lockfile is
