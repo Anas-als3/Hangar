@@ -514,6 +514,35 @@ pub async fn open_in_editor(app: &AppHandle, project: &Project) -> Result<(), St
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// SPEC.md §9 steps 2-3 — decide, once, which phases a Run actually performs
+// ---------------------------------------------------------------------------------------------
+
+/// SPEC.md §9 step 2 / §12. Only [`Pull`] enters `updating` at all — see `Trigger::Run`'s doc for
+/// why the other two must not.
+///
+/// [`Pull`]: UpdatePlan::Pull
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpdatePlan {
+    Pull,
+    /// §12: "git not found — skipping update" — always logged.
+    GitMissing,
+    /// `updateOnRun` is off, or the folder is not a git repo — §12: "Skip pull silently".
+    Skip,
+}
+
+/// SPEC.md §9 step 2: decided once, before the run claims its first phase.
+async fn plan_update(project: &Project, env: &EnvMap) -> UpdatePlan {
+    if !project.update_on_run {
+        return UpdatePlan::Skip;
+    }
+    match process::check_git_repo(Path::new(&project.path), env).await {
+        process::GitAvailability::IsRepo => UpdatePlan::Pull,
+        process::GitAvailability::GitMissing => UpdatePlan::GitMissing,
+        process::GitAvailability::NotRepo => UpdatePlan::Skip,
+    }
+}
+
 /// SPEC.md §9 steps 5-7, run in the background so `run_project` stays fire-and-forget (§7) instead
 /// of holding an IPC call open for `readyTimeoutSec`.
 async fn await_ready_then_hand_off(app: AppHandle, project: Project, exited: watch::Receiver<bool>) {
