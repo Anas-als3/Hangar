@@ -744,6 +744,73 @@ pub async fn check_git_repo(path: &std::path::Path, env: &EnvMap) -> GitAvailabi
 }
 
 // ---------------------------------------------------------------------------------------------
+// SPEC.md §9 step 3 — the install decision: which lockfile, its hash, and the four branches
+// ---------------------------------------------------------------------------------------------
+
+/// Which installer a lockfile implies. SPEC.md §9 step 3's search order — `package-lock.json`,
+/// `pnpm-lock.yaml`, `yarn.lock` — is encoded in [`find_lockfile`], not here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LockfileKind {
+    Npm,
+    Pnpm,
+    Yarn,
+}
+
+impl LockfileKind {
+    /// The exact command SPEC.md §9 step 3 names for each manager.
+    pub fn install_command(self) -> &'static str {
+        match self {
+            LockfileKind::Npm => "npm install",
+            LockfileKind::Pnpm => "pnpm install",
+            LockfileKind::Yarn => "yarn",
+        }
+    }
+}
+
+/// SPEC.md §9 step 3: "hash the lockfile (`package-lock.json` | `pnpm-lock.yaml` | `yarn.lock`,
+/// first found)". Pure path logic — the caller does the actual `exists()` check via
+/// [`LockfileKind::install_command`]'s sibling below, kept separate so it is testable without a
+/// real filesystem for the ordering itself.
+pub const LOCKFILE_SEARCH_ORDER: [(&str, LockfileKind); 3] = [
+    ("package-lock.json", LockfileKind::Npm),
+    ("pnpm-lock.yaml", LockfileKind::Pnpm),
+    ("yarn.lock", LockfileKind::Yarn),
+];
+
+/// Finds the first lockfile present in `project_dir`, per SPEC.md §9 step 3's fixed search order.
+/// `None` means "no lockfile at all" — SPEC.md §9: "skip hashing and installing entirely".
+pub fn find_lockfile(project_dir: &std::path::Path) -> Option<(LockfileKind, PathBuf)> {
+    LOCKFILE_SEARCH_ORDER.iter().find_map(|(name, kind)| {
+        let candidate = project_dir.join(name);
+        candidate.is_file().then_some((*kind, candidate))
+    })
+}
+
+/// SPEC.md §9 step 3: "SHA-256" of the lockfile's bytes, as a lowercase hex string — the same shape
+/// `Project.last_lockfile_hash` is stored in.
+pub fn hash_lockfile(path: &std::path::Path) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let bytes = std::fs::read(path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
+    let digest = Sha256::digest(&bytes);
+    Ok(format!("{digest:x}"))
+}
+
+/// SPEC.md §9 step 3's three-way OR, as a pure function — the whole install decision in one place
+/// so all four branches ((a) unset, (b) differs, (c) `node_modules` missing, and "none of the
+/// above") are testable without touching a filesystem or spawning anything.
+pub fn needs_install(
+    last_hash: Option<&str>,
+    current_hash: &str,
+    node_modules_exists: bool,
+) -> bool {
+    match last_hash {
+        None => true,                         // (a) lastLockfileHash unset
+        Some(last) if last != current_hash => true, // (b) hash differs
+        _ => !node_modules_exists,            // (c) node_modules missing
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
 // The kill paths (SPEC.md §8 — the acceptance-test level requirement)
 // ---------------------------------------------------------------------------------------------
 
