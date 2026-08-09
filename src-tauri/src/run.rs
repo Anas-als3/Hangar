@@ -543,6 +543,43 @@ async fn plan_update(project: &Project, env: &EnvMap) -> UpdatePlan {
     }
 }
 
+/// SPEC.md §9 step 3 / §12. Only [`Run`] enters `installing` — see `Trigger::Run`'s doc.
+/// [`NoLockfile`]'s reason is always logged (unlike [`UpdatePlan::Skip`]'s silence): SPEC.md §9
+/// step 3 gives it an explicit line even for the "no lockfile at all" case.
+///
+/// [`Run`]: InstallPlan::Run
+/// [`NoLockfile`]: InstallPlan::NoLockfile
+#[derive(Debug, Clone)]
+enum InstallPlan {
+    Run { kind: LockfileKind, hash: String },
+    UpToDate,
+    NoLockfile(String),
+}
+
+/// SPEC.md §9 step 3's three-way OR decision, decided once before the run claims its first phase
+/// (or re-decided under the per-canonical-path mutex once a sibling project's install has been
+/// awaited — see `run_project`'s `_path_guard`).
+fn plan_install(project: &Project) -> InstallPlan {
+    let dir = Path::new(&project.path);
+    let Some((kind, lockfile_path)) = process::find_lockfile(dir) else {
+        return InstallPlan::NoLockfile("no lockfile found — skipping install".to_string());
+    };
+    let hash = match process::hash_lockfile(&lockfile_path) {
+        Ok(hash) => hash,
+        Err(e) => {
+            return InstallPlan::NoLockfile(format!(
+                "could not hash the lockfile, skipping the install check: {e}"
+            ))
+        }
+    };
+    let node_modules_exists = dir.join("node_modules").is_dir();
+    if process::needs_install(project.last_lockfile_hash.as_deref(), &hash, node_modules_exists) {
+        InstallPlan::Run { kind, hash }
+    } else {
+        InstallPlan::UpToDate
+    }
+}
+
 /// SPEC.md §9 steps 5-7, run in the background so `run_project` stays fire-and-forget (§7) instead
 /// of holding an IPC call open for `readyTimeoutSec`.
 async fn await_ready_then_hand_off(app: AppHandle, project: Project, exited: watch::Receiver<bool>) {
