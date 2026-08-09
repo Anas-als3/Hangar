@@ -15,13 +15,13 @@ import NotesPanel from "./components/NotesPanel";
 import ProjectGrid from "./components/ProjectGrid";
 import SettingsDialog from "./components/SettingsDialog";
 import {
-  filterProjects,
   loadRegistry,
   openAddDialog,
   openSettingsDialog,
   setSearch,
   setToast,
   useHangarStore,
+  visibleProjects,
 } from "./store";
 
 function CorruptRegistryBanner({
@@ -160,10 +160,10 @@ function App() {
           <p className="text-sm text-muted">Loading…</p>
         ) : projects.length === 0 ? (
           <EmptyState />
-        ) : filterProjects(projects, search).length === 0 ? (
+        ) : visibleProjects(projects, search).length === 0 ? (
           <p className="text-sm text-muted">No projects match &quot;{search.trim()}&quot;.</p>
         ) : (
-          <ProjectGrid projects={filterProjects(projects, search)} />
+          <ProjectGrid projects={visibleProjects(projects, search)} />
         )}
       </main>
 
