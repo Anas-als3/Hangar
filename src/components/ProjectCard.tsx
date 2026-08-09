@@ -13,6 +13,7 @@ import {
   openInBrowserAction,
   openInEditorAction,
   openLogs,
+  openNotes,
   removeProjectAction,
   startProject,
   stopIfRunningWithConfirm,
@@ -112,7 +113,7 @@ function useCoarseNow(active: boolean): number {
   return now;
 }
 
-/** §11 overflow menu, in the spec's order. All five entries are wired as of plan 005. */
+/** §11 overflow menu, in the spec's amended order (plan 020 adds Notes after Show logs). */
 const MENU_ITEMS: ReadonlyArray<{
   label: string;
   action: ((projectId: string) => void) | null;
@@ -120,6 +121,7 @@ const MENU_ITEMS: ReadonlyArray<{
   { label: "Open in browser", action: (id) => void openInBrowserAction(id) },
   { label: "Open in editor", action: (id) => void openInEditorAction(id) },
   { label: "Show logs", action: (id) => void openLogs(id) },
+  { label: "Notes", action: (id) => void openNotes(id) },
   { label: "Edit", action: (id) => void handleEdit(id) },
   { label: "Remove", action: (id) => void handleRemove(id) },
 ];
