@@ -14,8 +14,9 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -692,6 +693,158 @@ pub fn parse_tasklist_name(stdout: &str, pid: u32) -> Option<String> {
         // have an image name in front of the number.
         (!name.is_empty() && !name.starts_with('=')).then(|| name.to_string())
     })
+}
+
+// ---------------------------------------------------------------------------------------------
+// SPEC.md §9 step 3 — the per-canonical-path mutex ("Two projects on one repo ... is a legitimate
+// setup ... and without this they would run `git pull` and `npm install` in the same directory
+// simultaneously").
+// ---------------------------------------------------------------------------------------------
+
+/// Deliberately a process-wide static rather than a field on `AppState`: the single-instance
+/// plugin (SPEC.md §4) already guarantees there is exactly one Hangar process per machine, every
+/// `run_project` call goes through this same module, and it keeps this plan's diff to `run.rs` /
+/// `process.rs` / `registry.rs` / `Cargo.toml` rather than also touching `commands.rs`'s state
+/// struct for one coordination primitive with no UI-visible shape.
+static PATH_MUTEXES: LazyLock<StdMutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>> =
+    LazyLock::new(|| StdMutex::new(HashMap::new()));
+
+/// SPEC.md §9 step 3: one mutex per **canonicalized** path, so `/foo` and `/foo/` (or a symlink)
+/// serialize against each other too. Held across both the `updating` and `installing` phases by
+/// the caller; re-checking the lockfile hash after acquiring it (not done here — that is the
+/// caller's job once it holds the guard) is what lets a second project skip a now-redundant
+/// install.
+pub async fn lock_project_path(path: &Path) -> tokio::sync::OwnedMutexGuard<()> {
+    // Canonicalize on a best-effort basis: a path that fails to canonicalize (already gone, a
+    // permissions quirk) still gets a mutex, just keyed on its literal form — worse serialization
+    // in that corner case, never a panic or a skipped lock.
+    let key = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mutex = {
+        let mut mutexes = PATH_MUTEXES.lock().unwrap_or_else(|e| e.into_inner());
+        mutexes.entry(key).or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))).clone()
+    };
+    mutex.lock_owned().await
+}
+
+// ---------------------------------------------------------------------------------------------
+// SPEC.md §9 step 2 — the `updating` phase: is this folder even a git repo?
+// ---------------------------------------------------------------------------------------------
+
+/// What `git rev-parse --is-inside-work-tree` told us. SPEC.md §12: only [`GitMissing`] earns a log
+/// line ("git not found — skipping update"); [`NotRepo`] skips the pull silently.
+///
+/// [`GitMissing`]: GitAvailability::GitMissing
+/// [`NotRepo`]: GitAvailability::NotRepo
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitAvailability {
+    IsRepo,
+    NotRepo,
+    GitMissing,
+}
+
+/// Bounded like [`port_owner`]'s lookups: this is read-only and near-instant, so it is never
+/// registered as a kill target (SPEC.md §8 reserves that bookkeeping for long-lived children).
+const GIT_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// SPEC.md §9 step 2 / §12: decides whether the pull phase should run at all, before anything is
+/// narrated or `updating` is entered — a skipped phase must never flash the status (SPEC.md §12
+/// "Not a git repo | Skip pull silently").
+pub async fn check_git_repo(path: &Path, env: &EnvMap) -> GitAvailability {
+    let spec = SpawnSpec {
+        command: "git rev-parse --is-inside-work-tree".to_string(),
+        cwd: Some(path.to_path_buf()),
+        env: env.clone(),
+        long_lived: false,
+        kill_on_drop: true,
+        ..SpawnSpec::default()
+    };
+    let Ok(spawned) = spawn(&spec) else {
+        return GitAvailability::GitMissing;
+    };
+    let Ok(Ok(output)) =
+        tokio::time::timeout(GIT_CHECK_TIMEOUT, spawned.child.wait_with_output()).await
+    else {
+        // A wedged or slow check is not evidence either way; treat it like "not a repo" and let the
+        // run proceed rather than block Run on a hung read-only lookup.
+        return GitAvailability::NotRepo;
+    };
+    interpret_git_check(output.status.code())
+}
+
+/// The exit-code interpretation half of [`check_git_repo`], pulled out so it is unit-testable
+/// without spawning a real `git` (or needing one absent from PATH to test the "missing" branch).
+fn interpret_git_check(exit_code: Option<i32>) -> GitAvailability {
+    match exit_code {
+        Some(0) => GitAvailability::IsRepo,
+        Some(code) if is_tool_not_found_exit(code) => GitAvailability::GitMissing,
+        _ => GitAvailability::NotRepo,
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// SPEC.md §9 step 3 — the install decision: which lockfile, its hash, and the four branches
+// ---------------------------------------------------------------------------------------------
+
+/// Which installer a lockfile implies. SPEC.md §9 step 3's search order — `package-lock.json`,
+/// `pnpm-lock.yaml`, `yarn.lock` — is encoded in [`find_lockfile`], not here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LockfileKind {
+    Npm,
+    Pnpm,
+    Yarn,
+}
+
+impl LockfileKind {
+    /// The exact command SPEC.md §9 step 3 names for each manager.
+    pub fn install_command(self) -> &'static str {
+        match self {
+            LockfileKind::Npm => "npm install",
+            LockfileKind::Pnpm => "pnpm install",
+            LockfileKind::Yarn => "yarn",
+        }
+    }
+}
+
+/// SPEC.md §9 step 3: "hash the lockfile (`package-lock.json` | `pnpm-lock.yaml` | `yarn.lock`,
+/// first found)". The order itself is testable on its own ([`find_lockfile`] below does the actual
+/// `is_file()` check against it).
+pub const LOCKFILE_SEARCH_ORDER: [(&str, LockfileKind); 3] = [
+    ("package-lock.json", LockfileKind::Npm),
+    ("pnpm-lock.yaml", LockfileKind::Pnpm),
+    ("yarn.lock", LockfileKind::Yarn),
+];
+
+/// Finds the first lockfile present in `project_dir`, per SPEC.md §9 step 3's fixed search order.
+/// `None` means "no lockfile at all" — SPEC.md §9: "skip hashing and installing entirely".
+pub fn find_lockfile(project_dir: &Path) -> Option<(LockfileKind, PathBuf)> {
+    LOCKFILE_SEARCH_ORDER.iter().find_map(|(name, kind)| {
+        let candidate = project_dir.join(name);
+        candidate.is_file().then_some((*kind, candidate))
+    })
+}
+
+/// SPEC.md §9 step 3: "SHA-256" of the lockfile's bytes, as a lowercase hex string — the same shape
+/// `Project.last_lockfile_hash` is stored in.
+pub fn hash_lockfile(path: &Path) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let bytes = std::fs::read(path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
+    let digest = Sha256::digest(&bytes);
+    Ok(format!("{digest:x}"))
+}
+
+/// SPEC.md §9 step 3's three-way OR, as a pure function — the whole install decision in one place
+/// so all four branches ((a) unset, (b) differs, (c) `node_modules` missing, and "none of the
+/// above") are testable without touching a filesystem or spawning anything.
+pub fn needs_install(
+    last_hash: Option<&str>,
+    current_hash: &str,
+    node_modules_exists: bool,
+) -> bool {
+    match last_hash {
+        None => true,                         // (a) lastLockfileHash unset
+        Some(last) if last != current_hash => true, // (b) hash differs
+        _ => !node_modules_exists,            // (c) node_modules missing
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1457,9 +1610,151 @@ pub fn spawn_exit_watcher(
     });
 }
 
+/// The `updating`/`installing` phase children's own reaper (SPEC.md §9 steps 2-3). Unlike
+/// [`spawn_exit_watcher`], it applies no §6 transition — a git-pull or install exit is not
+/// automatically a crash (git failures warn-and-continue; install failures get their own `crashed`
+/// wording) — `run.rs` decides that once it has the exit code via `done`. What it still does,
+/// identically to the dev command's watcher, is reap the child, drain its log pipeline and signal
+/// `exited`. Crucially it runs **detached**: a `run_project` future dropped by the §9 step 2 10 s
+/// git timeout stops awaiting `done`, but this task keeps running and still reaps the child once
+/// the timeout handler's kill lands on it — no zombie, no abandoned `Child` (SPEC.md §8).
+pub fn spawn_phase_reaper(
+    app: AppHandle,
+    project_id: String,
+    child: Child,
+    pipeline: LogPipeline,
+    exited: watch::Sender<bool>,
+    done: tokio::sync::oneshot::Sender<Option<i32>>,
+) {
+    tauri::async_runtime::spawn(async move {
+        let mut child = child;
+        let result = child.wait().await;
+        pipeline.drain(&app, &project_id).await;
+        let exit_code = result.ok().and_then(|status| status.code());
+        let _ = exited.send(true);
+        let _ = done.send(exit_code);
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -------------------------------------------------------------------------------------------
+    // SPEC.md §9 steps 2-3 — the pure parts: lockfile selection/hashing, the install decision,
+    // and the git-check interpretation.
+    // -------------------------------------------------------------------------------------------
+
+    fn scratch_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "hangar-process-test-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create scratch dir");
+        dir
+    }
+
+    #[test]
+    fn find_lockfile_prefers_npm_over_pnpm_and_yarn() {
+        let dir = scratch_dir("lockfile-order");
+        std::fs::write(dir.join("yarn.lock"), "").unwrap();
+        std::fs::write(dir.join("pnpm-lock.yaml"), "").unwrap();
+        std::fs::write(dir.join("package-lock.json"), "{}").unwrap();
+        assert_eq!(find_lockfile(&dir).map(|(k, _)| k), Some(LockfileKind::Npm));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn find_lockfile_falls_back_pnpm_then_yarn_then_none() {
+        let dir = scratch_dir("lockfile-pnpm");
+        std::fs::write(dir.join("pnpm-lock.yaml"), "").unwrap();
+        std::fs::write(dir.join("yarn.lock"), "").unwrap();
+        assert_eq!(find_lockfile(&dir).map(|(k, _)| k), Some(LockfileKind::Pnpm));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let dir = scratch_dir("lockfile-yarn");
+        std::fs::write(dir.join("yarn.lock"), "").unwrap();
+        assert_eq!(find_lockfile(&dir).map(|(k, _)| k), Some(LockfileKind::Yarn));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let dir = scratch_dir("lockfile-none");
+        assert!(find_lockfile(&dir).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hash_lockfile_is_sha256_hex() {
+        let dir = scratch_dir("hash");
+        let file = dir.join("package-lock.json");
+        std::fs::write(&file, b"hello").unwrap();
+        // sha256("hello"), verified against `shasum -a 256` — a well-known test vector.
+        assert_eq!(
+            hash_lockfile(&file).unwrap(),
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn needs_install_covers_all_four_branches() {
+        // (a) lastLockfileHash unset.
+        assert!(needs_install(None, "abc", true));
+        // (b) hash differs from the stored one.
+        assert!(needs_install(Some("old"), "new", true));
+        // (c) node_modules missing, even though the hash matches.
+        assert!(needs_install(Some("abc"), "abc", false));
+        // None of the three: skip.
+        assert!(!needs_install(Some("abc"), "abc", true));
+    }
+
+    #[test]
+    fn interpret_git_check_covers_repo_missing_and_not_repo() {
+        assert_eq!(interpret_git_check(Some(0)), GitAvailability::IsRepo);
+        // `git rev-parse` outside a work tree exits 128.
+        assert_eq!(interpret_git_check(Some(128)), GitAvailability::NotRepo);
+        assert_eq!(interpret_git_check(Some(127)), GitAvailability::GitMissing);
+        assert_eq!(interpret_git_check(Some(126)), GitAvailability::GitMissing);
+        assert_eq!(interpret_git_check(None), GitAvailability::NotRepo);
+    }
+
+    #[test]
+    fn lock_project_path_serializes_two_concurrent_holders() {
+        // SPEC.md §9 step 3: "two projects sharing a folder cannot pull or install concurrently".
+        let dir = scratch_dir("mutex-serialize");
+        let cleanup_dir = dir.clone();
+        // `block_on` uses Tauri's runtime — SPEC.md §4 forbids creating one of our own.
+        tauri::async_runtime::block_on(async move {
+            let order: Arc<StdMutex<Vec<&'static str>>> = Arc::new(StdMutex::new(Vec::new()));
+
+            let dir_a = dir.clone();
+            let order_a = order.clone();
+            let first = tauri::async_runtime::spawn(async move {
+                let _guard = lock_project_path(&dir_a).await;
+                order_a.lock().unwrap().push("a-acquired");
+                tokio::time::sleep(Duration::from_millis(80)).await;
+                order_a.lock().unwrap().push("a-released");
+            });
+
+            // Head start so the first task is demonstrably holding the guard before the second asks.
+            tokio::time::sleep(Duration::from_millis(20)).await;
+
+            let order_b = order.clone();
+            let second = tauri::async_runtime::spawn(async move {
+                let _guard = lock_project_path(&dir).await;
+                order_b.lock().unwrap().push("b-acquired");
+            });
+
+            first.await.unwrap();
+            second.await.unwrap();
+
+            // "b-acquired" must never appear before "a-released": the second holder could not
+            // acquire the mutex until the first one's guard — held across its sleep — was dropped.
+            let recorded = order.lock().unwrap().clone();
+            assert_eq!(recorded, vec!["a-acquired", "a-released", "b-acquired"]);
+        });
+        let _ = std::fs::remove_dir_all(&cleanup_dir);
+    }
 
     #[test]
     fn strips_color_sequences() {

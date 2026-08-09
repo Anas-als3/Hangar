@@ -8,6 +8,7 @@
 //! - `git pull`, lockfile hashing and installs — plan 006.
 
 use std::future::Future;
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -16,8 +17,9 @@ use tauri_plugin_opener::OpenerExt;
 use tokio::sync::watch;
 
 use crate::commands::AppState;
+use crate::env_resolve::EnvMap;
 use crate::process::{
-    self, KillTarget, ProjectRuntime, ShellKind, SpawnOutcome, SpawnSpec, StopClaim,
+    self, KillTarget, LockfileKind, ProjectRuntime, ShellKind, SpawnOutcome, SpawnSpec, StopClaim,
 };
 use crate::registry::{self, Project, Status};
 
@@ -46,10 +48,20 @@ pub const SLEEP_GAP: Duration = Duration::from_secs(5);
 /// that cannot name its trigger cannot change a status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Trigger {
-    /// Run clicked.
-    Run,
+    /// Run clicked. Carries the phase this run actually starts in — SPEC.md §9 steps 2-3 only
+    /// enter `updating`/`installing` when there is real work to do (a pull that will really run, an
+    /// install that will really run); §12's "Not a git repo | skip pull silently" and "no lockfile
+    /// found | skip installing" both mean the corresponding status is never observed at all, not
+    /// entered-then-immediately-left. `run_project` decides the payload before claiming the run,
+    /// once for the whole run — see its `first_phase` computation.
+    Run(Status),
     /// Stop clicked — valid in every active phase, not just `running`.
     Stop,
+    /// The run sequence advancing itself once a phase's own work is done (SPEC.md §9 steps 2-4):
+    /// `updating` → `installing`/`starting`, or `installing` → `starting`. Not a user-facing event
+    /// — the "cause" is simply "the previous phase finished" — but it still goes through this same
+    /// table rather than a parallel status write, so it stays the single source of truth.
+    PhaseAdvance(Status),
     /// The port answered and the grace elapsed (§9 step 6). Plan 004 owns the polling that produces
     /// it; M3 fires it straight after a successful spawn.
     Ready,
@@ -95,12 +107,21 @@ pub fn next_status(from: Status, trigger: Trigger) -> Result<Status, Rejection> 
 
     match trigger {
         // | `stopped`, `crashed` | Run clicked | `updating` → `installing` → `starting` per §9 |
-        // M3 has no pull/install phases yet, so the first phase it can honestly enter is `starting`;
-        // plan 006 moves the entry point to `updating`. The guard — Run legal from nowhere else — is
-        // the part §6 freezes.
-        Trigger::Run => match from {
-            Stopped | Crashed => Ok(Starting),
+        // The guard — Run legal from nowhere else, and only into one of the three real phases — is
+        // the part §6 freezes; *which* of the three is `run_project`'s call, made once before the
+        // claim (see `Trigger::Run`'s doc).
+        Trigger::Run(first_phase) => match from {
+            Stopped | Crashed if matches!(first_phase, Updating | Installing | Starting) => {
+                Ok(first_phase)
+            }
+            Stopped | Crashed => refuse("invalid first phase for Run"),
             _ => refuse("Run is only valid from stopped or crashed"),
+        },
+
+        // The run sequence's own §9 steps 2-4 progression — see `Trigger::PhaseAdvance`'s doc.
+        Trigger::PhaseAdvance(to) => match (from, to) {
+            (Updating, Installing) | (Updating, Starting) | (Installing, Starting) => Ok(to),
+            _ => refuse("phase advance is only valid updating->installing/starting or installing->starting"),
         },
 
         // | `updating`, `installing`, `starting`, `running` | Stop clicked | `stopping` |
@@ -493,6 +514,72 @@ pub async fn open_in_editor(app: &AppHandle, project: &Project) -> Result<(), St
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// SPEC.md §9 steps 2-3 — decide, once, which phases a Run actually performs
+// ---------------------------------------------------------------------------------------------
+
+/// SPEC.md §9 step 2 / §12. Only [`Pull`] enters `updating` at all — see `Trigger::Run`'s doc for
+/// why the other two must not.
+///
+/// [`Pull`]: UpdatePlan::Pull
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpdatePlan {
+    Pull,
+    /// §12: "git not found — skipping update" — always logged.
+    GitMissing,
+    /// `updateOnRun` is off, or the folder is not a git repo — §12: "Skip pull silently".
+    Skip,
+}
+
+/// SPEC.md §9 step 2: decided once, before the run claims its first phase.
+async fn plan_update(project: &Project, env: &EnvMap) -> UpdatePlan {
+    if !project.update_on_run {
+        return UpdatePlan::Skip;
+    }
+    match process::check_git_repo(Path::new(&project.path), env).await {
+        process::GitAvailability::IsRepo => UpdatePlan::Pull,
+        process::GitAvailability::GitMissing => UpdatePlan::GitMissing,
+        process::GitAvailability::NotRepo => UpdatePlan::Skip,
+    }
+}
+
+/// SPEC.md §9 step 3 / §12. Only [`Run`] enters `installing` — see `Trigger::Run`'s doc.
+/// [`NoLockfile`]'s reason is always logged (unlike [`UpdatePlan::Skip`]'s silence): SPEC.md §9
+/// step 3 gives it an explicit line even for the "no lockfile at all" case.
+///
+/// [`Run`]: InstallPlan::Run
+/// [`NoLockfile`]: InstallPlan::NoLockfile
+#[derive(Debug, Clone)]
+enum InstallPlan {
+    Run { kind: LockfileKind, hash: String },
+    UpToDate,
+    NoLockfile(String),
+}
+
+/// SPEC.md §9 step 3's three-way OR decision, decided once before the run claims its first phase
+/// (or re-decided under the per-canonical-path mutex once a sibling project's install has been
+/// awaited — see `run_project`'s `_path_guard`).
+fn plan_install(project: &Project) -> InstallPlan {
+    let dir = Path::new(&project.path);
+    let Some((kind, lockfile_path)) = process::find_lockfile(dir) else {
+        return InstallPlan::NoLockfile("no lockfile found — skipping install".to_string());
+    };
+    let hash = match process::hash_lockfile(&lockfile_path) {
+        Ok(hash) => hash,
+        Err(e) => {
+            return InstallPlan::NoLockfile(format!(
+                "could not hash the lockfile, skipping the install check: {e}"
+            ))
+        }
+    };
+    let node_modules_exists = dir.join("node_modules").is_dir();
+    if process::needs_install(project.last_lockfile_hash.as_deref(), &hash, node_modules_exists) {
+        InstallPlan::Run { kind, hash }
+    } else {
+        InstallPlan::UpToDate
+    }
+}
+
 /// SPEC.md §9 steps 5-7, run in the background so `run_project` stays fire-and-forget (§7) instead
 /// of holding an IPC call open for `readyTimeoutSec`.
 async fn await_ready_then_hand_off(app: AppHandle, project: Project, exited: watch::Receiver<bool>) {
@@ -618,30 +705,99 @@ pub async fn run_project(app: &AppHandle, project_id: &str) -> Result<(), String
         });
     }
 
+    // ---- §6: fail a double-click fast, before touching the mutex below -------------------------
+    // A real double-click must still be rejected near-instantly (§6: "impossible to double-spawn"),
+    // not after waiting out a contended per-path mutex or a git-repo-check that a rejected Run will
+    // throw away. This is a peek, not the atomic claim — `Status::Starting` is a placeholder target
+    // that only matters if `from` turns out legal, in which case the real work below decides the
+    // real one. The claim a few lines down is what actually enforces §6; a race that slips past this
+    // peek is still caught there.
+    let peeked_status = {
+        let runtime = state.runtime.lock().await;
+        runtime.get(&project.id).map(|e| e.status).unwrap_or(Status::Stopped)
+    };
+    if let Err(rejection) = next_status(peeked_status, Trigger::Run(Status::Starting)) {
+        return Err(rejection.for_project(&project.name));
+    }
+
+    // ---- SPEC.md §9 step 3: serialize against any sibling project on the same folder -----------
+    // Held across the phase decision below AND both phases that follow; dropped once `starting`
+    // begins (SPEC.md §9 step 3: "steps 2-3 take a per-canonical-path mutex").
+    let _path_guard = process::lock_project_path(Path::new(&project.path)).await;
+
+    // ---- §8 environment resolution, needed early: the git-repo-check below spawns `git` ---------
+    let (env, path_searched, notes) = {
+        let dev_env = state.dev_env.get().await;
+        (
+            dev_env.vars.clone(),
+            dev_env.effective_path(),
+            dev_env.notes.clone(),
+        )
+    };
+
+    // ---- SPEC.md §9 steps 2-3: decide, once, which phases this run actually performs ------------
+    // Computed under the mutex (so a sibling's just-finished install is visible — the "re-check"
+    // SPEC.md §9 step 3 asks for) and BEFORE the claim below, because §12's "skip pull silently" /
+    // "no lockfile found — skipping install" both mean the corresponding status is never entered
+    // at all — see `Trigger::Run`'s doc.
+    let update_plan = plan_update(&project, &env).await;
+    let mut install_plan = plan_install(&project);
+    let first_phase = if update_plan == UpdatePlan::Pull {
+        Status::Updating
+    } else if matches!(install_plan, InstallPlan::Run { .. }) {
+        Status::Installing
+    } else {
+        Status::Starting
+    };
+
     // ---- §6 guard + claim, atomically ---------------------------------------------------------
     //
-    // The claim moves the card to `starting`, which is precisely what makes Stop legal (§6). Every
-    // await below therefore runs inside a window where the user can press Stop but there is no
-    // child to kill yet — the `lastRunAt` write, the login-shell environment resolution (a cold
-    // cell shells out with a 5 s budget) and, once plans 004/006 land, the whole pull/install
-    // phase. `spawn_in_flight` is the run sequence's claim on that window: a Stop arriving inside
-    // it parks on this receiver rather than verifying a death that has not happened, and the run
-    // sequence cancels itself the moment it notices (SPEC.md §12, "Stop clicked during
-    // updating/installing/starting").
+    // The claim moves the card into its first real phase, which is precisely what makes Stop legal
+    // (§6). Every await below therefore runs inside a window where the user can press Stop but
+    // there is no child to kill yet. `spawn_in_flight` is the run sequence's claim on that window: a
+    // Stop arriving inside it parks on this receiver rather than verifying a death that has not
+    // happened, and the run sequence cancels itself the moment it notices (SPEC.md §12, "Stop
+    // clicked during updating/installing/starting").
     //
     // The sender is held for the whole body of this function: every return path drops it, which
     // releases a parked Stop even on a path that forgot to.
     let (spawn_claim, spawn_in_flight) = tokio::sync::watch::channel(false);
-    apply_with(app, &project.id, Trigger::Run, None, |entry| {
+    apply_with(app, &project.id, Trigger::Run(first_phase), None, |entry| {
         entry.begin_run(spawn_in_flight)
     })
     .await
     .map_err(|rejection| rejection.for_project(&project.name))?;
+    for note in notes {
+        process::append_system(app, &project.id, note).await;
+    }
 
-    // PLAN 006 SEAM. SPEC.md §9 steps 2-3 — `updating` (git pull --ff-only) and `installing`
-    // (lockfile hash + npm/pnpm/yarn install), both stoppable, both taking the per-canonical-path
-    // mutex — insert here, between the claim and the spawn below. The §6 machine already treats
-    // both statuses as legal and stoppable; nothing enters them yet.
+    // ---- SPEC.md §9 steps 2-3: run whichever phases were actually planned above -----------------
+    let mut spawn_registered = false;
+    if let ControlFlow::Break(result) = advance_through_update(
+        app,
+        &project,
+        &env,
+        update_plan,
+        &mut install_plan,
+        &mut spawn_registered,
+    )
+    .await
+    {
+        return result;
+    }
+    if let ControlFlow::Break(result) = advance_through_install(
+        app,
+        &project,
+        &env,
+        &path_searched,
+        &install_plan,
+        &mut spawn_registered,
+    )
+    .await
+    {
+        return result;
+    }
+    drop(_path_guard);
 
     // ---- §5/§6: lastRunAt is set when entering `starting` -------------------------------------
     let started_at = iso8601_utc(SystemTime::now());
@@ -656,26 +812,13 @@ pub async fn run_project(app: &AppHandle, project_id: &str) -> Result<(), String
         process::append_system(app, &project.id, format!("could not save lastRunAt: {e}")).await;
     }
 
-    // ---- §8 environment resolution ------------------------------------------------------------
-    let (env, path_searched, notes) = {
-        let dev_env = state.dev_env.get().await;
-        (
-            dev_env.vars.clone(),
-            dev_env.effective_path(),
-            dev_env.notes.clone(),
-        )
-    };
-    for note in notes {
-        process::append_system(app, &project.id, note).await;
-    }
-
     // ---- §9 step 4: spawn ---------------------------------------------------------------------
     //
-    // Last look before anything is created: a Stop that landed while the environment was resolving
-    // costs zero processes if it is noticed here. `had_child: false` is the honest input to §8
-    // verification — there demonstrably never was a child for this run.
-    if stop_is_pending(app, &project.id).await {
-        return cancel_run(app, &project, KillTarget::default()).await;
+    // Last look before anything is created (SPEC.md §9): a Stop that landed during the phases above
+    // — or while `lastRunAt` was being persisted — costs zero *new* processes if it is noticed here.
+    // `env`/`path_searched` were already resolved above (needed for the git-repo-check).
+    if let Some(result) = bail_if_stop_pending(app, &project, spawn_registered).await {
+        return result;
     }
 
     process::append_system(app, &project.id, format!("$ {}", project.command)).await;
@@ -797,6 +940,320 @@ async fn cancel_run(
         target,
     )
     .await
+}
+
+/// SPEC.md §9's "Last look before anything is created" guard, shared by every phase's spawn point
+/// (git pull, installer, dev command). `spawn_registered` distinguishes the run's very first spawn
+/// — where a parked Stop has nothing to signal yet, so this call must do the §8 kill+report itself,
+/// exactly as the dev command's own pre-spawn check always has — from a later phase, where a
+/// concurrent Stop already has (or, via the still-registered previous phase's kill primitive, will
+/// get) a real target of its own; see `ProjectRuntime::claim_stop`. Calling `cancel_run` a second
+/// time in that case would risk reporting `stopped` before the real kill has verified anything.
+async fn bail_if_stop_pending(
+    app: &AppHandle,
+    project: &Project,
+    spawn_registered: bool,
+) -> Option<Result<(), String>> {
+    if !stop_is_pending(app, &project.id).await {
+        return None;
+    }
+    Some(if spawn_registered {
+        Ok(())
+    } else {
+        cancel_run(app, project, KillTarget::default()).await
+    })
+}
+
+/// What running one phase child (git pull, or an installer) produced.
+#[derive(Debug)]
+enum PhaseOutcome {
+    /// Ran to completion under its own steam. `None` = terminated by signal / wait failed.
+    Exited(Option<i32>),
+    /// Could not even be spawned (SPEC.md §8/§12: `/bin/sh` itself always exists, so this is rare).
+    SpawnFailed(String),
+}
+
+/// Spawns one phase child through the ONE §8 helper and wires it into the SAME kill bookkeeping
+/// the dev command uses (`register_child`/`take_kill_target`), so Stop reaches it with no new
+/// plumbing (SPEC.md §6: Stop is valid in every active phase). `Err(result)` means a Stop landed
+/// before or during the spawn and `result` is what `run_project` must return as-is — see
+/// `bail_if_stop_pending`'s doc for what `spawn_registered` distinguishes.
+async fn run_phase_child(
+    app: &AppHandle,
+    project: &Project,
+    spec: SpawnSpec,
+    spawn_registered: &mut bool,
+) -> Result<PhaseOutcome, Result<(), String>> {
+    if let Some(result) = bail_if_stop_pending(app, project, *spawn_registered).await {
+        return Err(result);
+    }
+
+    let spawned = match process::spawn(&spec) {
+        Ok(spawned) => spawned,
+        Err(e) => return Ok(PhaseOutcome::SpawnFailed(e)),
+    };
+    let mut child = spawned.child;
+    let pid = child.id();
+    let (exit_tx, exit_rx) = tokio::sync::watch::channel(false);
+
+    let state = app.state::<AppState>();
+    let outcome = {
+        let mut runtime = state.runtime.lock().await;
+        let entry = runtime.entry(project.id.clone()).or_default();
+        #[cfg(windows)]
+        {
+            entry.job = spawned.job;
+        }
+        entry.register_child(pid, exit_rx.clone(), String::new())
+    };
+    *spawn_registered = true;
+
+    let pipeline = process::attach_log_pipeline(app, &project.id, &mut child);
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    process::spawn_phase_reaper(app.clone(), project.id.clone(), child, pipeline, exit_tx, done_tx);
+
+    if outcome == SpawnOutcome::CancelRun {
+        let target = {
+            let mut runtime = state.runtime.lock().await;
+            runtime.entry(project.id.clone()).or_default().take_kill_target()
+        };
+        return Err(cancel_run(app, project, target).await);
+    }
+
+    match done_rx.await {
+        Ok(code) => Ok(PhaseOutcome::Exited(code)),
+        // The reaper task itself was dropped/panicked before sending — treat as an unknown exit
+        // rather than propagating a channel error nobody asked for.
+        Err(_) => Ok(PhaseOutcome::Exited(None)),
+    }
+}
+
+/// SPEC.md §9 step 3: an install failure crashes the run (unlike a pull failure, which never
+/// does). Applies the §6 transition and hands back the `Err` `run_project` returns.
+async fn crash_run(app: &AppHandle, project_id: &str, message: String) -> ControlFlow<Result<(), String>> {
+    let _ = apply_with(app, project_id, Trigger::Failed, Some(message.clone()), |_| {}).await;
+    ControlFlow::Break(Err(message))
+}
+
+/// SPEC.md §9 step 3: "Store the new hash only after success." Same snapshot-then-save shape as
+/// the `lastRunAt` write in `run_project` (plan 010's maintenance note: new registry writers
+/// should follow it).
+async fn store_lockfile_hash(app: &AppHandle, project: &Project, hash: &str) {
+    let state = app.state::<AppState>();
+    let persist_error = {
+        let mut projects = state.projects.lock().await;
+        if let Some(p) = projects.iter_mut().find(|p| p.id == project.id) {
+            p.last_lockfile_hash = Some(hash.to_string());
+        }
+        registry::save_projects(&state.config_dir, &projects).err()
+    };
+    if let Some(e) = persist_error {
+        process::append_system(app, &project.id, format!("could not save the lockfile hash: {e}"))
+            .await;
+    }
+}
+
+/// SPEC.md §9 step 2: "10 s timeout; on timeout kill the git tree — git spawns ssh and
+/// credential-helper children."
+const GIT_PULL_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// SPEC.md §9 step 2: "auth must fail fast, never prompt" — all four non-interactive variables.
+fn git_pull_env() -> Vec<(String, String)> {
+    vec![
+        ("GIT_TERMINAL_PROMPT".to_string(), "0".to_string()),
+        ("GIT_ASKPASS".to_string(), "echo".to_string()),
+        ("GIT_SSH_COMMAND".to_string(), "ssh -oBatchMode=yes".to_string()),
+        ("GCM_INTERACTIVE".to_string(), "never".to_string()),
+    ]
+}
+
+/// SPEC.md §9 step 2's timeout branch: tree-kill via the same §8 path `on_ready_timeout` uses. The
+/// primitive is still registered even though `run_phase_child`'s future was just dropped by the
+/// `tokio::time::timeout` that raced it — `spawn_phase_reaper` runs detached and keeps reaping.
+async fn kill_timed_out_pull(app: &AppHandle, project: &Project) {
+    let target = {
+        let state = app.state::<AppState>();
+        let mut runtime = state.runtime.lock().await;
+        runtime.entry(project.id.clone()).or_default().take_kill_target()
+    };
+    let outcome = process::kill_tree(target).await;
+    for note in outcome.notes {
+        process::append_system(app, &project.id, note).await;
+    }
+    process::append_system(
+        app,
+        &project.id,
+        format!(
+            "git pull timed out after {} s — stopped it and continuing without updating",
+            GIT_PULL_TIMEOUT.as_secs()
+        ),
+    )
+    .await;
+}
+
+/// SPEC.md §9 step 2: "On any failure … write a warning to the log and continue anyway." A failure
+/// mentioning `index.lock` gets a named hint — SPEC.md: "never delete it automatically".
+async fn warn_pull_failure(app: &AppHandle, project_id: &str, exit_code: Option<i32>) {
+    let message = match exit_code {
+        Some(code) => format!("git pull failed (exit {code}) — continuing without updating"),
+        None => "git pull was terminated — continuing without updating".to_string(),
+    };
+    process::append_system(app, project_id, message).await;
+
+    let mentions_lock = {
+        let state = app.state::<AppState>();
+        let runtime = state.runtime.lock().await;
+        runtime.get(project_id).is_some_and(|entry| {
+            entry.logs.snapshot().iter().any(|l| l.line.contains("index.lock"))
+        })
+    };
+    if mentions_lock {
+        process::append_system(
+            app,
+            project_id,
+            "the pull output mentioned index.lock — another git process may be using this repo; \
+             Hangar will not delete it automatically",
+        )
+        .await;
+    }
+}
+
+/// SPEC.md §9 step 2, run once `entry.status` is already `updating` (the caller claimed
+/// `Trigger::Run(Status::Updating)` because `plan` was already known to be [`UpdatePlan::Pull`]).
+/// Advances to whichever phase comes next when done — a pull failure or timeout warns and
+/// continues (SPEC.md §9 step 2), it never crashes the run, so this never returns `Break` for that
+/// reason; it only does when a Stop has claimed the outcome.
+///
+/// `install_plan` is re-decided here, in place, after the pull attempt — a successful `git pull`
+/// can itself change the lockfile, so the decision made before the pull (used only to pick
+/// `first_phase`) would otherwise go stale and could wrongly skip an install the pull just made
+/// necessary.
+async fn advance_through_update(
+    app: &AppHandle,
+    project: &Project,
+    env: &EnvMap,
+    plan: UpdatePlan,
+    install_plan: &mut InstallPlan,
+    spawn_registered: &mut bool,
+) -> ControlFlow<Result<(), String>> {
+    if plan == UpdatePlan::GitMissing {
+        process::append_system(app, &project.id, "git not found — skipping update").await;
+    }
+    if plan != UpdatePlan::Pull {
+        return ControlFlow::Continue(());
+    }
+
+    let spec = SpawnSpec {
+        command: "git pull --ff-only".to_string(),
+        cwd: Some(PathBuf::from(&project.path)),
+        env: env.clone(),
+        extra_env: git_pull_env(),
+        long_lived: true,
+        kill_on_drop: false,
+        shell: ShellKind::Default,
+    };
+
+    match tokio::time::timeout(GIT_PULL_TIMEOUT, run_phase_child(app, project, spec, spawn_registered))
+        .await
+    {
+        Ok(Err(result)) => return ControlFlow::Break(result),
+        Ok(Ok(PhaseOutcome::Exited(Some(0)))) => {}
+        Ok(Ok(PhaseOutcome::Exited(code))) => warn_pull_failure(app, &project.id, code).await,
+        Ok(Ok(PhaseOutcome::SpawnFailed(e))) => {
+            process::append_system(
+                app,
+                &project.id,
+                format!("could not start git pull: {e} — continuing without updating"),
+            )
+            .await;
+        }
+        Err(_elapsed) => kill_timed_out_pull(app, project).await,
+    }
+
+    if let Some(result) = bail_if_stop_pending(app, project, *spawn_registered).await {
+        return ControlFlow::Break(result);
+    }
+    // Re-decide with fresh eyes: the pull we just ran may have changed the lockfile.
+    *install_plan = plan_install(project);
+    let next = if matches!(install_plan, InstallPlan::Run { .. }) {
+        Status::Installing
+    } else {
+        Status::Starting
+    };
+    let _ = apply(app, &project.id, Trigger::PhaseAdvance(next), None).await;
+    ControlFlow::Continue(())
+}
+
+/// SPEC.md §9 step 3, run once `entry.status` is already `installing` (the caller claimed
+/// `Trigger::Run(Status::Installing)`, or just advanced into it, because `plan` was already known
+/// to be [`InstallPlan::Run`]). Unlike the update phase, a genuine install failure DOES crash the
+/// run (SPEC.md §9 step 3) — see `crash_run`.
+async fn advance_through_install(
+    app: &AppHandle,
+    project: &Project,
+    env: &EnvMap,
+    path_searched: &str,
+    plan: &InstallPlan,
+    spawn_registered: &mut bool,
+) -> ControlFlow<Result<(), String>> {
+    let InstallPlan::Run { kind, hash } = plan else {
+        if let InstallPlan::NoLockfile(reason) = plan {
+            process::append_system(app, &project.id, reason.clone()).await;
+        }
+        return ControlFlow::Continue(());
+    };
+
+    let spec = SpawnSpec {
+        command: kind.install_command().to_string(),
+        cwd: Some(PathBuf::from(&project.path)),
+        env: env.clone(),
+        extra_env: Vec::new(),
+        long_lived: true,
+        kill_on_drop: false,
+        shell: ShellKind::Default,
+    };
+
+    let outcome = match run_phase_child(app, project, spec, spawn_registered).await {
+        Ok(outcome) => outcome,
+        Err(result) => {
+            process::append_system(
+                app,
+                &project.id,
+                "install was stopped — node_modules may be partial",
+            )
+            .await;
+            return ControlFlow::Break(result);
+        }
+    };
+
+    match outcome {
+        PhaseOutcome::Exited(Some(0)) => store_lockfile_hash(app, project, hash).await,
+        PhaseOutcome::Exited(code) => {
+            if code.is_some_and(process::is_tool_not_found_exit) {
+                process::append_system(app, &project.id, format!("PATH searched: {path_searched}"))
+                    .await;
+            }
+            let message = match code {
+                Some(n) => format!("Install failed (exit {n}) — see the log, then Run again."),
+                None => "Install failed — see the log, then Run again.".to_string(),
+            };
+            return crash_run(app, &project.id, message).await;
+        }
+        PhaseOutcome::SpawnFailed(e) => {
+            return crash_run(
+                app,
+                &project.id,
+                format!("Install failed to start: {e} — see the log, then Run again."),
+            )
+            .await;
+        }
+    }
+
+    if let Some(result) = bail_if_stop_pending(app, project, *spawn_registered).await {
+        return ControlFlow::Break(result);
+    }
+    let _ = apply(app, &project.id, Trigger::PhaseAdvance(Status::Starting), None).await;
+    ControlFlow::Continue(())
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1146,15 +1603,23 @@ mod tests {
 
     #[test]
     fn run_is_legal_only_from_stopped_or_crashed() {
-        assert_eq!(next_status(Status::Stopped, Trigger::Run), Ok(Status::Starting));
-        assert_eq!(next_status(Status::Crashed, Trigger::Run), Ok(Status::Starting));
+        for first_phase in [Status::Updating, Status::Installing, Status::Starting] {
+            assert_eq!(
+                next_status(Status::Stopped, Trigger::Run(first_phase)),
+                Ok(first_phase)
+            );
+            assert_eq!(
+                next_status(Status::Crashed, Trigger::Run(first_phase)),
+                Ok(first_phase)
+            );
+        }
 
         for from in EVERY_STATUS {
             if matches!(from, Status::Stopped | Status::Crashed) {
                 continue;
             }
             assert!(
-                next_status(from, Trigger::Run).is_err(),
+                next_status(from, Trigger::Run(Status::Starting)).is_err(),
                 "Run must be rejected from {}",
                 status_label(from)
             );
@@ -1162,9 +1627,19 @@ mod tests {
     }
 
     #[test]
+    fn run_into_a_non_phase_status_is_rejected_even_from_stopped() {
+        // The payload is trusted to be one of the three real phases everywhere else; this is the
+        // one place that asserts the guard actually rejects a malformed one rather than silently
+        // accepting it.
+        for bogus in [Status::Running, Status::Stopping, Status::Crashed, Status::StopFailed] {
+            assert!(next_status(Status::Stopped, Trigger::Run(bogus)).is_err());
+        }
+    }
+
+    #[test]
     fn run_is_rejected_from_running() {
         // The double-click case, called out explicitly: it must be impossible to double-spawn.
-        let rejection = next_status(Status::Running, Trigger::Run).unwrap_err();
+        let rejection = next_status(Status::Running, Trigger::Run(Status::Starting)).unwrap_err();
         assert_eq!(rejection.from, Status::Running);
         assert_eq!(
             rejection.for_project("IELTS Coach"),
@@ -1508,6 +1983,36 @@ mod tests {
     #[test]
     fn the_browser_url_defaults_to_the_pinned_port() {
         assert_eq!(project_url(&project_fixture(None)), "http://localhost:3000");
+    }
+
+    #[test]
+    fn plan_install_re_reads_after_a_sibling_projects_install_lands() {
+        // SPEC.md §9 step 3: "the project that went first has usually already installed, so the
+        // second should skip". The mechanism is simply that `plan_install` never caches — it
+        // re-reads the hash and `node_modules` fresh on every call, which is what makes the
+        // per-canonical-path mutex's "re-check after acquiring it" meaningful.
+        let dir = std::env::temp_dir().join(format!(
+            "hangar-plan-install-test-{}",
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("package-lock.json"), "{}").unwrap();
+        let hash = process::hash_lockfile(&dir.join("package-lock.json")).unwrap();
+
+        let mut project = project_fixture(None);
+        project.path = dir.to_string_lossy().into_owned();
+        project.last_lockfile_hash = Some(hash);
+
+        // Before the sibling's install: node_modules is missing, so this project still needs one.
+        assert!(matches!(plan_install(&project), InstallPlan::Run { .. }));
+
+        // The sibling project's install lands.
+        std::fs::create_dir_all(dir.join("node_modules")).unwrap();
+
+        // Re-checked: same project, same lockfile hash, but node_modules exists now — up to date.
+        assert!(matches!(plan_install(&project), InstallPlan::UpToDate));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
