@@ -1984,6 +1984,7 @@ mod tests {
             last_lockfile_hash: None,
             last_run_at: None,
             notes: None,
+            stack: None,
         }
     }
 
