@@ -97,6 +97,31 @@ export function AddEditDialog() {
     setCommand(commandFor(packageManager, script));
   }
 
+  const parsedPort = Number(port);
+  const portValid = port.trim() !== "" && Number.isInteger(parsedPort) && parsedPort > 0;
+  const canSave = name.trim() !== "" && path.trim() !== "" && command.trim() !== "" && portValid;
+
+  async function handleSave() {
+    if (!canSave) return;
+    setSaving(true);
+    const payload = {
+      name: name.trim(),
+      path,
+      command,
+      port: parsedPort,
+      url: url.trim() === "" ? undefined : url.trim(),
+      updateOnRun,
+      readyTimeoutSec,
+    };
+    const ok = editing
+      ? await updateProjectAction({
+          ...editing,
+          ...payload,
+        })
+      : await addProjectAction(payload);
+    if (!ok) setSaving(false);
+  }
+
   return (
     <div className="fixed inset-0 z-20 flex items-center justify-center" role="presentation">
       <div className="absolute inset-0 bg-black/40" onClick={closeDialog} aria-hidden="true" />
