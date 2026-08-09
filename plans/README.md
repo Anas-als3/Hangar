@@ -33,6 +33,8 @@ conditions, and update your row below when done.
 | 020 | Per-project notes slide-over + add tile at the end of the grid | — | P3 | M | — | DONE (merged) |
 | 021 | Installable build: bundle script, CI bundle job, human README | — | P1 | S-M | — | DONE (merged; .app + .dmg built, §15 test 9 now startable) |
 | 022 | Visibility fixes: log rejections, search keeps running projects, pathExists refresh, notes indicator, running count | — | P2 | M | — | DONE (merged) |
+| 023 | Project stack detection + framework badge on the card | — | P3 | M | — | TODO |
+| 024 | Distribution: how to share Hangar (decision plan, mostly not buildable yet) | — | P3 | S-L | 021 | AWAITING MAINTAINER |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
 
