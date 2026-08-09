@@ -7,7 +7,7 @@ import ProjectCard from "./ProjectCard";
 
 export function ProjectGrid({ projects }: { projects: ProjectView[] }) {
   return (
-    <div className="grid grid-cols-[repeat(auto-fill,minmax(20rem,1fr))] gap-4">
+    <div className="grid grid-cols-[repeat(auto-fill,minmax(14rem,1fr))] gap-3">
       {projects.map((project) => (
         <ProjectCard key={project.id} project={project} />
       ))}
