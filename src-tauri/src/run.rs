@@ -726,7 +726,7 @@ pub async fn run_project(app: &AppHandle, project_id: &str) -> Result<(), String
     // "no lockfile found — skipping install" both mean the corresponding status is never entered
     // at all — see `Trigger::Run`'s doc.
     let update_plan = plan_update(&project, &env).await;
-    let install_plan = plan_install(&project);
+    let mut install_plan = plan_install(&project);
     let first_phase = if update_plan == UpdatePlan::Pull {
         Status::Updating
     } else if matches!(install_plan, InstallPlan::Run { .. }) {
@@ -763,7 +763,7 @@ pub async fn run_project(app: &AppHandle, project_id: &str) -> Result<(), String
         &project,
         &env,
         update_plan,
-        &install_plan,
+        &mut install_plan,
         &mut spawn_registered,
     )
     .await
@@ -1108,12 +1108,17 @@ async fn warn_pull_failure(app: &AppHandle, project_id: &str, exit_code: Option<
 /// Advances to whichever phase comes next when done — a pull failure or timeout warns and
 /// continues (SPEC.md §9 step 2), it never crashes the run, so this never returns `Break` for that
 /// reason; it only does when a Stop has claimed the outcome.
+///
+/// `install_plan` is re-decided here, in place, after the pull attempt — a successful `git pull`
+/// can itself change the lockfile, so the decision made before the pull (used only to pick
+/// `first_phase`) would otherwise go stale and could wrongly skip an install the pull just made
+/// necessary.
 async fn advance_through_update(
     app: &AppHandle,
     project: &Project,
     env: &EnvMap,
     plan: UpdatePlan,
-    install_plan: &InstallPlan,
+    install_plan: &mut InstallPlan,
     spawn_registered: &mut bool,
 ) -> ControlFlow<Result<(), String>> {
     if plan == UpdatePlan::GitMissing {
@@ -1153,6 +1158,8 @@ async fn advance_through_update(
     if let Some(result) = bail_if_stop_pending(app, project, *spawn_registered).await {
         return ControlFlow::Break(result);
     }
+    // Re-decide with fresh eyes: the pull we just ran may have changed the lockfile.
+    *install_plan = plan_install(project);
     let next = if matches!(install_plan, InstallPlan::Run { .. }) {
         Status::Installing
     } else {
