@@ -28,7 +28,7 @@ conditions, and update your row below when done.
 | 015 | Gate the Unix-only orphan test; Windows gate sees test code | — | P1 | S | 009 | DONE (merged) |
 | 016 | SPEC §11 motion amendment (proposal — maintainer ratifies) | — | P2 | S | — | DONE (ratified and applied to SPEC.md, 2026-08-09) |
 | 017 | Project search field | — | P3 | S | — | DONE (merged) |
-| 018 | UI polish: the motion §11 now permits + a card visual pass | — | P3 | M | 016 | TODO |
+| 018 | UI polish: the motion §11 now permits + a card visual pass | — | P3 | M | 016 | DONE (merged) |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
 
