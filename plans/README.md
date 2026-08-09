@@ -29,7 +29,7 @@ conditions, and update your row below when done.
 | 016 | SPEC §11 motion amendment (proposal — maintainer ratifies) | — | P2 | S | — | DONE (ratified and applied to SPEC.md, 2026-08-09) |
 | 017 | Project search field | — | P3 | S | — | DONE (merged) |
 | 018 | UI polish: the motion §11 now permits + a card visual pass | — | P3 | M | 016 | DONE (merged) |
-| 019 | New palette (graphite/violet) + compact cards | — | P3 | S | — | TODO |
+| 019 | New palette (graphite/violet) + compact cards | — | P3 | S | — | DONE (merged) |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
 
