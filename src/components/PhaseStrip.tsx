@@ -70,8 +70,11 @@ export function PhaseStrip({ project }: { project: ProjectView }) {
   );
 
   return (
+    // Negative margins/padding here must equal ProjectCard's shell padding (p-3) so the
+    // strip bleeds exactly to the card's edge — change both together, or the strip will
+    // either fall short of the edge or overshoot it into the grid gutter.
     <div
-      className="-mx-5 -mb-5 mt-1 flex gap-1 border-t border-white/5 px-5 py-2"
+      className="-mx-3 -mb-3 mt-1 flex gap-1 border-t border-white/5 px-3 py-2"
       aria-hidden="true"
     >
       {PHASES.map(({ key, label }, i) => {
