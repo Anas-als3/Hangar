@@ -344,3 +344,39 @@ export async function removeProjectAction(projectId: string): Promise<void> {
     setToast(errorMessage(err));
   }
 }
+
+/** §10 step 7 — overflow-menu "Open in editor". A rejection is the "couldn't run" toast. */
+export async function openInEditorAction(projectId: string): Promise<void> {
+  try {
+    await openInEditor(projectId);
+  } catch (err) {
+    setToast(errorMessage(err));
+  }
+}
+
+/** §7 `set_settings`. Closes the Settings dialog on success. */
+export async function saveSettingsAction(settings: Settings): Promise<boolean> {
+  try {
+    await setSettings(settings);
+    setState({ dialog: null });
+    return true;
+  } catch (err) {
+    setToast(errorMessage(err));
+    return false;
+  }
+}
+
+/**
+ * §6/§10 step 7: Remove/Edit on a project that is not `stopped`/`crashed` must confirm, then stop
+ * and wait for verified death, before the caller applies the update/remove. Returns whether it is
+ * now safe to proceed. Uses `stopProjectAction` (not the raw `stopProject`) so the store's own
+ * status handling stays the single path; success is read back from the store, which
+ * `status-changed` has by then updated to `stopped` or `stop-failed`.
+ */
+export async function stopIfRunningWithConfirm(project: ProjectView): Promise<boolean> {
+  if (project.status === "stopped" || project.status === "crashed") return true;
+  if (!window.confirm(`${project.name} is running. Stop it first?`)) return false;
+  await stopProjectAction(project.id);
+  const after = state.projects.find((p) => p.id === project.id)?.status;
+  return after === "stopped" || after === "crashed";
+}
