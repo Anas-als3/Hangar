@@ -161,6 +161,35 @@ export function AddEditDialog() {
           </>
         )}
 
+        <label className="mt-5 block text-sm text-muted" htmlFor="project-command">
+          Command
+        </label>
+        <input
+          id="project-command"
+          type="text"
+          value={command}
+          onChange={(e) => setCommand(e.target.value)}
+          placeholder="npm run dev"
+          className="mt-1.5 w-full rounded-md border border-white/10 bg-bg px-3 py-2 font-mono text-sm text-text outline-none focus:border-accent"
+        />
+        <p className="mt-1.5 text-xs text-muted">
+          Env vars work inline — <span className="font-mono">PORT=3001 npm run dev</span>, or on
+          Windows <span className="font-mono">set PORT=3001 &amp;&amp; npm run dev</span>.
+        </p>
+
+        <label className="mt-5 block text-sm text-muted" htmlFor="project-port">
+          Port
+        </label>
+        <input
+          id="project-port"
+          type="number"
+          required
+          value={port}
+          onChange={(e) => setPort(e.target.value)}
+          placeholder="3000"
+          className="mt-1.5 w-full rounded-md border border-white/10 bg-bg px-3 py-2 font-mono text-sm text-text outline-none focus:border-accent"
+        />
+
         <div className="mt-6 flex justify-end gap-2">
           <button
             type="button"
