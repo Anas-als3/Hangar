@@ -88,10 +88,12 @@ export function AddEditDialog() {
       setSelectedScript(defaultScript);
       if (defaultScript) setCommand(commandFor(info.packageManager, defaultScript));
       if (info.portSuggestion !== undefined) setPort(String(info.portSuggestion));
+      setStack(info.stack);
     } catch {
       // §10 step 6: no/unparseable package.json falls back to manual command + port entry.
       setScripts({});
       setSelectedScript(null);
+      setStack(undefined);
     }
   }
 
