@@ -911,6 +911,70 @@ async fn bail_if_stop_pending(
     })
 }
 
+/// What running one phase child (git pull, or an installer) produced.
+#[derive(Debug)]
+enum PhaseOutcome {
+    /// Ran to completion under its own steam. `None` = terminated by signal / wait failed.
+    Exited(Option<i32>),
+    /// Could not even be spawned (SPEC.md §8/§12: `/bin/sh` itself always exists, so this is rare).
+    SpawnFailed(String),
+}
+
+/// Spawns one phase child through the ONE §8 helper and wires it into the SAME kill bookkeeping
+/// the dev command uses (`register_child`/`take_kill_target`), so Stop reaches it with no new
+/// plumbing (SPEC.md §6: Stop is valid in every active phase). `Err(result)` means a Stop landed
+/// before or during the spawn and `result` is what `run_project` must return as-is — see
+/// `bail_if_stop_pending`'s doc for what `spawn_registered` distinguishes.
+async fn run_phase_child(
+    app: &AppHandle,
+    project: &Project,
+    spec: SpawnSpec,
+    spawn_registered: &mut bool,
+) -> Result<PhaseOutcome, Result<(), String>> {
+    if let Some(result) = bail_if_stop_pending(app, project, *spawn_registered).await {
+        return Err(result);
+    }
+
+    let spawned = match process::spawn(&spec) {
+        Ok(spawned) => spawned,
+        Err(e) => return Ok(PhaseOutcome::SpawnFailed(e)),
+    };
+    let mut child = spawned.child;
+    let pid = child.id();
+    let (exit_tx, exit_rx) = tokio::sync::watch::channel(false);
+
+    let state = app.state::<AppState>();
+    let outcome = {
+        let mut runtime = state.runtime.lock().await;
+        let entry = runtime.entry(project.id.clone()).or_default();
+        #[cfg(windows)]
+        {
+            entry.job = spawned.job;
+        }
+        entry.register_child(pid, exit_rx.clone(), String::new())
+    };
+    *spawn_registered = true;
+
+    let pipeline = process::attach_log_pipeline(app, &project.id, &mut child);
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    process::spawn_phase_reaper(app.clone(), project.id.clone(), child, pipeline, exit_tx, done_tx);
+
+    if outcome == SpawnOutcome::CancelRun {
+        let target = {
+            let mut runtime = state.runtime.lock().await;
+            runtime.entry(project.id.clone()).or_default().take_kill_target()
+        };
+        return Err(cancel_run(app, project, target).await);
+    }
+
+    match done_rx.await {
+        Ok(code) => Ok(PhaseOutcome::Exited(code)),
+        // The reaper task itself was dropped/panicked before sending — treat as an unknown exit
+        // rather than propagating a channel error nobody asked for.
+        Err(_) => Ok(PhaseOutcome::Exited(None)),
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // SPEC.md §8 — the Stop sequence: kill the tree, verify death, then the port, then the status
 // ---------------------------------------------------------------------------------------------
