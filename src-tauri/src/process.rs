@@ -768,7 +768,13 @@ pub async fn check_git_repo(path: &Path, env: &EnvMap) -> GitAvailability {
         // run proceed rather than block Run on a hung read-only lookup.
         return GitAvailability::NotRepo;
     };
-    match output.status.code() {
+    interpret_git_check(output.status.code())
+}
+
+/// The exit-code interpretation half of [`check_git_repo`], pulled out so it is unit-testable
+/// without spawning a real `git` (or needing one absent from PATH to test the "missing" branch).
+fn interpret_git_check(exit_code: Option<i32>) -> GitAvailability {
+    match exit_code {
         Some(0) => GitAvailability::IsRepo,
         Some(code) if is_tool_not_found_exit(code) => GitAvailability::GitMissing,
         _ => GitAvailability::NotRepo,
