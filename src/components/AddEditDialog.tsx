@@ -9,7 +9,26 @@
  * The folder picker, script list, port/url/hint fields and save wiring land in the next passes.
  */
 import { useEffect, useState } from "react";
+// Native folder picker (§10 step 1) — dialog plugin only, never tauri-plugin-shell (§4).
+import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
+import { readPackageJson } from "../api";
 import { closeDialog, useHangarStore } from "../store";
+import type { PackageJsonInfo } from "../types";
+
+/** §10 step 3: `npm run <script>` / `pnpm run <script>` / `yarn <script>` per package manager. */
+function commandFor(pm: PackageJsonInfo["packageManager"], script: string): string {
+  if (pm === "npm") return `npm run ${script}`;
+  if (pm === "pnpm") return `pnpm run ${script}`;
+  return `yarn ${script}`;
+}
+
+/** §10 step 2: pre-select `dev` if present, else `start`, else the first script found. */
+function pickDefaultScript(scripts: Record<string, string>): string | null {
+  if ("dev" in scripts) return "dev";
+  if ("start" in scripts) return "start";
+  const keys = Object.keys(scripts);
+  return keys.length > 0 ? keys[0] : null;
+}
 
 export function AddEditDialog() {
   const { dialog } = useHangarStore();
