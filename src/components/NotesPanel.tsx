@@ -72,7 +72,52 @@ export function NotesPanel() {
 
   if (!notesFor || !project) return null;
 
-  return null;
+  return (
+    <div className="fixed inset-0 z-20 flex justify-end" role="presentation">
+      {/* Click-away closes, same as Esc. §11 enter transition: backdrop fades in. */}
+      <div
+        className="hangar-fade-in flex-1 bg-black/40"
+        onClick={closeNotes}
+        aria-hidden="true"
+      />
+
+      <aside
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Notes for ${project.name}`}
+        className="hangar-slide-in flex h-full w-[min(32rem,92vw)] flex-col border-l border-white/10 bg-surface shadow-2xl"
+      >
+        <header className="flex items-center justify-between gap-3 border-b border-white/5 px-5 py-4">
+          <div className="min-w-0">
+            <h2 className="truncate font-display text-base font-medium text-text">
+              {project.name}
+            </h2>
+            {/* §11: "a small, quiet saved indicator" — reserves its line with a non-breaking
+                space so the header does not jump when the text appears/disappears. */}
+            <p className="mt-0.5 text-xs text-muted" aria-live="polite">
+              {justSaved && !dirty ? "Saved" : " "}
+            </p>
+          </div>
+          <button
+            type="button"
+            aria-label="Close notes"
+            onClick={closeNotes}
+            className="shrink-0 rounded-md border border-white/10 px-3 py-1.5 text-sm text-muted transition-colors hover:bg-white/5 hover:text-text"
+          >
+            <span aria-hidden="true">✕</span>
+          </button>
+        </header>
+
+        <textarea
+          value={value}
+          onChange={(e) => handleChange(e.target.value)}
+          onBlur={handleBlur}
+          placeholder="Notes for this project — a scratchpad the app never reads."
+          className="flex-1 resize-none bg-bg px-5 py-4 text-sm text-text outline-none placeholder:text-muted/60"
+        />
+      </aside>
+    </div>
+  );
 }
 
 export default NotesPanel;
