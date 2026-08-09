@@ -6,12 +6,38 @@
  * listeners live in `src/store.ts` and run from app startup, so lines emitted while this panel
  * was closed are already in the store when it opens. The backfill (`get_log_buffer`) is merged
  * on open by the store.
- *
- * The Copy button §11 also asks for belongs to plan 006's UI pass and is deliberately absent.
  */
 import { useEffect, useRef, useState } from "react";
 import type { LogLine } from "../types";
 import { clearLogs, closeLogs, useHangarStore } from "../store";
+
+/**
+ * §11 Copy button: the entire retained buffer, with stream prefixes, via the async clipboard
+ * API with an `execCommand('copy')` fallback — the async API is unreliable on Linux
+ * webkit2gtk builds. Resolves to whether the copy actually succeeded.
+ */
+async function copyLogLines(lines: LogLine[]): Promise<boolean> {
+  const text = lines.map((line) => `[${line.stream}] ${line.line}`).join("\n");
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    document.body.appendChild(textarea);
+    textarea.select();
+    let ok = false;
+    try {
+      ok = document.execCommand("copy");
+    } catch {
+      ok = false;
+    }
+    document.body.removeChild(textarea);
+    return ok;
+  }
+}
 
 /** §11: stderr tinted, `system` lines muted, stdout plain. Tone comes from the stream field only. */
 const STREAM_TONE: Record<LogLine["stream"], string> = {
@@ -26,10 +52,18 @@ const BOTTOM_SLACK_PX = 24;
 export function LogPanel() {
   const { openLogsFor, projects, logs } = useHangarStore();
   const [autoscroll, setAutoscroll] = useState(true);
+  const [copied, setCopied] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
   const project = projects.find((p) => p.id === openLogsFor) ?? null;
   const lines = openLogsFor ? (logs[openLogsFor] ?? []) : [];
+
+  async function handleCopy(): Promise<void> {
+    const ok = await copyLogLines(lines);
+    if (!ok) return;
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  }
 
   // §11: Esc closes the slide-over. The only keyboard shortcut in v0.
   useEffect(() => {
@@ -41,9 +75,10 @@ export function LogPanel() {
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [openLogsFor]);
 
-  // A freshly opened panel always starts pinned to the newest line.
+  // A freshly opened panel always starts pinned to the newest line, with no stale "Copied".
   useEffect(() => {
     setAutoscroll(true);
+    setCopied(false);
   }, [openLogsFor]);
 
   // Autoscroll — suspended as soon as the user scrolls up, resumed when they scroll back down.
@@ -80,6 +115,13 @@ export function LogPanel() {
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void handleCopy()}
+              className="rounded-md border border-white/10 px-3 py-1.5 text-sm text-muted transition-colors hover:bg-white/5 hover:text-text"
+            >
+              {copied ? "Copied" : "Copy"}
+            </button>
             <button
               type="button"
               onClick={() => void clearLogs(project.id)}
