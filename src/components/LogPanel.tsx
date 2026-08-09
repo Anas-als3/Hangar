@@ -92,9 +92,9 @@ export function LogPanel() {
 
   return (
     <div className="fixed inset-0 z-20 flex justify-end" role="presentation">
-      {/* Click-away closes, same as Esc. */}
+      {/* Click-away closes, same as Esc. §11 enter transition: backdrop fades in. */}
       <div
-        className="flex-1 bg-black/40"
+        className="hangar-fade-in flex-1 bg-black/40"
         onClick={closeLogs}
         aria-hidden="true"
       />
@@ -103,7 +103,7 @@ export function LogPanel() {
         role="dialog"
         aria-modal="true"
         aria-label={`Logs for ${project.name}`}
-        className="flex h-full w-[min(46rem,92vw)] flex-col border-l border-white/10 bg-surface shadow-2xl"
+        className="hangar-slide-in flex h-full w-[min(46rem,92vw)] flex-col border-l border-white/10 bg-surface shadow-2xl"
       >
         <header className="flex items-center justify-between gap-3 border-b border-white/5 px-5 py-4">
           <div className="min-w-0">
