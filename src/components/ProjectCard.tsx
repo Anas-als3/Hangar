@@ -160,7 +160,7 @@ export function ProjectCard({ project }: { project: ProjectView }) {
     lastRunLabel(project.lastRunAt);
 
   return (
-    <article className="relative flex flex-col gap-4 rounded-lg border border-white/5 bg-surface p-5 transition-transform duration-150 hover:-translate-y-0.5">
+    <article className="hangar-fade-in relative flex flex-col gap-4 rounded-lg border border-white/5 bg-surface p-5 transition-transform duration-150 hover:-translate-y-0.5">
       <header className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h2 className="truncate font-display text-lg font-medium text-text">
