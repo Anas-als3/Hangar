@@ -26,7 +26,7 @@ conditions, and update your row below when done.
 | 013 | Restrictive webview CSP | — | P2 | S | — | TODO |
 | 014 | Un-brick stop-failed on foreign port owners | — | P2 | M | 007 | TODO |
 | 015 | Gate the Unix-only orphan test; Windows gate sees test code | — | P1 | S | 009 | DONE (merged) |
-| 016 | SPEC §11 motion amendment (proposal — maintainer ratifies) | — | P2 | S | — | AWAITING MAINTAINER |
+| 016 | SPEC §11 motion amendment (proposal — maintainer ratifies) | — | P2 | S | — | DONE (ratified and applied to SPEC.md, 2026-08-09) |
 | 017 | Project search field | — | P3 | S | 016 not required | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)

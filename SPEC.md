@@ -233,10 +233,21 @@ Steam-library energy, but its own identity — a launch bay for code. Dark, dens
 
 - **Palette:** background `#101623`, cards `#1A2233`, text `#E8ECF4`, muted `#8A94A8`. Single accent: warm amber `#F5B942` (Run button, active phase). Status colors are functional only: running `#34D399`, starting/updating amber pulse, crashed & stop-failed `#F87171`, stopped slate.
 - **Type:** Space Grotesk for the app title and project names; Inter for UI; JetBrains Mono for logs and ports. Bundled via Fontsource (§4) — no CDN.
-- **Card contents:** project name, status pill with port (`:3000` in mono), time slot — **state-dependent: while running it shows uptime ("up 12 m", refreshed at 30 s granularity or coarser — no ticking seconds); otherwise last-run relative time** — primary Run/Stop button, overflow menu: Open in browser · Open in editor · Show logs · Edit · Remove. A `crashed` card's primary button is **Run** (retry). While `stopping`, the button shows a spinner and is disabled. Cards render in `projects.json` array order; new projects append; Remove preserves the order of the rest — no automatic re-sorting, ever.
+- **Card contents:** project name, status pill with port (`:3000` in mono), time slot — **state-dependent: while running it shows uptime ("up 12 m", refreshed at 30 s granularity or coarser — no ticking seconds); otherwise last-run relative time** — primary Run/Stop button, overflow menu: Open in browser · Open in editor · Show logs · Edit · Remove. A `crashed` card's primary button is **Run** (retry). While `stopping`, the button shows a spinner and is disabled. Cards render in `projects.json` array order; new projects append; Remove preserves the order of the rest — no automatic re-sorting, ever. The elements above and their order are fixed; their visual treatment (spacing, hierarchy, weight, borders, the exact composition within the card) is not, provided it uses the §11 palette tokens and type scale and keeps the card readable at a glance in a dense grid.
 - **Signature element:** when Run is clicked, a slim **phase strip** appears along the card's bottom edge — labeled segments `Pull → Install → Start → Ready` that light up in amber as each real phase completes (mapping: updating / installing / starting / running). Phases skipped this run (not a git repo, no install needed) render dimmed, not lit. This is the one memorable element; it encodes the actual sequence, not decoration. Keep everything else quiet.
 - **Logs:** slide-over panel, mono font, autoscroll with pause-on-scroll-up, **Copy button** (copies the entire retained buffer with stream prefixes — `navigator.clipboard.writeText` with an `execCommand('copy')` fallback; brief "Copied" confirmation), Clear button, stderr lines tinted, `system` lines muted. **Esc closes the slide-over.** No other keyboard shortcuts in v0.
-- **Motion:** phase-strip fill + subtle card hover lift only. Respect `prefers-reduced-motion`. No gradients, no glassmorphism, no confetti.
+- **Motion:** restrained and functional — motion exists to explain a state change, never to decorate. Allowed:
+  - the phase-strip fill (the signature element — it stays the most expressive motion in the app, and nothing else may compete with it);
+  - a subtle card hover lift;
+  - enter/exit transitions on the surfaces that appear over the grid: the Add/Edit dialog, the Settings dialog, the log slide-over (which §11 already calls a *slide*-over), and toasts — fade and/or a short translate, ≤200 ms, ease-out;
+  - colour/opacity transitions on status pills and phase segments when a status actually changes, ≤200 ms;
+  - card enter/exit when a project is added or removed.
+
+  Everything else stays still. Still banned: gradients, glassmorphism, confetti, parallax, scroll-linked effects, looping/idle animation (the `stopping` spinner and the amber pulse on transitional statuses are the only loops), and any motion that delays interaction — a control must be usable on the frame it appears.
+
+  Implement with **CSS transitions**, not JS animation loops or animation libraries. This is a performance requirement, not a style preference: the store notifies every subscriber on every log flush, so cards re-render frequently; CSS transitions are unaffected by re-render, JS-driven animation is not. No new dependency for motion (§4).
+
+  `prefers-reduced-motion` must disable all of the above — the existing global rule in `src/index.css` already does this; keep it working.
 - Empty state: "No projects yet. Add your first one." + Add button — this **is** the first-run experience (§5). Errors always say what happened and what to do next.
 - Settings: a small gear → one field, "Editor command" (default `code`). Nothing else.
 
