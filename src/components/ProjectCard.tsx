@@ -217,13 +217,15 @@ export function ProjectCard({ project }: { project: ProjectView }) {
         </div>
       </header>
 
+      {/* §11 visual pass: the status pill is what the user scans a dense grid for — give it
+          more presence (padding, weight) without changing its colour meanings. */}
       <div className="flex items-center gap-2 text-sm">
         <span
-          className={`inline-flex items-center gap-2 rounded-full bg-white/5 px-2.5 py-1 transition-colors duration-200 ${STATUS_TONE[project.status]}`}
+          className={`inline-flex items-center gap-2 rounded-full bg-white/5 px-3 py-1.5 font-medium transition-colors duration-200 ${STATUS_TONE[project.status]}`}
         >
           <span aria-hidden="true" className="size-1.5 rounded-full bg-current" />
           <span>{STATUS_LABEL[project.status]}</span>
-          <span className="font-mono text-xs opacity-80">:{project.port}</span>
+          <span className="font-mono text-xs font-medium">:{project.port}</span>
         </span>
 
         {!project.pathExists && (
