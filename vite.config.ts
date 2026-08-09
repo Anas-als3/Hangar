@@ -27,8 +27,9 @@ export default defineConfig(async () => ({
         }
       : undefined,
     watch: {
-      // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      // 3. tell Vite to ignore watching `src-tauri` and agent worktrees
+      // (each contains its own node_modules/dist, which trigger reload storms)
+      ignored: ["**/src-tauri/**", "**/.claude/**"],
     },
   },
 }));
