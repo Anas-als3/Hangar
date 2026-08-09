@@ -132,6 +132,26 @@ export function filterProjects(projects: ProjectView[], search: string): Project
   return projects.filter((p) => p.name.toLowerCase().includes(q));
 }
 
+/**
+ * What the grid actually renders under an active search: a project stays visible if it matches
+ * OR it is currently non-idle (anything but `stopped`/`crashed`) — a running project must never
+ * be unmounted by a search that doesn't name it, which would reset its `PhaseStrip` and uptime.
+ * A single `filter` over the original array, never "matches" concatenated with "running": SPEC.md
+ * §11 forbids automatic re-sorting, and concatenation would reorder.
+ */
+export function visibleProjects(projects: ProjectView[], search: string): ProjectView[] {
+  const q = search.trim().toLowerCase();
+  if (q === "") return projects;
+  return projects.filter(
+    (p) => p.name.toLowerCase().includes(q) || (p.status !== "stopped" && p.status !== "crashed"),
+  );
+}
+
+/** Header count (SPEC.md §11): projects currently `running`. Renders nothing when zero. */
+export function runningCount(projects: ProjectView[]): number {
+  return projects.filter((p) => p.status === "running").length;
+}
+
 /** One initial fetch at startup. All later status changes arrive via events (§7) — never polling. */
 export async function loadRegistry(): Promise<void> {
   setState({ loading: true, loadError: null });
@@ -221,6 +241,9 @@ export async function startProject(projectId: string): Promise<void> {
     await runProject(projectId);
   } catch (err) {
     setToast(errorMessage(err));
+    // SPEC.md §5: pathExists must refresh "when Run is clicked" — a rejection is often exactly
+    // that check failing, so the card should pick up the warning state that caused it.
+    await loadRegistry();
   }
 }
 
