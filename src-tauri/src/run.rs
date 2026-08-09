@@ -721,7 +721,9 @@ pub async fn run_project(app: &AppHandle, project_id: &str) -> Result<(), String
         runtime.get(&project.id).map(|e| e.status).unwrap_or(Status::Stopped)
     };
     if let Err(rejection) = next_status(peeked_status, Trigger::Run(Status::Starting)) {
-        return Err(rejection.for_project(&project.name));
+        let message = rejection.for_project(&project.name);
+        process::append_system(app, &project.id, message.clone()).await;
+        return Err(message);
     }
 
     // ---- SPEC.md §9 step 3: serialize against any sibling project on the same folder -----------
