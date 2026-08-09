@@ -49,6 +49,27 @@ export function NotesPanel() {
     };
   }, []);
 
+  function save(text: string): void {
+    if (!project) return;
+    void saveNotesAction(project, text).then(() => {
+      setDirty(false);
+      setJustSaved(true);
+    });
+  }
+
+  function handleChange(text: string): void {
+    setValue(text);
+    setDirty(true);
+    setJustSaved(false);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => save(text), SAVE_DEBOUNCE_MS);
+  }
+
+  function handleBlur(): void {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (dirty) save(value);
+  }
+
   if (!notesFor || !project) return null;
 
   return null;
