@@ -46,10 +46,20 @@ pub const SLEEP_GAP: Duration = Duration::from_secs(5);
 /// that cannot name its trigger cannot change a status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Trigger {
-    /// Run clicked.
-    Run,
+    /// Run clicked. Carries the phase this run actually starts in — SPEC.md §9 steps 2-3 only
+    /// enter `updating`/`installing` when there is real work to do (a pull that will really run, an
+    /// install that will really run); §12's "Not a git repo | skip pull silently" and "no lockfile
+    /// found | skip installing" both mean the corresponding status is never observed at all, not
+    /// entered-then-immediately-left. `run_project` decides the payload before claiming the run,
+    /// once for the whole run — see its `first_phase` computation.
+    Run(Status),
     /// Stop clicked — valid in every active phase, not just `running`.
     Stop,
+    /// The run sequence advancing itself once a phase's own work is done (SPEC.md §9 steps 2-4):
+    /// `updating` → `installing`/`starting`, or `installing` → `starting`. Not a user-facing event
+    /// — the "cause" is simply "the previous phase finished" — but it still goes through this same
+    /// table rather than a parallel status write, so it stays the single source of truth.
+    PhaseAdvance(Status),
     /// The port answered and the grace elapsed (§9 step 6). Plan 004 owns the polling that produces
     /// it; M3 fires it straight after a successful spawn.
     Ready,
@@ -95,12 +105,21 @@ pub fn next_status(from: Status, trigger: Trigger) -> Result<Status, Rejection> 
 
     match trigger {
         // | `stopped`, `crashed` | Run clicked | `updating` → `installing` → `starting` per §9 |
-        // M3 has no pull/install phases yet, so the first phase it can honestly enter is `starting`;
-        // plan 006 moves the entry point to `updating`. The guard — Run legal from nowhere else — is
-        // the part §6 freezes.
-        Trigger::Run => match from {
-            Stopped | Crashed => Ok(Starting),
+        // The guard — Run legal from nowhere else, and only into one of the three real phases — is
+        // the part §6 freezes; *which* of the three is `run_project`'s call, made once before the
+        // claim (see `Trigger::Run`'s doc).
+        Trigger::Run(first_phase) => match from {
+            Stopped | Crashed if matches!(first_phase, Updating | Installing | Starting) => {
+                Ok(first_phase)
+            }
+            Stopped | Crashed => refuse("invalid first phase for Run"),
             _ => refuse("Run is only valid from stopped or crashed"),
+        },
+
+        // The run sequence's own §9 steps 2-4 progression — see `Trigger::PhaseAdvance`'s doc.
+        Trigger::PhaseAdvance(to) => match (from, to) {
+            (Updating, Installing) | (Updating, Starting) | (Installing, Starting) => Ok(to),
+            _ => refuse("phase advance is only valid updating->installing/starting or installing->starting"),
         },
 
         // | `updating`, `installing`, `starting`, `running` | Stop clicked | `stopping` |
@@ -632,7 +651,10 @@ pub async fn run_project(app: &AppHandle, project_id: &str) -> Result<(), String
     // The sender is held for the whole body of this function: every return path drops it, which
     // releases a parked Stop even on a path that forgot to.
     let (spawn_claim, spawn_in_flight) = tokio::sync::watch::channel(false);
-    apply_with(app, &project.id, Trigger::Run, None, |entry| {
+    // TODO(seam): `first_phase` is a placeholder — the PLAN 006 SEAM below computes the real value
+    // (SPEC.md §9 steps 2-3 decide it before this claim) and this becomes that computation's result.
+    let first_phase = Status::Starting;
+    apply_with(app, &project.id, Trigger::Run(first_phase), None, |entry| {
         entry.begin_run(spawn_in_flight)
     })
     .await
@@ -1146,15 +1168,23 @@ mod tests {
 
     #[test]
     fn run_is_legal_only_from_stopped_or_crashed() {
-        assert_eq!(next_status(Status::Stopped, Trigger::Run), Ok(Status::Starting));
-        assert_eq!(next_status(Status::Crashed, Trigger::Run), Ok(Status::Starting));
+        for first_phase in [Status::Updating, Status::Installing, Status::Starting] {
+            assert_eq!(
+                next_status(Status::Stopped, Trigger::Run(first_phase)),
+                Ok(first_phase)
+            );
+            assert_eq!(
+                next_status(Status::Crashed, Trigger::Run(first_phase)),
+                Ok(first_phase)
+            );
+        }
 
         for from in EVERY_STATUS {
             if matches!(from, Status::Stopped | Status::Crashed) {
                 continue;
             }
             assert!(
-                next_status(from, Trigger::Run).is_err(),
+                next_status(from, Trigger::Run(Status::Starting)).is_err(),
                 "Run must be rejected from {}",
                 status_label(from)
             );
@@ -1162,9 +1192,19 @@ mod tests {
     }
 
     #[test]
+    fn run_into_a_non_phase_status_is_rejected_even_from_stopped() {
+        // The payload is trusted to be one of the three real phases everywhere else; this is the
+        // one place that asserts the guard actually rejects a malformed one rather than silently
+        // accepting it.
+        for bogus in [Status::Running, Status::Stopping, Status::Crashed, Status::StopFailed] {
+            assert!(next_status(Status::Stopped, Trigger::Run(bogus)).is_err());
+        }
+    }
+
+    #[test]
     fn run_is_rejected_from_running() {
         // The double-click case, called out explicitly: it must be impossible to double-spawn.
-        let rejection = next_status(Status::Running, Trigger::Run).unwrap_err();
+        let rejection = next_status(Status::Running, Trigger::Run(Status::Starting)).unwrap_err();
         assert_eq!(rejection.from, Status::Running);
         assert_eq!(
             rejection.for_project("IELTS Coach"),
