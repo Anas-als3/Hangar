@@ -364,4 +364,31 @@ mod tests {
 
         assert_eq!(view.status, Status::Running);
     }
+
+    // -----------------------------------------------------------------------------------------
+    // Plan 020 revision — `guard_update`: a notes-only `update_project` call bypasses the
+    // running-project guard (SPEC.md §6 vs. §5); any other field change still goes through it.
+    // -----------------------------------------------------------------------------------------
+
+    #[test]
+    fn a_notes_only_change_is_permitted_while_running() {
+        let stored = sample_project("/tmp/ielts");
+        let incoming = Project {
+            notes: Some("tried the staging flag".into()),
+            ..stored.clone()
+        };
+        assert!(guard_update(&stored, &incoming, Status::Running).is_ok());
+    }
+
+    #[test]
+    fn a_change_to_any_other_field_is_still_rejected_while_running() {
+        let stored = sample_project("/tmp/ielts");
+        let incoming = Project {
+            port: 3001,
+            ..stored.clone()
+        };
+        let err = guard_update(&stored, &incoming, Status::Running)
+            .expect_err("a port change must still be guarded while running");
+        assert!(err.contains("stop it first"), "got {err:?}");
+    }
 }
