@@ -695,6 +695,55 @@ pub fn parse_tasklist_name(stdout: &str, pid: u32) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------------------------
+// SPEC.md §9 step 2 — the `updating` phase: is this folder even a git repo?
+// ---------------------------------------------------------------------------------------------
+
+/// What `git rev-parse --is-inside-work-tree` told us. SPEC.md §12: only [`GitMissing`] earns a log
+/// line ("git not found — skipping update"); [`NotRepo`] skips the pull silently.
+///
+/// [`GitMissing`]: GitAvailability::GitMissing
+/// [`NotRepo`]: GitAvailability::NotRepo
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitAvailability {
+    IsRepo,
+    NotRepo,
+    GitMissing,
+}
+
+/// Bounded like [`port_owner`]'s lookups: this is read-only and near-instant, so it is never
+/// registered as a kill target (SPEC.md §8 reserves that bookkeeping for long-lived children).
+const GIT_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// SPEC.md §9 step 2 / §12: decides whether the pull phase should run at all, before anything is
+/// narrated or `updating` is entered — a skipped phase must never flash the status (SPEC.md §12
+/// "Not a git repo | Skip pull silently").
+pub async fn check_git_repo(path: &std::path::Path, env: &EnvMap) -> GitAvailability {
+    let spec = SpawnSpec {
+        command: "git rev-parse --is-inside-work-tree".to_string(),
+        cwd: Some(path.to_path_buf()),
+        env: env.clone(),
+        long_lived: false,
+        kill_on_drop: true,
+        ..SpawnSpec::default()
+    };
+    let Ok(spawned) = spawn(&spec) else {
+        return GitAvailability::GitMissing;
+    };
+    let Ok(Ok(output)) =
+        tokio::time::timeout(GIT_CHECK_TIMEOUT, spawned.child.wait_with_output()).await
+    else {
+        // A wedged or slow check is not evidence either way; treat it like "not a repo" and let the
+        // run proceed rather than block Run on a hung read-only lookup.
+        return GitAvailability::NotRepo;
+    };
+    match output.status.code() {
+        Some(0) => GitAvailability::IsRepo,
+        Some(code) if is_tool_not_found_exit(code) => GitAvailability::GitMissing,
+        _ => GitAvailability::NotRepo,
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
 // The kill paths (SPEC.md §8 — the acceptance-test level requirement)
 // ---------------------------------------------------------------------------------------------
 
