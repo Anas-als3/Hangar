@@ -57,6 +57,8 @@ export interface HangarState {
   logs: Record<string, LogLine[]>;
   /** Which project's slide-over is open (§11), or `null`. */
   openLogsFor: string | null;
+  /** Which project's notes slide-over is open (§11), or `null`. */
+  notesFor: string | null;
   /** Last command error — §7: errors surface as toasts. */
   toast: string | null;
   /** Which dialog (add/edit/settings) is open — see `DialogState`. */
@@ -72,6 +74,7 @@ let state: HangarState = {
   loadError: null,
   logs: {},
   openLogsFor: null,
+  notesFor: null,
   toast: null,
   dialog: null,
   search: "",
@@ -297,6 +300,32 @@ export async function openLogs(projectId: string): Promise<void> {
 
 export function closeLogs(): void {
   setState({ openLogsFor: null });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Notes (§11) — a slide-over like Logs, opened from the overflow menu. Autosaved; no dialog.
+// ---------------------------------------------------------------------------------------------
+
+export function openNotes(projectId: string): void {
+  setState({ notesFor: projectId });
+}
+
+export function closeNotes(): void {
+  setState({ notesFor: null });
+}
+
+/**
+ * §7 `update_project` carries the whole record — there is no dedicated notes command (§7 is
+ * frozen). Refreshes the registry on success so the edited textarea's project prop stays in
+ * sync; toasts on rejection, same shape as the other actions.
+ */
+export async function saveNotesAction(project: Project, notes: string): Promise<void> {
+  try {
+    await updateProject({ ...project, notes: notes === "" ? undefined : notes });
+    await loadRegistry();
+  } catch (err) {
+    setToast(errorMessage(err));
+  }
 }
 
 /** §8: the Clear button calls `clear_log_buffer` and clears the store. */
