@@ -155,6 +155,8 @@ export function ProjectCard({ project }: { project: ProjectView }) {
   const stopping = project.status === "stopping";
   const stopFailed = project.status === "stop-failed";
   const runDisabled = !project.pathExists;
+  // §4/§5: notes are a free-text scratchpad, never parsed — this only checks for presence.
+  const hasNotes = Boolean(project.notes && project.notes.trim() !== "");
   const isRunning = project.status === "running";
   const now = useCoarseNow(isRunning);
   const timeSlot =
@@ -181,13 +183,22 @@ export function ProjectCard({ project }: { project: ProjectView }) {
         <div className="relative" ref={menuRef}>
           <button
             type="button"
-            aria-label={`Actions for ${project.name}`}
+            aria-label={
+              hasNotes ? `Actions for ${project.name} (has notes)` : `Actions for ${project.name}`
+            }
             aria-haspopup="menu"
             aria-expanded={menuOpen}
             onClick={() => setMenuOpen((open) => !open)}
-            className="rounded px-2 py-1 text-muted transition-colors hover:bg-white/5 hover:text-text"
+            className="relative rounded px-2 py-1 text-muted transition-colors hover:bg-white/5 hover:text-text"
           >
             <span aria-hidden="true">⋯</span>
+            {/* §11: a property of the existing control, not a new card element — quiet on purpose. */}
+            {hasNotes && (
+              <span
+                aria-hidden="true"
+                className="absolute right-0.5 top-0.5 size-1.5 rounded-full bg-muted"
+              />
+            )}
           </button>
           {menuOpen && (
             <div
