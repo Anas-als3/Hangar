@@ -5,14 +5,12 @@
  * Duplicate-port / not-stopped rejections are enforced by Rust (§7); this dialog just calls
  * addProjectAction/updateProjectAction and lets `setToast` surface whatever comes back.
  *
- * Built in passes (plan 005): this pass is the shell — state, Esc-close, Name/Path fields only.
- * The folder picker, script list, port/url/hint fields and save wiring land in the next passes.
  */
 import { useEffect, useState } from "react";
 // Native folder picker (§10 step 1) — dialog plugin only, never tauri-plugin-shell (§4).
 import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
 import { readPackageJson } from "../api";
-import { closeDialog, useHangarStore } from "../store";
+import { addProjectAction, closeDialog, updateProjectAction, useHangarStore } from "../store";
 import type { PackageJsonInfo } from "../types";
 
 /** §10 step 3: `npm run <script>` / `pnpm run <script>` / `yarn <script>` per package manager. */
