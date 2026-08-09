@@ -115,6 +115,17 @@ function App() {
     void loadRegistry();
   }, []);
 
+  // SPEC.md §5: pathExists must refresh "at startup, on registry change, and when Run is
+  // clicked". Window focus is the natural "user came back from the browser" moment for a folder
+  // that moved while Hangar sat in the background — no timer, so this never polls.
+  useEffect(() => {
+    const onFocus = () => {
+      void loadRegistry();
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, []);
+
   return (
     <div className="flex min-h-full flex-col bg-bg text-text">
       <header className="flex items-center justify-between border-b border-white/5 px-8 py-5">
