@@ -2,9 +2,9 @@
  * One project card — SPEC.md §11.
  *
  * M2 wired the primary **Run** button and **Show logs**; M3 wired **Stop** — live in every active
- * phase, a disabled spinner while `stopping`, and a retry from `stop-failed`; M4 wires **Open in
- * browser**. The remaining menu entries land with plan 005 (dialogs), the phase strip and the
- * uptime slot with plan 006.
+ * phase, a disabled spinner while `stopping`, and a retry from `stop-failed`; M4 wired **Open in
+ * browser**; M5 (this plan) wires **Open in editor**, **Edit** and **Remove**. The phase strip and
+ * the uptime slot land with plan 006.
  */
 import { useEffect, useRef, useState } from "react";
 import {
@@ -84,21 +84,16 @@ function lastRunLabel(iso: string | undefined): string {
   return `Last run ${days} d ago`;
 }
 
-/** §11 overflow menu. Only "Show logs" is live at M2 — the rest arrive with plans 004/005. */
-/**
- * §11 overflow menu, in the spec's order. An entry with a `null` action is not wired yet and
- * renders disabled rather than silently doing nothing — plan 005 adds Open in editor, Edit and
- * Remove.
- */
+/** §11 overflow menu, in the spec's order. All five entries are wired as of plan 005. */
 const MENU_ITEMS: ReadonlyArray<{
   label: string;
   action: ((projectId: string) => void) | null;
 }> = [
   { label: "Open in browser", action: (id) => void openInBrowserAction(id) },
-  { label: "Open in editor", action: null },
+  { label: "Open in editor", action: (id) => void openInEditorAction(id) },
   { label: "Show logs", action: (id) => void openLogs(id) },
-  { label: "Edit", action: null },
-  { label: "Remove", action: null },
+  { label: "Edit", action: (id) => void handleEdit(id) },
+  { label: "Remove", action: (id) => void handleRemove(id) },
 ];
 
 export function ProjectCard({ project }: { project: ProjectView }) {
