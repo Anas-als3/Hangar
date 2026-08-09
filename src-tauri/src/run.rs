@@ -889,6 +889,28 @@ async fn cancel_run(
     .await
 }
 
+/// SPEC.md §9's "Last look before anything is created" guard, shared by every phase's spawn point
+/// (git pull, installer, dev command). `spawn_registered` distinguishes the run's very first spawn
+/// — where a parked Stop has nothing to signal yet, so this call must do the §8 kill+report itself,
+/// exactly as the dev command's own pre-spawn check always has — from a later phase, where a
+/// concurrent Stop already has (or, via the still-registered previous phase's kill primitive, will
+/// get) a real target of its own; see `ProjectRuntime::claim_stop`. Calling `cancel_run` a second
+/// time in that case would risk reporting `stopped` before the real kill has verified anything.
+async fn bail_if_stop_pending(
+    app: &AppHandle,
+    project: &Project,
+    spawn_registered: bool,
+) -> Option<Result<(), String>> {
+    if !stop_is_pending(app, &project.id).await {
+        return None;
+    }
+    Some(if spawn_registered {
+        Ok(())
+    } else {
+        cancel_run(app, project, KillTarget::default()).await
+    })
+}
+
 // ---------------------------------------------------------------------------------------------
 // SPEC.md §8 — the Stop sequence: kill the tree, verify death, then the port, then the status
 // ---------------------------------------------------------------------------------------------
