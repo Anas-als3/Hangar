@@ -316,10 +316,19 @@ export function closeNotes(): void {
 
 /**
  * §7 `update_project` carries the whole record — there is no dedicated notes command (§7 is
- * frozen). Refreshes the registry on success so the edited textarea's project prop stays in
- * sync; toasts on rejection, same shape as the other actions.
+ * frozen). The backend now exempts notes-only changes from the running-project guard (plan 020
+ * revision), but only if the payload actually IS notes-only: takes a project id rather than a
+ * `Project`, and reads the current record straight out of the store at save time, instead of
+ * trusting a snapshot the caller may have captured when the notes panel first opened. A stale
+ * snapshot of any other field (say, `port`, changed elsewhere while the panel sat open) would
+ * make the backend's comparison see a non-notes change and reject the save while running.
+ *
+ * Refreshes the registry on success so the edited textarea's project prop stays in sync; toasts
+ * on rejection, same shape as the other actions.
  */
-export async function saveNotesAction(project: Project, notes: string): Promise<void> {
+export async function saveNotesAction(projectId: string, notes: string): Promise<void> {
+  const project = findProject(projectId);
+  if (!project) return;
   try {
     await updateProject({ ...project, notes: notes === "" ? undefined : notes });
     await loadRegistry();

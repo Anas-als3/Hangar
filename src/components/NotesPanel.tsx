@@ -51,7 +51,10 @@ export function NotesPanel() {
 
   function save(text: string): void {
     if (!project) return;
-    void saveNotesAction(project, text).then(() => {
+    // Pass only the id: `saveNotesAction` reads the current project fresh from the store, so a
+    // stale `project` closure here (e.g. from before some other field changed elsewhere while
+    // this panel sat open) can never leak a non-notes change into the saved payload.
+    void saveNotesAction(project.id, text).then(() => {
       setDirty(false);
       setJustSaved(true);
     });
