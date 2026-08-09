@@ -3,8 +3,8 @@
  *
  * M2 wired the primary **Run** button and **Show logs**; M3 wired **Stop** — live in every active
  * phase, a disabled spinner while `stopping`, and a retry from `stop-failed`; M4 wired **Open in
- * browser**; M5 (this plan) wires **Open in editor**, **Edit** and **Remove**. The phase strip and
- * the uptime slot land with plan 006.
+ * browser**; M5 wired **Open in editor**, **Edit** and **Remove**. Plan 006 (M6) adds the §11
+ * signature phase strip and the running-uptime time slot.
  */
 import { useEffect, useRef, useState } from "react";
 import {
@@ -19,6 +19,7 @@ import {
   stopProjectAction,
 } from "../store";
 import type { ProjectView, Status } from "../types";
+import { PhaseStrip } from "./PhaseStrip";
 
 /** §6/§10 step 7: Edit — confirm-and-stop first if the project isn't stopped/crashed. */
 async function handleEdit(projectId: string): Promise<void> {
@@ -84,6 +85,33 @@ function lastRunLabel(iso: string | undefined): string {
   return `Last run ${days} d ago`;
 }
 
+/** §11 time slot while `running`: uptime from the current run's start (`lastRunAt`, set when
+ *  entering `starting` — SPEC.md §5/§6), coarse on purpose — no ticking seconds. */
+function uptimeLabel(startIso: string | undefined, now: number): string | null {
+  if (!startIso) return null;
+  const start = Date.parse(startIso);
+  if (Number.isNaN(start)) return null;
+  const minutes = Math.floor((now - start) / 60_000);
+  if (minutes < 1) return "up <1 m";
+  if (minutes < 60) return `up ${minutes} m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `up ${hours} h ${minutes % 60} m`;
+  return `up ${Math.floor(hours / 24)} d`;
+}
+
+/** Refreshes at 30 s granularity while `active`, and re-syncs the instant it becomes active —
+ *  never on a per-second tick (§11 explicitly forbids ticking seconds). */
+function useCoarseNow(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    setNow(Date.now());
+    const id = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, [active]);
+  return now;
+}
+
 /** §11 overflow menu, in the spec's order. All five entries are wired as of plan 005. */
 const MENU_ITEMS: ReadonlyArray<{
   label: string;
@@ -125,6 +153,11 @@ export function ProjectCard({ project }: { project: ProjectView }) {
   const stopping = project.status === "stopping";
   const stopFailed = project.status === "stop-failed";
   const runDisabled = !project.pathExists;
+  const isRunning = project.status === "running";
+  const now = useCoarseNow(isRunning);
+  const timeSlot =
+    (isRunning ? uptimeLabel(project.lastRunAt, now) : null) ??
+    lastRunLabel(project.lastRunAt);
 
   return (
     <article className="relative flex flex-col gap-4 rounded-lg border border-white/5 bg-surface p-5 transition-transform duration-150 hover:-translate-y-0.5">
@@ -198,9 +231,9 @@ export function ProjectCard({ project }: { project: ProjectView }) {
         )}
       </div>
 
-      {/* §11 time slot — uptime while running, otherwise last-run relative time.
-          M1 has no running projects yet; plan 002 supplies the uptime branch. */}
-      <p className="text-xs text-muted">{lastRunLabel(project.lastRunAt)}</p>
+      {/* §11 time slot — uptime while running (30 s granularity, no ticking seconds),
+          otherwise last-run relative time. */}
+      <p className="text-xs text-muted">{timeSlot}</p>
 
       <footer className="mt-auto flex items-center justify-between gap-3">
         {primaryIsStop ? (
@@ -242,6 +275,8 @@ export function ProjectCard({ project }: { project: ProjectView }) {
           {project.command}
         </span>
       </footer>
+
+      <PhaseStrip project={project} />
     </article>
   );
 }
