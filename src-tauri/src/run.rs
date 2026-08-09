@@ -1043,13 +1043,20 @@ async fn crash_run(app: &AppHandle, project_id: &str, message: String) -> Contro
 
 /// SPEC.md §9 step 3: "Store the new hash only after success." Same snapshot-then-save shape as
 /// the `lastRunAt` write in `run_project` (plan 010's maintenance note: new registry writers
-/// should follow it).
+/// should follow it). Plan 023: also refreshes `stack` in this same save — a successful install is
+/// exactly the moment dependencies may have changed since the project was last Added/Edited, and
+/// folding it in here (rather than a second write) follows plan 023's instruction to reuse this
+/// single save path.
 async fn store_lockfile_hash(app: &AppHandle, project: &Project, hash: &str) {
     let state = app.state::<AppState>();
+    // Blocking file I/O, done before taking the lock below — same discipline `plan_install`
+    // already uses elsewhere in this file for the lockfile hash itself.
+    let stack = registry::read_package_json(Path::new(&project.path)).stack;
     let persist_error = {
         let mut projects = state.projects.lock().await;
         if let Some(p) = projects.iter_mut().find(|p| p.id == project.id) {
             p.last_lockfile_hash = Some(hash.to_string());
+            p.stack = Some(stack);
         }
         registry::save_projects(&state.config_dir, &projects).err()
     };
@@ -1984,6 +1991,7 @@ mod tests {
             last_lockfile_hash: None,
             last_run_at: None,
             notes: None,
+            stack: None,
         }
     }
 

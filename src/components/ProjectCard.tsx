@@ -258,6 +258,14 @@ export function ProjectCard({ project }: { project: ProjectView }) {
           )}
         </span>
 
+        {/* §11 (added 2026-08-09): the one permitted stack badge — display-only, derived, never
+            a control. Quieter than the status pill on purpose: status is what users scan for. */}
+        {project.stack?.framework && (
+          <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 font-mono text-xs text-muted">
+            {project.stack.framework}
+          </span>
+        )}
+
         {!project.pathExists && (
           <span className="rounded-full bg-status-danger/10 px-2.5 py-1 text-xs text-status-danger">
             Folder not found

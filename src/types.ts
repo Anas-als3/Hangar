@@ -34,6 +34,19 @@ export interface Project {
   lastRunAt?: string;
   /** Free-text scratchpad, user-owned; never parsed or acted on (SPEC.md §5). */
   notes?: string;
+  /**
+   * Detected from `package.json` dependencies — app-owned, never hand-edited. Refreshed on Add,
+   * on Edit, and during the install phase (SPEC.md §5, added 2026-08-09).
+   */
+  stack?: ProjectStack;
+}
+
+/** SPEC.md §5 `Project.stack` / §7 `read_package_json`'s `stack` field. */
+export interface ProjectStack {
+  framework?: string;
+  libraries: string[];
+  /** ISO — when detection last ran. */
+  detectedAt: string;
 }
 
 /** What the frontend receives; derived fields are computed by the backend, never persisted. */
@@ -50,6 +63,8 @@ export interface PackageJsonInfo {
   scripts: Record<string, string>;
   packageManager: "npm" | "pnpm" | "yarn";
   portSuggestion?: number;
+  /** Always present, possibly empty (added 2026-08-09) — see `ProjectStack`. */
+  stack: ProjectStack;
 }
 
 export interface LogLine {

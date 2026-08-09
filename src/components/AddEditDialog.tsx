@@ -10,7 +10,7 @@ import { useEffect, useState } from "react";
 import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
 import { readPackageJson } from "../api";
 import { addProjectAction, closeDialog, updateProjectAction, useHangarStore } from "../store";
-import type { PackageJsonInfo } from "../types";
+import type { PackageJsonInfo, ProjectStack } from "../types";
 
 /** §10 step 3: `npm run <script>` / `pnpm run <script>` / `yarn <script>` per package manager. */
 function commandFor(pm: PackageJsonInfo["packageManager"], script: string): string {
@@ -25,6 +25,18 @@ function pickDefaultScript(scripts: Record<string, string>): string | null {
   if ("start" in scripts) return "start";
   const keys = Object.keys(scripts);
   return keys.length > 0 ? keys[0] : null;
+}
+
+/** §5 `stack.detectedAt`: coarse relative time, same tone as §11's "no ticking seconds" rule. */
+function relativeTime(iso: string): string {
+  const then = Date.parse(iso);
+  if (Number.isNaN(then)) return "unknown time";
+  const minutes = Math.floor((Date.now() - then) / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} h ago`;
+  return `${Math.floor(hours / 24)} d ago`;
 }
 
 export function AddEditDialog() {
@@ -45,6 +57,9 @@ export function AddEditDialog() {
   const [selectedScript, setSelectedScript] = useState<string | null>(null);
   const [packageManager, setPackageManager] =
     useState<PackageJsonInfo["packageManager"]>("npm");
+  // §5: app-owned, never hand-edited here — only ever set from a `readPackageJson` result
+  // (below) or carried through unchanged from the project being edited.
+  const [stack, setStack] = useState<ProjectStack | undefined>(editing?.stack);
 
   // Re-initialize whenever the dialog target changes (opened for a different project, or
   // switched from Edit back to Add).
@@ -56,6 +71,7 @@ export function AddEditDialog() {
     setUrl(editing?.url ?? "");
     setUpdateOnRun(editing?.updateOnRun ?? true);
     setReadyTimeoutSec(editing?.readyTimeoutSec ?? 60);
+    setStack(editing?.stack);
     setSaving(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dialog]);
@@ -84,10 +100,12 @@ export function AddEditDialog() {
       setSelectedScript(defaultScript);
       if (defaultScript) setCommand(commandFor(info.packageManager, defaultScript));
       if (info.portSuggestion !== undefined) setPort(String(info.portSuggestion));
+      setStack(info.stack);
     } catch {
       // §10 step 6: no/unparseable package.json falls back to manual command + port entry.
       setScripts({});
       setSelectedScript(null);
+      setStack(undefined);
     }
   }
 
@@ -111,6 +129,7 @@ export function AddEditDialog() {
       url: url.trim() === "" ? undefined : url.trim(),
       updateOnRun,
       readyTimeoutSec,
+      stack,
     };
     const ok = editing
       ? await updateProjectAction({
@@ -167,6 +186,14 @@ export function AddEditDialog() {
             Browse…
           </button>
         </div>
+
+        {/* §5/§11: app-owned, read-only — never an input. Edit dialog only, beneath the path. */}
+        {editing && stack && stack.libraries.length > 0 && (
+          <p className="mt-1.5 text-xs text-muted">
+            {stack.libraries.join(" · ")}
+            <span className="text-muted/60"> · detected {relativeTime(stack.detectedAt)}</span>
+          </p>
+        )}
 
         {Object.keys(scripts).length > 0 && (
           <>

@@ -107,6 +107,9 @@ pub async fn add_project(
         last_lockfile_hash: None,
         last_run_at: None,
         notes: input.notes,
+        // SPEC.md §5/§7 (plan 023): the Add dialog's `read_package_json` call already detected
+        // this — carried straight through the wire, never recomputed here.
+        stack: input.stack,
     };
 
     projects.push(project.clone());
@@ -331,6 +334,7 @@ mod tests {
             last_lockfile_hash: None,
             last_run_at: None,
             notes: None,
+            stack: None,
         }
     }
 

@@ -53,6 +53,23 @@ pub struct Project {
     /// or acts on it — it exists only to be shown and edited.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
+    /// SPEC.md §5: detected from `package.json` dependencies — app-owned, never hand-edited.
+    /// Refreshed on Add, on Edit, and during the install phase (plan 023). `None` for a project
+    /// added before this field existed, or one whose folder has no `package.json` at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stack: Option<ProjectStack>,
+}
+
+/// SPEC.md §5 `stack` / §7 `read_package_json`'s `stack` field: detected from `package.json`
+/// `dependencies`/`devDependencies` only — no source file is ever parsed (SPEC.md §1, §3; this
+/// plan's "Scope of detection"). App-owned: nothing in the UI can hand-edit it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectStack {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub framework: Option<String>,
+    pub libraries: Vec<String>,
+    pub detected_at: String,
 }
 
 fn default_update_on_run() -> bool {
@@ -83,6 +100,10 @@ pub struct NewProject {
     /// accepted here (mirroring `Project`) rather than hardcoded to `None` in the command layer.
     #[serde(default)]
     pub notes: Option<String>,
+    /// SPEC.md §5: the Add dialog's `read_package_json` call already detected this — carried
+    /// straight through, never recomputed here (plan 023).
+    #[serde(default)]
+    pub stack: Option<ProjectStack>,
 }
 
 /// SPEC.md §5 `id: string // nanoid`. No id-generation crate is added for this one call site
@@ -162,6 +183,7 @@ fn seed_projects() -> Vec<Project> {
         last_lockfile_hash: None,
         last_run_at: None,
         notes: None,
+        stack: None,
     }]
 }
 
@@ -399,6 +421,11 @@ pub struct PackageJsonInfo {
     pub package_manager: PackageManager,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub port_suggestion: Option<u16>,
+    /// SPEC.md §7 (added 2026-08-09): always present, possibly empty — unlike `port_suggestion`
+    /// this field itself is never `skip_serializing_if`'d away, so an empty detection still
+    /// round-trips as `{"libraries":[],"detectedAt":"..."}` (no `framework` key) rather than the
+    /// whole `stack` key vanishing.
+    pub stack: ProjectStack,
 }
 
 /// SPEC.md §9 step 3 / §10 step 3: "the detected package manager (from which lockfile is
@@ -439,6 +466,79 @@ fn sniff_port_suggestion(package_json: &serde_json::Value) -> Option<u16> {
     }
 }
 
+/// SPEC.md §7 `stack.framework`: first match wins, so this order IS the priority — e.g. a Next
+/// app that also lists `vite` as a dev tool must still show "Next", not "Vite".
+const FRAMEWORK_DETECTORS: &[(&str, &str)] = &[
+    ("next", "Next"),
+    ("nuxt", "Nuxt"),
+    ("@sveltejs/kit", "SvelteKit"),
+    ("astro", "Astro"),
+    ("remix", "Remix"),
+    ("@remix-run/react", "Remix"),
+    ("react-scripts", "CRA"),
+    ("vite", "Vite"),
+    ("@angular/core", "Angular"),
+];
+
+/// SPEC.md §7 `stack.libraries`: a fixed allow-list, iterated in THIS order — never the
+/// dependency map's order — so the emitted list is stable regardless of how `package.json`
+/// happens to list its deps. Two keys may share a display name (`prisma` / `@prisma/client`);
+/// `detect_stack` dedupes.
+const LIBRARY_ALLOW_LIST: &[(&str, &str)] = &[
+    ("react", "React"),
+    ("vue", "Vue"),
+    ("svelte", "Svelte"),
+    ("express", "Express"),
+    ("fastify", "Fastify"),
+    ("hono", "Hono"),
+    ("tailwindcss", "Tailwind"),
+    ("typescript", "TypeScript"),
+    ("prisma", "Prisma"),
+    ("@prisma/client", "Prisma"),
+    ("drizzle-orm", "Drizzle"),
+    ("axios", "Axios"),
+    ("@trpc/client", "tRPC"),
+    ("graphql", "GraphQL"),
+    ("@apollo/client", "Apollo"),
+    ("@supabase/supabase-js", "Supabase"),
+    ("firebase", "Firebase"),
+    ("socket.io", "Socket.IO"),
+    ("zod", "Zod"),
+];
+
+/// Same "check both dependency sections" rule as `sniff_port_suggestion`'s own `has_dep`.
+fn has_dependency(package_json: &serde_json::Value, name: &str) -> bool {
+    ["dependencies", "devDependencies"].iter().any(|section| {
+        package_json
+            .get(section)
+            .and_then(|deps| deps.as_object())
+            .is_some_and(|deps| deps.contains_key(name))
+    })
+}
+
+/// SPEC.md §7 `stack`: built from the same merged dependency map `sniff_port_suggestion` reads —
+/// no additional file access, no source file ever parsed (this plan's "Scope of detection").
+/// `detected_at` uses `run::iso8601_utc` — no date crate (CLAUDE.md, SPEC.md §4).
+fn detect_stack(package_json: &serde_json::Value) -> ProjectStack {
+    let framework = FRAMEWORK_DETECTORS
+        .iter()
+        .find(|(dep, _)| has_dependency(package_json, dep))
+        .map(|(_, name)| name.to_string());
+
+    let mut libraries = Vec::new();
+    for (dep, display) in LIBRARY_ALLOW_LIST {
+        if has_dependency(package_json, dep) && !libraries.iter().any(|l: &String| l == display) {
+            libraries.push(display.to_string());
+        }
+    }
+
+    ProjectStack {
+        framework,
+        libraries,
+        detected_at: crate::run::iso8601_utc(SystemTime::now()),
+    }
+}
+
 /// SPEC.md §7 `read_package_json` / §10 steps 2, 4, 6: "A missing or unparseable `package.json`
 /// is not an error — it returns empty scripts so the dialog falls back to manual command + port
 /// entry." The package-manager detection is independent of `package.json` and still runs off the
@@ -455,6 +555,7 @@ pub fn read_package_json(dir: &Path) -> PackageJsonInfo {
             scripts: BTreeMap::new(),
             package_manager,
             port_suggestion: None,
+            stack: detect_stack(&serde_json::Value::Null),
         };
     };
 
@@ -472,6 +573,7 @@ pub fn read_package_json(dir: &Path) -> PackageJsonInfo {
         scripts,
         package_manager,
         port_suggestion: sniff_port_suggestion(&package_json),
+        stack: detect_stack(&package_json),
     }
 }
 
@@ -507,6 +609,13 @@ mod tests {
             // which would let `every_wire_key_the_backend_emits_appears_in_types_ts` pass while
             // never actually checking that `src/types.ts` declares `notes`.
             notes: Some("Remember to try the staging flag next time.".into()),
+            // Same non-empty-on-purpose reasoning as `notes` above, for `stack` and its nested
+            // `framework`/`libraries`/`detectedAt` keys.
+            stack: Some(ProjectStack {
+                framework: Some("Next".into()),
+                libraries: vec!["React".into(), "Tailwind".into()],
+                detected_at: "2026-08-05T10:00:00Z".into(),
+            }),
         }
     }
 
@@ -631,6 +740,7 @@ mod tests {
                 r#""url":"http://localhost:3000","updateOnRun":true,"readyTimeoutSec":60,"#,
                 r#""lastLockfileHash":"deadbeef","lastRunAt":"2026-08-05T10:00:00Z","#,
                 r#""notes":"Remember to try the staging flag next time.","#,
+                r#""stack":{"framework":"Next","libraries":["React","Tailwind"],"detectedAt":"2026-08-05T10:00:00Z"},"#,
                 r#""status":"running","pathExists":true}"#
             )
         );
@@ -706,6 +816,13 @@ mod tests {
             scripts: BTreeMap::new(),
             package_manager: PackageManager::Pnpm,
             port_suggestion: Some(5173),
+            // Non-empty on purpose — see the `sample()`/`notes` comment above; `framework: None`
+            // here would let `skip_serializing_if` hide the key and defeat the guard.
+            stack: ProjectStack {
+                framework: Some("Vite".into()),
+                libraries: vec!["React".into()],
+                detected_at: "2026-08-05T10:00:00Z".into(),
+            },
         };
 
         let samples: Vec<serde_json::Value> = vec![
@@ -792,6 +909,72 @@ mod tests {
             "an unrecognised dependency is empty and required, never silent magic (§10 step 4)"
         );
         assert_eq!(sniff_port_suggestion(&serde_json::json!({})), None);
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Plan 023 — stack detection: framework is a first-match ordered list, libraries are a
+    // fixed allow-list iterated in a stable order (never the dependency map's own order).
+    // -----------------------------------------------------------------------------------------
+
+    #[test]
+    fn detects_a_next_project() {
+        let stack = detect_stack(&serde_json::json!({
+            "dependencies": { "next": "14.0.0", "react": "18.2.0" }
+        }));
+        assert_eq!(stack.framework.as_deref(), Some("Next"));
+        assert_eq!(stack.libraries, vec!["React".to_string()]);
+    }
+
+    #[test]
+    fn detects_a_vite_project() {
+        let stack = detect_stack(&serde_json::json!({
+            "devDependencies": { "vite": "5.0.0" },
+            "dependencies": { "vue": "3.4.0" }
+        }));
+        assert_eq!(stack.framework.as_deref(), Some("Vite"));
+        assert_eq!(stack.libraries, vec!["Vue".to_string()]);
+    }
+
+    #[test]
+    fn an_unrecognised_dependency_set_has_no_framework() {
+        let stack = detect_stack(&serde_json::json!({"dependencies": {"express": "4.0.0"}}));
+        assert_eq!(stack.framework, None);
+        assert_eq!(stack.libraries, vec!["Express".to_string()]);
+    }
+
+    #[test]
+    fn an_empty_or_absent_package_json_is_an_empty_stack_not_an_error() {
+        // §10 step 6 / this plan: no `package.json` at all must still work — an empty stack, not
+        // an error — so a manual-entry project (no folder scan) never crashes detection.
+        let absent = detect_stack(&serde_json::Value::Null);
+        assert_eq!(absent.framework, None);
+        assert!(absent.libraries.is_empty());
+        assert!(!absent.detected_at.is_empty());
+
+        let empty = detect_stack(&serde_json::json!({}));
+        assert_eq!(empty.framework, None);
+        assert!(empty.libraries.is_empty());
+    }
+
+    #[test]
+    fn library_order_is_stable_regardless_of_dependency_map_order() {
+        let a = detect_stack(&serde_json::json!({
+            "dependencies": { "react": "18.2.0", "axios": "1.0.0", "zod": "3.0.0" }
+        }));
+        let b = detect_stack(&serde_json::json!({
+            "dependencies": { "zod": "3.0.0", "axios": "1.0.0", "react": "18.2.0" }
+        }));
+        let expected = vec!["React".to_string(), "Axios".to_string(), "Zod".to_string()];
+        assert_eq!(a.libraries, expected);
+        assert_eq!(b.libraries, expected, "same deps, different map order, same output order");
+    }
+
+    #[test]
+    fn prisma_and_prisma_client_dedupe_to_one_library_entry() {
+        let stack = detect_stack(&serde_json::json!({
+            "dependencies": { "prisma": "5.0.0", "@prisma/client": "5.0.0" }
+        }));
+        assert_eq!(stack.libraries, vec!["Prisma".to_string()]);
     }
 
     #[test]
