@@ -11,21 +11,39 @@
 import { useSyncExternalStore } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
+  addProject,
   clearLogBuffer,
   getLogBuffer,
   getProjects,
   getRegistryError,
   openInBrowser,
+  openInEditor,
+  removeProject,
   runProject,
+  setSettings,
   stopProject,
+  updateProject,
 } from "./api";
 import type {
   LogLine,
   LogLinesPayload,
+  NewProject,
+  Project,
   ProjectView,
   RegistryError,
+  Settings,
   StatusChangedPayload,
 } from "./types";
+
+/**
+ * Which dialog (SPEC.md §10/§11) is open, or `null`. `edit` carries the full `Project` being
+ * edited so `AddEditDialog` can pre-fill without a second fetch.
+ */
+export type DialogState =
+  | { kind: "add" }
+  | { kind: "edit"; project: Project }
+  | { kind: "settings" }
+  | null;
 
 /** Mirrors the Rust ring buffer (SPEC.md §8) so the panel's copy can never outgrow it. */
 export const LOG_BUFFER_LIMIT = 500;
@@ -41,6 +59,8 @@ export interface HangarState {
   openLogsFor: string | null;
   /** Last command error — §7: errors surface as toasts. */
   toast: string | null;
+  /** Which dialog (add/edit/settings) is open — see `DialogState`. */
+  dialog: DialogState;
 }
 
 let state: HangarState = {
@@ -51,6 +71,7 @@ let state: HangarState = {
   logs: {},
   openLogsFor: null,
   toast: null,
+  dialog: null,
 };
 
 const listeners = new Set<() => void>();
@@ -69,6 +90,14 @@ function subscribe(listener: () => void): () => void {
 
 function getSnapshot(): HangarState {
   return state;
+}
+
+/**
+ * Looks up a project outside a React render — e.g. from a `ProjectCard` menu action, which the
+ * frozen §7 `MENU_ITEMS` shape (SPEC.md §13) hands only an id, not the full `ProjectView`.
+ */
+export function findProject(id: string): ProjectView | undefined {
+  return state.projects.find((p) => p.id === id);
 }
 
 export function useHangarStore(): HangarState {
@@ -263,4 +292,99 @@ export async function clearLogs(projectId: string): Promise<void> {
   } catch (err) {
     setToast(errorMessage(err));
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Dialogs (§10/§11) — AddEditDialog and SettingsDialog are pure views of `dialog`.
+// ---------------------------------------------------------------------------------------------
+
+export function openAddDialog(): void {
+  setState({ dialog: { kind: "add" } });
+}
+
+export function openEditDialog(project: Project): void {
+  setState({ dialog: { kind: "edit", project } });
+}
+
+export function openSettingsDialog(): void {
+  setState({ dialog: { kind: "settings" } });
+}
+
+export function closeDialog(): void {
+  setState({ dialog: null });
+}
+
+/** §7 `add_project`. On success, refresh the registry and close the dialog; on rejection, toast. */
+export async function addProjectAction(input: NewProject): Promise<boolean> {
+  try {
+    await addProject(input);
+    await loadRegistry();
+    setState({ dialog: null });
+    return true;
+  } catch (err) {
+    setToast(errorMessage(err));
+    return false;
+  }
+}
+
+/**
+ * §7 `update_project`. Rejected if the project is not `stopped`/`crashed` — callers must run
+ * `stopIfRunningWithConfirm` first (see below).
+ */
+export async function updateProjectAction(project: Project): Promise<boolean> {
+  try {
+    await updateProject(project);
+    await loadRegistry();
+    setState({ dialog: null });
+    return true;
+  } catch (err) {
+    setToast(errorMessage(err));
+    return false;
+  }
+}
+
+/** §7 `remove_project`. Same not-running precondition as update. */
+export async function removeProjectAction(projectId: string): Promise<void> {
+  try {
+    await removeProject(projectId);
+    await loadRegistry();
+  } catch (err) {
+    setToast(errorMessage(err));
+  }
+}
+
+/** §10 step 7 — overflow-menu "Open in editor". A rejection is the "couldn't run" toast. */
+export async function openInEditorAction(projectId: string): Promise<void> {
+  try {
+    await openInEditor(projectId);
+  } catch (err) {
+    setToast(errorMessage(err));
+  }
+}
+
+/** §7 `set_settings`. Closes the Settings dialog on success. */
+export async function saveSettingsAction(settings: Settings): Promise<boolean> {
+  try {
+    await setSettings(settings);
+    setState({ dialog: null });
+    return true;
+  } catch (err) {
+    setToast(errorMessage(err));
+    return false;
+  }
+}
+
+/**
+ * §6/§10 step 7: Remove/Edit on a project that is not `stopped`/`crashed` must confirm, then stop
+ * and wait for verified death, before the caller applies the update/remove. Returns whether it is
+ * now safe to proceed. Uses `stopProjectAction` (not the raw `stopProject`) so the store's own
+ * status handling stays the single path; success is read back from the store, which
+ * `status-changed` has by then updated to `stopped` or `stop-failed`.
+ */
+export async function stopIfRunningWithConfirm(project: ProjectView): Promise<boolean> {
+  if (project.status === "stopped" || project.status === "crashed") return true;
+  if (!window.confirm(`${project.name} is running. Stop it first?`)) return false;
+  await stopProjectAction(project.id);
+  const after = state.projects.find((p) => p.id === project.id)?.status;
+  return after === "stopped" || after === "crashed";
 }

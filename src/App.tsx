@@ -2,16 +2,18 @@
  * App shell — SPEC.md §11.
  *
  * Header, the corrupt-registry banner, the grid, the empty state, and (M2) the log slide-over.
- * The Add button and the settings gear open nothing yet (plan 005).
+ * M5 (this plan) wires the Add buttons and the settings gear to the AddEditDialog/SettingsDialog.
  *
  * Status arrives from one `get_projects()` call plus the `status-changed` event — never polling
  * (§7). Both event listeners are registered once at startup in `src/main.tsx`, not here and
  * certainly not in `LogPanel`.
  */
 import { useEffect } from "react";
+import AddEditDialog from "./components/AddEditDialog";
 import LogPanel from "./components/LogPanel";
 import ProjectGrid from "./components/ProjectGrid";
-import { loadRegistry, setToast, useHangarStore } from "./store";
+import SettingsDialog from "./components/SettingsDialog";
+import { loadRegistry, openAddDialog, openSettingsDialog, setToast, useHangarStore } from "./store";
 
 function CorruptRegistryBanner({
   backupPath,
@@ -51,6 +53,7 @@ function EmptyState() {
       <p className="font-display text-xl text-text">No projects yet. Add your first one.</p>
       <button
         type="button"
+        onClick={openAddDialog}
         className="rounded-md bg-accent px-5 py-2 text-sm font-semibold text-bg transition-opacity hover:opacity-90"
       >
         Add project
@@ -93,6 +96,7 @@ function App() {
         <div className="flex items-center gap-2">
           <button
             type="button"
+            onClick={openAddDialog}
             className="rounded-md border border-white/10 px-3 py-1.5 text-sm text-text transition-colors hover:bg-white/5"
           >
             Add project
@@ -100,6 +104,7 @@ function App() {
           <button
             type="button"
             aria-label="Settings"
+            onClick={openSettingsDialog}
             className="rounded-md border border-white/10 px-3 py-1.5 text-sm text-muted transition-colors hover:bg-white/5 hover:text-text"
           >
             <span aria-hidden="true">⚙</span>
@@ -134,6 +139,8 @@ function App() {
       </main>
 
       <LogPanel />
+      <AddEditDialog />
+      <SettingsDialog />
       {toast && <Toast message={toast} />}
     </div>
   );
