@@ -809,8 +809,9 @@ pub async fn run_project(app: &AppHandle, project_id: &str) -> Result<(), String
     // Plan 025: also refresh `stack` in this same save. `store_lockfile_hash` only fires after a
     // successful install (SPEC.md §9 step 3), which skips every Run where the lockfile is
     // unchanged — i.e. almost every Run of an already-installed project. Folding the refresh into
-    // this existing per-Run save (rather than adding a second `save_projects` call) is what plan
-    // 025 requires. Blocking file I/O, done before taking the lock, matching `store_lockfile_hash`.
+    // this existing per-Run save, rather than adding a second write to the registry below, is
+    // what plan 025 requires. Blocking file I/O, done before taking the lock, matching
+    // `store_lockfile_hash`.
     let stack = registry::read_package_json(Path::new(&project.path)).stack;
     let started_at = iso8601_utc(SystemTime::now());
     let persist_error = {
