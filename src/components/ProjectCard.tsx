@@ -165,7 +165,10 @@ export function ProjectCard({ project }: { project: ProjectView }) {
         <div className="min-w-0">
           {/* §11 visual pass (plan 018): name is the primary hierarchy element — weight only,
               still Space Grotesk / same size, no new element. */}
-          <h2 className="truncate font-display text-lg font-bold tracking-tight text-text">
+          <h2
+            className="truncate font-display text-lg font-bold tracking-tight text-text"
+            title={project.name}
+          >
             {project.name}
           </h2>
           <p className="mt-0.5 truncate font-mono text-xs text-muted/80" title={project.path}>
