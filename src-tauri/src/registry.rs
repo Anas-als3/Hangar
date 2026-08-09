@@ -466,6 +466,79 @@ fn sniff_port_suggestion(package_json: &serde_json::Value) -> Option<u16> {
     }
 }
 
+/// SPEC.md §7 `stack.framework`: first match wins, so this order IS the priority — e.g. a Next
+/// app that also lists `vite` as a dev tool must still show "Next", not "Vite".
+const FRAMEWORK_DETECTORS: &[(&str, &str)] = &[
+    ("next", "Next"),
+    ("nuxt", "Nuxt"),
+    ("@sveltejs/kit", "SvelteKit"),
+    ("astro", "Astro"),
+    ("remix", "Remix"),
+    ("@remix-run/react", "Remix"),
+    ("react-scripts", "CRA"),
+    ("vite", "Vite"),
+    ("@angular/core", "Angular"),
+];
+
+/// SPEC.md §7 `stack.libraries`: a fixed allow-list, iterated in THIS order — never the
+/// dependency map's order — so the emitted list is stable regardless of how `package.json`
+/// happens to list its deps. Two keys may share a display name (`prisma` / `@prisma/client`);
+/// `detect_stack` dedupes.
+const LIBRARY_ALLOW_LIST: &[(&str, &str)] = &[
+    ("react", "React"),
+    ("vue", "Vue"),
+    ("svelte", "Svelte"),
+    ("express", "Express"),
+    ("fastify", "Fastify"),
+    ("hono", "Hono"),
+    ("tailwindcss", "Tailwind"),
+    ("typescript", "TypeScript"),
+    ("prisma", "Prisma"),
+    ("@prisma/client", "Prisma"),
+    ("drizzle-orm", "Drizzle"),
+    ("axios", "Axios"),
+    ("@trpc/client", "tRPC"),
+    ("graphql", "GraphQL"),
+    ("@apollo/client", "Apollo"),
+    ("@supabase/supabase-js", "Supabase"),
+    ("firebase", "Firebase"),
+    ("socket.io", "Socket.IO"),
+    ("zod", "Zod"),
+];
+
+/// Same "check both dependency sections" rule as `sniff_port_suggestion`'s own `has_dep`.
+fn has_dependency(package_json: &serde_json::Value, name: &str) -> bool {
+    ["dependencies", "devDependencies"].iter().any(|section| {
+        package_json
+            .get(section)
+            .and_then(|deps| deps.as_object())
+            .is_some_and(|deps| deps.contains_key(name))
+    })
+}
+
+/// SPEC.md §7 `stack`: built from the same merged dependency map `sniff_port_suggestion` reads —
+/// no additional file access, no source file ever parsed (this plan's "Scope of detection").
+/// `detected_at` uses `run::iso8601_utc` — no date crate (CLAUDE.md, SPEC.md §4).
+fn detect_stack(package_json: &serde_json::Value) -> ProjectStack {
+    let framework = FRAMEWORK_DETECTORS
+        .iter()
+        .find(|(dep, _)| has_dependency(package_json, dep))
+        .map(|(_, name)| name.to_string());
+
+    let mut libraries = Vec::new();
+    for (dep, display) in LIBRARY_ALLOW_LIST {
+        if has_dependency(package_json, dep) && !libraries.iter().any(|l: &String| l == display) {
+            libraries.push(display.to_string());
+        }
+    }
+
+    ProjectStack {
+        framework,
+        libraries,
+        detected_at: crate::run::iso8601_utc(SystemTime::now()),
+    }
+}
+
 /// SPEC.md §7 `read_package_json` / §10 steps 2, 4, 6: "A missing or unparseable `package.json`
 /// is not an error — it returns empty scripts so the dialog falls back to manual command + port
 /// entry." The package-manager detection is independent of `package.json` and still runs off the
