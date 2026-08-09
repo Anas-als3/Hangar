@@ -11,21 +11,39 @@
 import { useSyncExternalStore } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
+  addProject,
   clearLogBuffer,
   getLogBuffer,
   getProjects,
   getRegistryError,
   openInBrowser,
+  openInEditor,
+  removeProject,
   runProject,
+  setSettings,
   stopProject,
+  updateProject,
 } from "./api";
 import type {
   LogLine,
   LogLinesPayload,
+  NewProject,
+  Project,
   ProjectView,
   RegistryError,
+  Settings,
   StatusChangedPayload,
 } from "./types";
+
+/**
+ * Which dialog (SPEC.md §10/§11) is open, or `null`. `edit` carries the full `Project` being
+ * edited so `AddEditDialog` can pre-fill without a second fetch.
+ */
+export type DialogState =
+  | { kind: "add" }
+  | { kind: "edit"; project: Project }
+  | { kind: "settings" }
+  | null;
 
 /** Mirrors the Rust ring buffer (SPEC.md §8) so the panel's copy can never outgrow it. */
 export const LOG_BUFFER_LIMIT = 500;
@@ -41,6 +59,8 @@ export interface HangarState {
   openLogsFor: string | null;
   /** Last command error — §7: errors surface as toasts. */
   toast: string | null;
+  /** Which dialog (add/edit/settings) is open — see `DialogState`. */
+  dialog: DialogState;
 }
 
 let state: HangarState = {
@@ -51,6 +71,7 @@ let state: HangarState = {
   logs: {},
   openLogsFor: null,
   toast: null,
+  dialog: null,
 };
 
 const listeners = new Set<() => void>();
