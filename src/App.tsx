@@ -75,7 +75,7 @@ function Toast({ message }: { message: string }) {
   return (
     <div
       role="alert"
-      className="fixed bottom-6 left-1/2 z-30 flex max-w-[36rem] -translate-x-1/2 items-start gap-4 rounded-md border border-status-danger/40 bg-surface px-4 py-3 text-sm text-text shadow-lg"
+      className="hangar-fade-in fixed bottom-6 left-1/2 z-30 flex max-w-[36rem] -translate-x-1/2 items-start gap-4 rounded-md border border-status-danger/40 bg-surface px-4 py-3 text-sm text-text shadow-lg"
     >
       <span className="min-w-0">{message}</span>
       <button

@@ -80,12 +80,12 @@ export function PhaseStrip({ project }: { project: ProjectView }) {
         return (
           <div key={key} className="flex flex-1 flex-col items-center gap-1">
             <span
-              className={`h-1 w-full rounded-full transition-colors duration-300 ${
+              className={`h-1 w-full rounded-full transition-colors duration-200 ${
                 lit ? "bg-accent" : dimmed ? "bg-status-stopped/50" : "bg-white/10"
               }`}
             />
             <span
-              className={`text-[10px] uppercase tracking-wide ${
+              className={`text-[10px] uppercase tracking-wide transition-colors duration-200 ${
                 lit ? "text-accent" : dimmed ? "text-muted/70" : "text-muted/30"
               }`}
             >
