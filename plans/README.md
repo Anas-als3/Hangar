@@ -15,7 +15,7 @@ conditions, and update your row below when done.
 | 002 | Spawn, environment resolution, log pipeline | M2 | P1 | L | 001 | DONE |
 | 003 | Guaranteed process-tree kill | M3 | P1 | L | 002 | DONE |
 | 004 | Ready-detection and browser hand-off | M4 | P1 | M | 003 | DONE |
-| 005 | Add / Edit / Remove and settings | M5 | P2 | M | 004 | DONE (merged; &sect;15 test 6 + manual UI acceptance outstanding) |
+| 005 | Add / Edit / Remove and settings | M5 | P2 | M | 004 | DONE (merged; §15 test 6 + manual UI acceptance outstanding) |
 | 006 | Update-on-run and full UI pass | M6 | P2 | L | 005 | TODO |
 | 007 | Ready-timeout owns its crash — deliver the §9 step 7 toast | — | P1 | S | — | DONE (merged `347b96d`; §15 test 7 verified live) |
 | 008 | Wire-contract tests + types.ts drift guard | — | P1 | S | — | DONE (merged `5f1db9c`) |
