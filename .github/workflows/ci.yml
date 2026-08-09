@@ -64,6 +64,46 @@ jobs:
       - name: Run ignored acceptance tests
         run: npm run test:acceptance
 
+  bundle:
+    name: bundle (macOS)
+    runs-on: macos-latest
+    # Informative, not blocking: this job exists to catch bundling regressions
+    # (icons, identifier, signing) early, but a signing/toolchain hiccup on a
+    # hosted runner must not block the `host` job that gates real correctness.
+    # Same reasoning as the `windows` job below, applied to bundling instead
+    # of testing. No Linux or Windows bundle job here: Linux needs webkitgtk
+    # apt setup (see the top-of-file comment) and Windows bundling is
+    # untested in this repo — both deliberately deferred.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build release bundle
+        run: npm run build:app
+
+      - name: Upload bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: hangar-macos
+          path: src-tauri/target/release/bundle/
+
   windows:
     name: windows
     runs-on: windows-latest
