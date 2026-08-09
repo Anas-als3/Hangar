@@ -285,3 +285,23 @@ export async function clearLogs(projectId: string): Promise<void> {
     setToast(errorMessage(err));
   }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Dialogs (§10/§11) — AddEditDialog and SettingsDialog are pure views of `dialog`.
+// ---------------------------------------------------------------------------------------------
+
+export function openAddDialog(): void {
+  setState({ dialog: { kind: "add" } });
+}
+
+export function openEditDialog(project: Project): void {
+  setState({ dialog: { kind: "edit", project } });
+}
+
+export function openSettingsDialog(): void {
+  setState({ dialog: { kind: "settings" } });
+}
+
+export function closeDialog(): void {
+  setState({ dialog: null });
+}
