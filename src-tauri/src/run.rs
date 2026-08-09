@@ -8,6 +8,7 @@
 //! - `git pull`, lockfile hashing and installs — plan 006.
 
 use std::future::Future;
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -16,8 +17,9 @@ use tauri_plugin_opener::OpenerExt;
 use tokio::sync::watch;
 
 use crate::commands::AppState;
+use crate::env_resolve::EnvMap;
 use crate::process::{
-    self, KillTarget, ProjectRuntime, ShellKind, SpawnOutcome, SpawnSpec, StopClaim,
+    self, KillTarget, LockfileKind, ProjectRuntime, ShellKind, SpawnOutcome, SpawnSpec, StopClaim,
 };
 use crate::registry::{self, Project, Status};
 
