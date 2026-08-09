@@ -100,6 +100,10 @@ pub struct NewProject {
     /// accepted here (mirroring `Project`) rather than hardcoded to `None` in the command layer.
     #[serde(default)]
     pub notes: Option<String>,
+    /// SPEC.md §5: the Add dialog's `read_package_json` call already detected this — carried
+    /// straight through, never recomputed here (plan 023).
+    #[serde(default)]
+    pub stack: Option<ProjectStack>,
 }
 
 /// SPEC.md §5 `id: string // nanoid`. No id-generation crate is added for this one call site
