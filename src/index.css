@@ -12,19 +12,19 @@
 
 /* §11 design tokens. Components reference these tokens only — never raw hex. */
 @theme {
-  --color-bg: #101623;
-  --color-surface: #1a2233;
-  --color-text: #e8ecf4;
-  --color-muted: #8a94a8;
+  --color-bg: #0c0d11;
+  --color-surface: #16181e;
+  --color-text: #e9eaee;
+  --color-muted: #8a8f9c;
 
-  /* Single accent: warm amber. Run button, active phase. */
-  --color-accent: #f5b942;
+  /* Single accent: violet. Run button, active phase. */
+  --color-accent: #8b7bf7;
 
-  /* Status colors are functional only (§11). */
+  /* Status colors are functional only (§11) — they do NOT follow the accent. */
   --color-status-running: #34d399;
-  --color-status-active: #f5b942; /* starting / updating / installing — amber pulse */
+  --color-status-active: #8b7bf7; /* starting / updating / installing — pulses in the accent */
   --color-status-danger: #f87171; /* crashed & stop-failed */
-  --color-status-stopped: #64748b; /* "stopped slate" — §11 gives no hex; slate-500 */
+  --color-status-stopped: #6b7280; /* "stopped slate" — §11 gives no hex */
 
   --font-display: "Space Grotesk", system-ui, sans-serif;
   --font-sans: "Inter", system-ui, sans-serif;
@@ -58,7 +58,7 @@
   }
 }
 
-/* Amber pulse for the transitional statuses (§11). Disabled by the reduced-motion rule above. */
+/* Accent pulse for the transitional statuses (§11). Disabled by the reduced-motion rule above. */
 @keyframes hangar-pulse {
   0%,
   100% {

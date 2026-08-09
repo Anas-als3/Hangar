@@ -160,12 +160,15 @@ export function ProjectCard({ project }: { project: ProjectView }) {
     lastRunLabel(project.lastRunAt);
 
   return (
-    <article className="hangar-fade-in relative flex flex-col gap-3 rounded-lg border border-white/5 bg-surface p-5 transition-transform duration-150 hover:-translate-y-0.5">
+    <article className="hangar-fade-in relative flex flex-col gap-2 rounded-lg border border-white/5 bg-surface p-3 transition-transform duration-150 hover:-translate-y-0.5">
       <header className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           {/* §11 visual pass (plan 018): name is the primary hierarchy element — weight only,
               still Space Grotesk / same size, no new element. */}
-          <h2 className="truncate font-display text-lg font-bold tracking-tight text-text">
+          <h2
+            className="truncate font-display text-lg font-bold tracking-tight text-text"
+            title={project.name}
+          >
             {project.name}
           </h2>
           <p className="mt-0.5 truncate font-mono text-xs text-muted/80" title={project.path}>
@@ -221,7 +224,7 @@ export function ProjectCard({ project }: { project: ProjectView }) {
           more presence (padding, weight) without changing its colour meanings. */}
       <div className="flex items-center gap-2 text-sm">
         <span
-          className={`inline-flex items-center gap-2 rounded-full bg-white/5 px-3 py-1.5 font-medium transition-colors duration-200 ${STATUS_TONE[project.status]}`}
+          className={`inline-flex items-center gap-2 rounded-full bg-white/5 px-2.5 py-1 font-medium transition-colors duration-200 ${STATUS_TONE[project.status]}`}
         >
           <span aria-hidden="true" className="size-1.5 rounded-full bg-current" />
           <span>{STATUS_LABEL[project.status]}</span>
