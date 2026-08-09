@@ -676,10 +676,12 @@ pub async fn run_project(app: &AppHandle, project_id: &str) -> Result<(), String
     };
 
     if !Path::new(&project.path).exists() {
-        return Err(format!(
+        let message = format!(
             "{} can't run: the folder {} no longer exists.",
             project.name, project.path
-        ));
+        );
+        process::append_system(app, &project.id, message.clone()).await;
+        return Err(message);
     }
 
     // ---- §9 step 1: the port must be free before anything is spawned --------------------------
