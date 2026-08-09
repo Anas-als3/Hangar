@@ -1124,6 +1124,78 @@ async fn advance_through_update(
     ControlFlow::Continue(())
 }
 
+/// SPEC.md §9 step 3, run once `entry.status` is already `installing` (the caller claimed
+/// `Trigger::Run(Status::Installing)`, or just advanced into it, because `plan` was already known
+/// to be [`InstallPlan::Run`]). Unlike the update phase, a genuine install failure DOES crash the
+/// run (SPEC.md §9 step 3) — see `crash_run`.
+async fn advance_through_install(
+    app: &AppHandle,
+    project: &Project,
+    env: &EnvMap,
+    path_searched: &str,
+    plan: &InstallPlan,
+    spawn_registered: &mut bool,
+) -> ControlFlow<Result<(), String>> {
+    let InstallPlan::Run { kind, hash } = plan else {
+        if let InstallPlan::NoLockfile(reason) = plan {
+            process::append_system(app, &project.id, reason.clone()).await;
+        }
+        return ControlFlow::Continue(());
+    };
+
+    let spec = SpawnSpec {
+        command: kind.install_command().to_string(),
+        cwd: Some(PathBuf::from(&project.path)),
+        env: env.clone(),
+        extra_env: Vec::new(),
+        long_lived: true,
+        kill_on_drop: false,
+        shell: ShellKind::Default,
+    };
+
+    let outcome = match run_phase_child(app, project, spec, spawn_registered).await {
+        Ok(outcome) => outcome,
+        Err(result) => {
+            process::append_system(
+                app,
+                &project.id,
+                "install was stopped — node_modules may be partial",
+            )
+            .await;
+            return ControlFlow::Break(result);
+        }
+    };
+
+    match outcome {
+        PhaseOutcome::Exited(Some(0)) => store_lockfile_hash(app, project, hash).await,
+        PhaseOutcome::Exited(code) => {
+            if code.is_some_and(process::is_tool_not_found_exit) {
+                process::append_system(app, &project.id, format!("PATH searched: {path_searched}"))
+                    .await;
+            }
+            let message = match code {
+                Some(n) => format!("Install failed (exit {n}) — see the log, then Run again."),
+                None => "Install failed — see the log, then Run again.".to_string(),
+            };
+            return crash_run(app, &project.id, message).await;
+        }
+        PhaseOutcome::SpawnFailed(e) => {
+            return crash_run(
+                app,
+                &project.id,
+                format!("Install failed to start: {e} — see the log, then Run again."),
+            )
+            .await;
+        }
+    }
+
+    if let Some(result) = bail_if_stop_pending(app, project, *spawn_registered).await {
+        return ControlFlow::Break(result);
+    }
+    let _ = apply(app, &project.id, Trigger::PhaseAdvance(Status::Starting), None).await;
+    ControlFlow::Continue(())
+}
+
 // ---------------------------------------------------------------------------------------------
 // SPEC.md §8 — the Stop sequence: kill the tree, verify death, then the port, then the status
 // ---------------------------------------------------------------------------------------------
