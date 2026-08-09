@@ -4,7 +4,6 @@
  *
  * Duplicate-port / not-stopped rejections are enforced by Rust (§7); this dialog just calls
  * addProjectAction/updateProjectAction and lets `setToast` surface whatever comes back.
- *
  */
 import { useEffect, useState } from "react";
 // Native folder picker (§10 step 1) — dialog plugin only, never tauri-plugin-shell (§4).
