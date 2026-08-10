@@ -97,6 +97,9 @@ export function AddEditDialog() {
   // §5 `url`: "shown only in the Edit dialog (placeholder shows the computed default)".
   const [url, setUrl] = useState(editing?.url ?? "");
   const [updateOnRun, setUpdateOnRun] = useState(editing?.updateOnRun ?? true);
+  const [openBrowserOnReady, setOpenBrowserOnReady] = useState(
+    editing?.openBrowserOnReady ?? true,
+  );
   const [readyTimeoutSec, setReadyTimeoutSec] = useState(editing?.readyTimeoutSec ?? 60);
   const [saving, setSaving] = useState(false);
   const [scripts, setScripts] = useState<Record<string, string>>({});
@@ -120,6 +123,7 @@ export function AddEditDialog() {
     setPort(editing ? String(editing.port) : "");
     setUrl(editing?.url ?? "");
     setUpdateOnRun(editing?.updateOnRun ?? true);
+    setOpenBrowserOnReady(editing?.openBrowserOnReady ?? true);
     setReadyTimeoutSec(editing?.readyTimeoutSec ?? 60);
     setStack(editing?.stack);
     setSaving(false);
@@ -244,6 +248,7 @@ export function AddEditDialog() {
       updateOnRun,
       readyTimeoutSec,
       stack,
+      openBrowserOnReady,
     };
     const ok = editing
       ? await updateProjectAction({
@@ -462,6 +467,19 @@ export function AddEditDialog() {
           />
           Pull updates and reinstall when this project runs
         </label>
+
+        <label className="mt-4 flex items-center gap-2 text-sm text-text">
+          <input
+            type="checkbox"
+            checked={openBrowserOnReady}
+            onChange={(e) => setOpenBrowserOnReady(e.target.checked)}
+            className="size-4 rounded border-white/20 bg-bg accent-accent"
+          />
+          Open browser when ready
+        </label>
+        <p className="mt-1.5 text-xs text-muted">
+          Turn this off for a project with no page to serve, like an API-only server.
+        </p>
 
         <div className="mt-6 flex justify-end gap-2">
           <button
