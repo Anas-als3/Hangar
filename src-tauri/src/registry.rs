@@ -1028,6 +1028,18 @@ mod tests {
             }),
             checked_at: "2026-08-10T09:00:00Z".into(),
         };
+        // SPEC.md §18 / plan 053: every `Option` `Some` — a `None` field is invisible to
+        // `assert_keys_in` (`skip_serializing_if` omits the key), and an all-`None` sample would
+        // let this guard pass while never checking `GithubStatus` at all.
+        let github_status = crate::commands::GithubStatus {
+            state: crate::commands::GithubConnectionState::RateLimited,
+            username: Some("octocat".into()),
+            scopes: Some(vec!["repo".into(), "notifications".into()]),
+            detail: Some("GitHub has rate-limited this token.".into()),
+            reset_at: Some("2026-08-10T09:00:00Z".into()),
+            retry_after_sec: Some(60),
+            had_stored_token: Some(true),
+        };
 
         let samples: Vec<serde_json::Value> = vec![
             serde_json::to_value(&project_view).unwrap(),
@@ -1037,6 +1049,7 @@ mod tests {
             serde_json::to_value(&registry_error).unwrap(),
             serde_json::to_value(&package_json_info).unwrap(),
             serde_json::to_value(&port_status).unwrap(),
+            serde_json::to_value(&github_status).unwrap(),
         ];
         for sample in &samples {
             assert_keys_in(sample, types_ts);
@@ -1059,6 +1072,26 @@ mod tests {
                 types_ts.contains(wire_str),
                 "Status::{status:?} serializes to {wire_str:?}, which does not appear anywhere \
                  in src/types.ts"
+            );
+        }
+
+        // SPEC.md §18 / plan 053: same reasoning, for `GithubConnectionState`'s kebab-case union.
+        for state in [
+            crate::commands::GithubConnectionState::Disconnected,
+            crate::commands::GithubConnectionState::KeychainDenied,
+            crate::commands::GithubConnectionState::Connected,
+            crate::commands::GithubConnectionState::Invalid,
+            crate::commands::GithubConnectionState::InsufficientScope,
+            crate::commands::GithubConnectionState::RateLimited,
+            crate::commands::GithubConnectionState::SecondaryRateLimited,
+            crate::commands::GithubConnectionState::Offline,
+        ] {
+            let wire = serde_json::to_value(state).unwrap();
+            let wire_str = wire.as_str().expect("GithubConnectionState serializes to a string");
+            assert!(
+                types_ts.contains(wire_str),
+                "GithubConnectionState::{state:?} serializes to {wire_str:?}, which does not \
+                 appear anywhere in src/types.ts"
             );
         }
     }
