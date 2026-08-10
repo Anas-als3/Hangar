@@ -13,6 +13,7 @@ import {
   openInBrowserAction,
   openInEditorAction,
   openLogs,
+  openMoveToFolderDialog,
   openNotes,
   removeProjectAction,
   startProject,
@@ -30,6 +31,14 @@ async function handleEdit(projectId: string): Promise<void> {
   const okToProceed = await stopIfRunningWithConfirm(project);
   if (!okToProceed) return;
   openEditDialog(project);
+}
+
+/** §11 "Move to folder…" — §5: `folderId`/`folderName` are run-inert, so unlike Edit/Remove this
+ *  needs no confirm-and-stop first. */
+function handleMoveToFolder(projectId: string): void {
+  const project = findProject(projectId);
+  if (!project) return;
+  openMoveToFolderDialog(project);
 }
 
 /** §6/§10 step 7: Remove — same confirm-and-stop, plus a plain destructive-action confirm. */
@@ -86,6 +95,7 @@ const MENU_ITEMS: ReadonlyArray<{
   { label: "Open in editor", action: (id) => void openInEditorAction(id) },
   { label: "Show logs", action: (id) => void openLogs(id) },
   { label: "Notes", action: (id) => void openNotes(id) },
+  { label: "Move to folder…", action: (id) => handleMoveToFolder(id) },
   { label: "Edit", action: (id) => void handleEdit(id) },
   { label: "Remove", action: (id) => void handleRemove(id) },
 ];
