@@ -64,6 +64,16 @@ pub const MAX_PACKAGES: usize = 1000;
 /// finding is one line.
 const MAX_IDS_SHOWN: usize = 4;
 
+/// The budget for the WHOLE dependency pass, across every project.
+///
+/// [`OUTER_TIMEOUT`] bounds one request; nothing bounded the sum. Requests run one project at a
+/// time, and the offline short-circuit only latches on a *failure* — so a server that answers
+/// slowly but successfully (12 s × 10 projects) would hold `get_preflight` open for two minutes
+/// with the panel showing a loading state the whole time. Past this budget the remaining projects
+/// are not asked about, and **each one says so** rather than reporting an empty, clean-looking
+/// list.
+pub const TOTAL_BUDGET: Duration = Duration::from_secs(45);
+
 /// One npm package as the lockfile records it. **These two strings are the entire payload** — see
 /// [`request_body`]. Ordered so the deduped set, and therefore the request, is deterministic.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -81,11 +91,27 @@ pub enum Scan {
     NoLockfile,
     /// A lockfile Hangar will not parse without a new dependency (plan 059's STOP condition).
     Unsupported { file: String },
-    /// `package-lock.json` was there but could not be read, or carried no `packages` map (an npm 6
-    /// `lockfileVersion: 1` file, whose shape this deliberately does not implement).
+    /// `package-lock.json` could not be read from disk, or its bytes are not JSON.
     Unreadable,
+    /// Valid JSON with no `packages` map — an npm 6 `lockfileVersion: 1` file.
+    ///
+    /// Deliberately **separate from [`Scan::Unreadable`]**: that file is a perfectly good npm
+    /// lockfile and Hangar simply reads v2/v3 only. Telling someone their lockfile "could not be
+    /// read" sends them hunting for a corruption that does not exist — the limitation is ours, and
+    /// the message has to say so.
+    UnsupportedLockfileVersion,
     /// Deduped, sorted packages, with however many the [`MAX_PACKAGES`] cap dropped.
     Packages { packages: Vec<Package>, dropped: usize },
+}
+
+/// Why a `package-lock.json` produced no package list. Two cases that read identically in code and
+/// must never read identically to a user — see [`Scan::UnsupportedLockfileVersion`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LockfileProblem {
+    /// The bytes are not JSON at all.
+    NotJson,
+    /// Valid JSON, no `packages` map: npm 6's `lockfileVersion: 1`.
+    NoPackagesMap,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -105,11 +131,17 @@ pub enum Scan {
 /// those), and any entry with no `version`. An aliased install records its real registry name in
 /// `name`, which wins over the path when present — `npm i foo@npm:bar` must be asked about `bar`.
 ///
-/// `None` means the text was not an npm lockfile Hangar can read: not JSON, or no `packages` map.
-/// That is a `note` for the caller, never an error.
-pub fn parse_package_lock(text: &str) -> Option<Vec<Package>> {
-    let root: serde_json::Value = serde_json::from_str(text).ok()?;
-    let packages = root.get("packages")?.as_object()?;
+/// A dependency that did not come from a registry is skipped — see [`came_from_a_registry`].
+///
+/// `Err` distinguishes "not JSON" from "npm 6 lockfile", because those are one `note` each and the
+/// wrong one accuses a valid file of being broken.
+pub fn parse_package_lock(text: &str) -> Result<Vec<Package>, LockfileProblem> {
+    let root: serde_json::Value =
+        serde_json::from_str(text).map_err(|_| LockfileProblem::NotJson)?;
+    let packages = root
+        .get("packages")
+        .and_then(|v| v.as_object())
+        .ok_or(LockfileProblem::NoPackagesMap)?;
 
     let mut deduped = BTreeSet::new();
     for (key, entry) in packages {
@@ -121,6 +153,9 @@ pub fn parse_package_lock(text: &str) -> Option<Vec<Package>> {
         };
         if entry.get("link").and_then(|v| v.as_bool()).unwrap_or(false) {
             continue; // a symlink to a workspace member — local, not a registry package
+        }
+        if !came_from_a_registry(entry) {
+            continue;
         }
         let Some(version) = entry.get("version").and_then(|v| v.as_str()) else {
             continue;
@@ -145,7 +180,33 @@ pub fn parse_package_lock(text: &str) -> Option<Vec<Package>> {
         deduped.insert(Package { name, version: version.to_string() });
     }
 
-    Some(deduped.into_iter().collect())
+    Ok(deduped.into_iter().collect())
+}
+
+/// Whether an entry came from a package registry, rather than from git, a local path or a link.
+///
+/// Skipping the others is a **correctness** fix first and a disclosure fix second. osv.dev is
+/// asked by npm name and version, so a `git+ssh://…/acme/internal-thing` dependency either matches
+/// nothing — pure batch noise — or matches a *public* package that merely shares its name, which
+/// would report an advisory against code that is not in this project. That those same names are
+/// the most sensitive strings in the lockfile is the second reason, pointing the same way.
+///
+/// Deliberately conservative in one direction: **an absent `resolved` is kept.** Bundled
+/// dependencies omit it, and dropping real packages to be tidy would manufacture exactly the
+/// quiet, clean-looking result this module exists to prevent. Only an explicitly non-registry
+/// `resolved` is skipped.
+///
+/// A private *registry* (`https://npm.example-corp.com/…`) is deliberately NOT filtered: it cannot
+/// be told apart from a public registry or a corporate mirror of one, and filtering by host would
+/// silently skip every package for anyone behind a proxy. The Settings label says so instead.
+fn came_from_a_registry(entry: &serde_json::Map<String, serde_json::Value>) -> bool {
+    let Some(resolved) = entry.get("resolved").and_then(|v| v.as_str()) else {
+        return true;
+    };
+    let resolved = resolved.trim();
+    !["git+", "git:", "git@", "file:", "link:", "github:", "bitbucket:", "gitlab:"]
+        .iter()
+        .any(|prefix| resolved.starts_with(prefix))
 }
 
 /// The package name a `packages` key encodes. Splits on `/` and walks to the **last**
@@ -183,8 +244,10 @@ pub fn scan_lockfile(dir: &Path) -> Scan {
     let Ok(bytes) = std::fs::read(&path) else {
         return Scan::Unreadable;
     };
-    let Some(mut packages) = parse_package_lock(&String::from_utf8_lossy(&bytes)) else {
-        return Scan::Unreadable;
+    let mut packages = match parse_package_lock(&String::from_utf8_lossy(&bytes)) {
+        Ok(packages) => packages,
+        Err(LockfileProblem::NotJson) => return Scan::Unreadable,
+        Err(LockfileProblem::NoPackagesMap) => return Scan::UnsupportedLockfileVersion,
     };
 
     let dropped = packages.len().saturating_sub(MAX_PACKAGES);
@@ -313,13 +376,19 @@ pub async fn query_osv(packages: Vec<Package>) -> Option<Vec<Vec<String>>> {
 /// `query` is injected so the off-by-default guard can be proved by a test that counts sends
 /// rather than by reading this function. Production passes [`query_osv`].
 ///
-/// One request per project, run in order, with **one short-circuit**: the first `None` latches
-/// `offline` and every remaining project gets the same note without another request. Without it, a
-/// user with twenty projects and no network would wait twenty [`OUTER_TIMEOUT`]s with the panel
-/// open; with it the whole pass is bounded by one.
+/// One request per project, run in order, with **two ways to stop early**: the first `None`
+/// latches `offline`, and `budget` caps the whole pass however well the server is answering. Both
+/// exist so a slow or dead network cannot hold `get_preflight` open for minutes — and in both
+/// cases every remaining project **says it was not checked**.
+///
+/// **No path out of this function returns an empty list for a project it did not actually check.**
+/// That is the one bug the whole module is written to prevent: an empty finding list renders
+/// exactly like "checked and clean" (§11 is silent when clean), so "I could not look" must always
+/// produce a `note`.
 pub async fn dependency_findings<F, Fut>(
     enabled: bool,
     project_dirs: Vec<PathBuf>,
+    budget: Duration,
     query: F,
 ) -> Vec<Vec<PreflightFinding>>
 where
@@ -341,9 +410,16 @@ where
         })
         .await
     else {
-        return vec![Vec::new(); count];
+        // The blocking hop itself failed, so NOTHING was read and nothing was asked. Returning
+        // empty lists here would render as "checked, nothing to report" for every project — the
+        // clean bill of health this module must never hand out. One note each instead.
+        //
+        // The branch CONDITION is a `JoinError`, which a test cannot provoke without putting test
+        // scaffolding in production code; its BODY is the named function below, which is tested.
+        return unavailable_for_every_project(count);
     };
 
+    let started = std::time::Instant::now();
     let mut per_project = Vec::with_capacity(count);
     let mut offline = false;
 
@@ -371,8 +447,21 @@ where
                 findings.push(PreflightFinding {
                     id: "dependency-lockfile-unreadable".to_string(),
                     severity: Severity::Note,
-                    message: "package-lock.json could not be read as an npm lockfile, so \
-                              dependencies were not checked."
+                    message: "package-lock.json could not be read, so dependencies were not \
+                              checked."
+                        .to_string(),
+                    file: "package-lock.json".to_string(),
+                });
+                per_project.push(findings);
+                continue;
+            }
+            // The file is FINE — the limit is Hangar's. Say that, and say which versions are read.
+            Scan::UnsupportedLockfileVersion => {
+                findings.push(PreflightFinding {
+                    id: "dependency-lockfile-version-unsupported".to_string(),
+                    severity: Severity::Note,
+                    message: "package-lock.json is an npm 6 lockfile (version 1); Hangar reads \
+                              lockfile versions 2 and 3, so dependencies were not checked."
                         .to_string(),
                     file: "package-lock.json".to_string(),
                 });
@@ -405,6 +494,13 @@ where
             per_project.push(findings);
             continue;
         }
+        // The pass has run out of time. Every project from here on is honestly unchecked, and says
+        // so in its own words — "ran out of time" is a different fact from "no answer".
+        if started.elapsed() >= budget {
+            findings.push(out_of_time());
+            per_project.push(findings);
+            continue;
+        }
 
         match query(packages.clone()).await {
             None => {
@@ -434,6 +530,28 @@ fn unavailable() -> PreflightFinding {
         id: "dependency-check-unavailable".to_string(),
         severity: Severity::Note,
         message: "Hangar could not get an answer from osv.dev, so dependencies were not checked."
+            .to_string(),
+        file: "package-lock.json".to_string(),
+    }
+}
+
+/// The whole pass could not start. **Never an empty list**: `Vec::new()` for a project renders
+/// identically to "checked, nothing to report" (§11 is silent when clean), so a pass that read
+/// nothing must say so once per project.
+fn unavailable_for_every_project(count: usize) -> Vec<Vec<PreflightFinding>> {
+    vec![vec![unavailable()]; count]
+}
+
+/// The other half of "it was not checked": the pass hit [`TOTAL_BUDGET`] before reaching this
+/// project. Worded distinctly from [`unavailable`] because the causes differ — one is a network
+/// that will not answer, the other is too many projects for one panel open — and a user who sees
+/// this can act on it (open Doctor again, or check fewer projects).
+fn out_of_time() -> PreflightFinding {
+    PreflightFinding {
+        id: "dependency-check-out-of-time".to_string(),
+        severity: Severity::Note,
+        message: "The dependency check ran out of time before reaching this project, so its \
+                  dependencies were not checked."
             .to_string(),
         file: "package-lock.json".to_string(),
     }
@@ -521,6 +639,7 @@ mod tests {
         let off = tauri::async_runtime::block_on(dependency_findings(
             false,
             vec![dir.clone()],
+            TOTAL_BUDGET,
             &sender,
         ));
         assert_eq!(
@@ -532,8 +651,12 @@ mod tests {
         assert!(off[0].is_empty(), "no findings when the check is off: {:?}", off[0]);
 
         // Not vacuous: the same fixture, the same sender, the setting ON.
-        let on =
-            tauri::async_runtime::block_on(dependency_findings(true, vec![dir.clone()], &sender));
+        let on = tauri::async_runtime::block_on(dependency_findings(
+            true,
+            vec![dir.clone()],
+            TOTAL_BUDGET,
+            &sender,
+        ));
         assert_eq!(sends.load(Ordering::SeqCst), 1, "exactly one request, and no retries");
         assert_eq!(on[0].len(), 1, "{:?}", on[0]);
         assert_eq!(on[0][0].severity, Severity::Warning);
@@ -624,17 +747,87 @@ mod tests {
         assert_eq!(packages.len(), 2, "{packages:?}");
     }
 
-    /// Not JSON, and an npm 6 `lockfileVersion: 1` file (no `packages` map) — both are "cannot
-    /// read", which becomes a `note`, never silence and never an error.
+    /// The two "no package list" cases are **distinct**, because the messages they produce accuse
+    /// very different things: one says the file is broken, the other says Hangar is limited. An
+    /// npm 6 lockfile is a perfectly valid file.
     #[test]
-    fn a_lockfile_hangar_cannot_read_is_none_rather_than_empty() {
-        assert_eq!(parse_package_lock("not json at all"), None);
+    fn a_broken_lockfile_and_an_npm_6_lockfile_are_told_apart() {
+        assert_eq!(parse_package_lock("not json at all"), Err(LockfileProblem::NotJson));
         assert_eq!(
             parse_package_lock(r#"{"lockfileVersion":1,"dependencies":{"a":{"version":"1.0.0"}}}"#),
-            None
+            Err(LockfileProblem::NoPackagesMap)
         );
-        // Parseable and genuinely empty is a different answer from unreadable.
-        assert_eq!(parse_package_lock(r#"{"packages":{}}"#), Some(Vec::new()));
+        // Parseable and genuinely empty is a third, different answer.
+        assert_eq!(parse_package_lock(r#"{"packages":{}}"#), Ok(Vec::new()));
+    }
+
+    /// An npm 6 lockfile must not be described as unreadable — that sends someone hunting for a
+    /// corruption that does not exist. The message names the real limit instead.
+    #[test]
+    fn an_npm_6_lockfile_blames_hangars_limit_not_the_users_file() {
+        let dir = scratch("lockfile-v1");
+        std::fs::write(
+            dir.join("package-lock.json"),
+            r#"{"lockfileVersion":1,"dependencies":{"lodash":{"version":"4.17.15"}}}"#,
+        )
+        .unwrap();
+
+        let sends = AtomicUsize::new(0);
+        let findings = tauri::async_runtime::block_on(dependency_findings(
+            true,
+            vec![dir.clone()],
+            TOTAL_BUDGET,
+            |_packages: Vec<Package>| {
+                sends.fetch_add(1, Ordering::SeqCst);
+                async { None }
+            },
+        ));
+
+        assert_eq!(sends.load(Ordering::SeqCst), 0, "there is nothing to send");
+        assert_eq!(findings[0].len(), 1, "{:?}", findings[0]);
+        let message = &findings[0][0].message;
+        assert_eq!(findings[0][0].id, "dependency-lockfile-version-unsupported");
+        assert!(
+            !message.contains("could not be read"),
+            "a valid npm 6 lockfile must not be called unreadable: {message}"
+        );
+        assert!(message.contains("versions 2 and 3"), "{message}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Plan 059 review finding 4: a git / local-path / link dependency has a `version`, no `link`
+    /// flag and a `node_modules` key, so it would otherwise be sent. It must not be — asking
+    /// osv.dev about `internal-thing@1.0.0` either matches nothing or, worse, matches a PUBLIC
+    /// package that merely shares the name, reporting an advisory against code that is not here.
+    /// An **absent** `resolved` is still kept: dropping real packages to be tidy is how a check
+    /// quietly stops looking.
+    #[test]
+    fn dependencies_that_did_not_come_from_a_registry_are_never_sent() {
+        let packages = parse_package_lock(
+            r#"{"packages":{
+              "node_modules/from-registry": {"version":"1.0.0","resolved":"https://registry.npmjs.org/x/-/x-1.0.0.tgz"},
+              "node_modules/from-private-registry": {"version":"1.0.0","resolved":"https://npm.example-corp.com/x/-/x-1.0.0.tgz"},
+              "node_modules/no-resolved-field": {"version":"1.0.0"},
+              "node_modules/internal-thing": {"version":"1.0.0","resolved":"git+ssh://git@github.com/acme/internal-thing.git#abc123"},
+              "node_modules/from-github-shorthand": {"version":"2.0.0","resolved":"github:acme/other"},
+              "node_modules/from-a-local-path": {"version":"3.0.0","resolved":"file:../sibling"}
+            }}"#,
+        )
+        .unwrap();
+
+        let names: Vec<&str> = packages.iter().map(|p| p.name.as_str()).collect();
+        assert!(!names.contains(&"internal-thing"), "a git dependency's name must not be sent");
+        assert!(!names.contains(&"from-github-shorthand"), "{names:?}");
+        assert!(!names.contains(&"from-a-local-path"), "{names:?}");
+        assert!(names.contains(&"from-registry"), "{names:?}");
+        assert!(
+            names.contains(&"no-resolved-field"),
+            "an absent `resolved` must be KEPT — dropping real packages is how coverage dies: {names:?}"
+        );
+        // Deliberate, and disclosed in the Settings label: a private registry cannot be told apart
+        // from a public one, and filtering by host would skip everything for anyone behind a proxy.
+        assert!(names.contains(&"from-private-registry"), "{names:?}");
     }
 
     // -----------------------------------------------------------------------------------------
@@ -652,6 +845,7 @@ mod tests {
         let findings = tauri::async_runtime::block_on(dependency_findings(
             true,
             vec![dir.clone()],
+            TOTAL_BUDGET,
             |_packages: Vec<Package>| {
                 sends.fetch_add(1, Ordering::SeqCst);
                 async { None }
@@ -675,6 +869,7 @@ mod tests {
         let findings = tauri::async_runtime::block_on(dependency_findings(
             true,
             vec![dir.clone()],
+            TOTAL_BUDGET,
             |_packages: Vec<Package>| {
                 sends.fetch_add(1, Ordering::SeqCst);
                 async { None }
@@ -698,6 +893,7 @@ mod tests {
         let findings = tauri::async_runtime::block_on(dependency_findings(
             true,
             vec![one.clone(), two.clone()],
+            TOTAL_BUDGET,
             |_packages: Vec<Package>| {
                 sends.fetch_add(1, Ordering::SeqCst);
                 async { None }
@@ -715,6 +911,76 @@ mod tests {
         let _ = std::fs::remove_dir_all(&two);
     }
 
+    /// Plan 059 review finding 1: when the pass cannot run at all, every project must SAY so.
+    /// An empty finding list renders exactly like "checked and clean" (§11 is silent when clean),
+    /// which would hand out a clean bill of health for work that never happened. The `JoinError`
+    /// that triggers this cannot be provoked from a test without test scaffolding in production
+    /// code, so the branch's body is a named function and this covers it directly.
+    #[test]
+    fn a_pass_that_could_not_run_never_returns_an_empty_clean_looking_list() {
+        let fallback = unavailable_for_every_project(3);
+
+        assert_eq!(fallback.len(), 3, "one entry per project");
+        for project in &fallback {
+            assert!(
+                !project.is_empty(),
+                "an empty list is indistinguishable from 'checked and clean'"
+            );
+            assert_eq!(project.len(), 1);
+            assert_eq!(project[0].id, "dependency-check-unavailable");
+            assert_eq!(project[0].severity, Severity::Note);
+        }
+        assert!(unavailable_for_every_project(0).is_empty(), "no projects, no findings");
+    }
+
+    /// Plan 059 review finding 2: the offline short-circuit only latches on a *failure*, so a
+    /// server that answers slowly but **successfully** was unbounded across projects. The budget
+    /// caps the whole pass — and, critically, the projects it did not reach say so instead of
+    /// coming back with an empty list that renders exactly like "checked and clean".
+    #[test]
+    fn a_slow_but_working_server_still_cannot_run_past_the_total_budget() {
+        let dirs: Vec<PathBuf> = (0..4)
+            .map(|i| {
+                let dir = scratch(&format!("budget-{i}"));
+                write_npm_lockfile(&dir);
+                dir
+            })
+            .collect();
+
+        let sends = AtomicUsize::new(0);
+        let findings = tauri::async_runtime::block_on(dependency_findings(
+            true,
+            dirs.clone(),
+            // A budget smaller than one "request", so the first project is asked and the rest are
+            // not. Real time, but 30ms of it.
+            Duration::from_millis(20),
+            |packages: Vec<Package>| {
+                sends.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    // Answers successfully, just slowly — the case `offline` never catches.
+                    tokio::time::sleep(Duration::from_millis(30)).await;
+                    Some(vec![Vec::new(); packages.len()])
+                }
+            },
+        ));
+
+        assert_eq!(
+            sends.load(Ordering::SeqCst),
+            1,
+            "the budget must stop the pass, not let every project pay the full request time"
+        );
+        assert!(findings[0].is_empty(), "the project that WAS checked is clean: {:?}", findings[0]);
+        for project in &findings[1..] {
+            assert_eq!(project.len(), 1, "an unreached project must not look clean: {project:?}");
+            assert_eq!(project[0].id, "dependency-check-out-of-time");
+            assert_eq!(project[0].severity, Severity::Note);
+        }
+
+        for dir in &dirs {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
     /// A clean answer is silence — §11's "silent when clean", which is the honest current output
     /// of this whole feature.
     #[test]
@@ -725,6 +991,7 @@ mod tests {
         let findings = tauri::async_runtime::block_on(dependency_findings(
             true,
             vec![dir.clone()],
+            TOTAL_BUDGET,
             // The real shape of a clean reply: `{}` per package, i.e. no ids.
             |packages: Vec<Package>| async move { Some(vec![Vec::new(); packages.len()]) },
         ));
@@ -751,6 +1018,7 @@ mod tests {
         let findings = tauri::async_runtime::block_on(dependency_findings(
             true,
             vec![dir.clone()],
+            TOTAL_BUDGET,
             |packages: Vec<Package>| {
                 *sent.lock().unwrap() = packages.len();
                 async move { Some(vec![Vec::new(); packages.len()]) }

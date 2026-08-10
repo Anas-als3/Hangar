@@ -124,8 +124,10 @@ export function SettingsDialog() {
                 Off unless you turn it on. Each time the Doctor panel is opened or refreshed,
                 Hangar sends the package names and versions from each project&rsquo;s
                 package-lock.json to osv.dev. Nothing else is sent &mdash; no file paths, no
-                project names, no machine identifier. npm projects only; pnpm and yarn lockfiles
-                are not read.
+                project names, no machine identifier. Dependencies installed from git, a local
+                path or a link are never sent; a package from a private registry cannot be told
+                apart from a public one, so its name is. npm projects only; pnpm and yarn
+                lockfiles are not read.
               </span>
             </span>
           </label>

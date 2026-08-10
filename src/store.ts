@@ -154,6 +154,15 @@ export interface HangarState {
    *  monitor** (§11): fetched on open and on Refresh only, never polled, and never before the
    *  grid renders. A failed fetch leaves whatever sections were already here untouched. */
   preflight: PreflightReport[] | null;
+  /**
+   * Whether a `get_preflight` call is in flight (plan 059 review finding 2).
+   *
+   * `preflight === null` alone could not carry this: it means "never fetched", which the panel
+   * used to render as "No registered projects." — a **false statement**, shown for as long as the
+   * call takes. With the dependency check on, that call now makes network requests and can take
+   * seconds, so the loading state had to become real rather than implied.
+   */
+  preflightPending: boolean;
 }
 
 let state: HangarState = {
@@ -180,6 +189,7 @@ let state: HangarState = {
   githubStatus: null,
   doctorOpen: false,
   preflight: null,
+  preflightPending: false,
 };
 
 const listeners = new Set<() => void>();
@@ -1020,10 +1030,16 @@ export function closeDoctor(): void {
  *  `refreshPorts`. A project-level problem is never a rejection (see `getPreflight`), so reaching
  *  the catch here means the command itself could not run. */
 export async function refreshPreflight(): Promise<void> {
+  // Plan 059 review finding 2: with the dependency check on this call goes to the network, so the
+  // in-flight window is now long enough to be seen. `finally` so a rejection cannot strand the
+  // panel in a permanent "Checking…".
+  setState({ preflightPending: true });
   try {
     const preflight = await getPreflight();
     setState({ preflight });
   } catch (err) {
     setToast(errorMessage(err));
+  } finally {
+    setState({ preflightPending: false });
   }
 }

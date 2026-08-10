@@ -69,7 +69,7 @@ conditions, and update your row below when done.
 | 056 | Integration ideas register — ranked, with evidence and counter-arguments | — | — | — | — | REGISTER (not a build plan) |
 | 057 | Preflight "Doctor" panel — env-key drift, node version, install-needed | — | P1 | M | 056 | DONE (merged `9ba0e56`, 2026-08-11) — 181 tests, was 168; serialization guard mutation-tested **and re-run independently by the reviewer**; **`engines.node` NOT checked — STOP condition fired, see below** |
 | 058 | Restore the Windows cross-check (feature-gate the TLS stack) | — | P1 | S-M | — | DONE (2026-08-11) — `Compiling hangar` = 1, re-run by the reviewer; §8's Windows code compiles clean; tests unchanged at 181/3; **compiles ≠ runs — CI billing is still the real fix** |
-| 059 | Dependency health via OSV.dev — folded into the Doctor panel, opt-in | — | P2 | M | 057 | DONE (2026-08-11, uncommitted) — 196 tests, was 181; **off-by-default guard mutation-tested** (guard removed → RED, restored → GREEN); new `osv` cargo feature keeps `--no-default-features` (the Windows gate) dropping `reqwest`; no new §7 command, no new dependency; **live API called: Hangar's own 173 packages → 0 advisories**, which is this feature's honest output today |
+| 059 | Dependency health via OSV.dev — folded into the Doctor panel, opt-in | — | P2 | M | 057 | DONE (2026-08-11, uncommitted) — 200 tests, was 181; **four guards mutation-tested** (off-by-default, the total budget, the never-empty fallback, and the non-registry filter — each removed → RED, restored → GREEN); new `osv` cargo feature keeps `--no-default-features` (the Windows gate) dropping `reqwest`; no new §7 command, no new dependency; **live API called: Hangar's own 173 packages → 0 advisories**, which is this feature's honest output today; five review findings fixed, see the note below |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
 
@@ -456,6 +456,28 @@ hardware settles SPEC.md §15 test 3.
   `package-lock.json` v2/v3 is parsed; **npm 6's `lockfileVersion: 1` is not**
   (it has no `packages` map) and reads as the same `note`. Reopening this needs a
   dependency decision that belongs to the maintainer.
+- **Plan 059: "not checked" must never look like "clean" — this cost four
+  fixes, not one.** An empty finding list renders identically to a clean project
+  (§11 is silent when clean), so every path that does not actually check
+  something has to say so. Review caught three places where it did not: a failed
+  `spawn_blocking` returned empty lists for every project; a slow-but-working
+  server was unbounded across projects (the offline short-circuit only latches on
+  a *failure*, so ten projects × 12 s held the panel for two minutes) and the
+  panel meanwhile rendered the false line "No registered projects."; and an npm 6
+  `lockfileVersion: 1` file was reported as unreadable, blaming a valid file for
+  Hangar's own limit. All three are now `note` findings with distinct wording, a
+  `TOTAL_BUDGET` caps the whole pass, and the panel has a real pending state.
+  **The reusable lesson: in a panel that is silent when clean, the dangerous bug
+  is never the false positive — it is the silence.**
+- **Plan 059: git and local-path dependencies are never sent.** A
+  `git+ssh://…/acme/internal-thing` entry has a `version`, no `link` and a
+  `node_modules` key, so it looked like any other package. Asking osv.dev about
+  it by npm name either matches nothing or matches a *public* package that merely
+  shares the name — a false advisory against code that is not in the project. A
+  private *registry* is deliberately not filtered: it cannot be told apart from a
+  corporate mirror of the public one, and filtering by host would silently skip
+  every package for anyone behind a proxy, which is the same "quietly stopped
+  looking" failure. The Settings label states both halves.
 - **Plan 059: the honest output of the dependency check today is "nothing to
   report."** Measured live on 2026-08-11 through the shipped client: Hangar's own
   173 packages, one request, **0 advisories**. That is why there is no score, no

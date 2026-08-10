@@ -66,7 +66,8 @@ keyring = { version = "4", optional = true, features = ["apple-native-keyring-st
 # DEVIATION: SPEC.md's own snippet names the historic `rustls-tls` feature; reqwest 0.13 renamed it
 # to `rustls` upstream. Kept the spec's INTENT (rustls, never OpenSSL) per CLAUDE.md's "trust the
 # compiler and current docs" rule — verified with `cargo tree`: no `openssl*` crate appears anywhere.
-# `optional` only because of the `github` feature above — the justification is unchanged.
+# `optional` only because of the `github` AND `osv` features above — either one turns it on, and
+# `--no-default-features` (both off) is what drops it. The justification is unchanged.
 reqwest = { version = "0.13", optional = true, default-features = false, features = ["rustls", "json"] }
 
 [target.'cfg(unix)'.dependencies]

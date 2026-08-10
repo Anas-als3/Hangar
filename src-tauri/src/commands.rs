@@ -643,8 +643,13 @@ pub async fn get_preflight(
     // that can touch the network, and only when the user has turned it on.
     #[cfg(feature = "osv")]
     {
-        let extra =
-            osv::dependency_findings(check_dependencies, project_dirs, osv::query_osv).await;
+        let extra = osv::dependency_findings(
+            check_dependencies,
+            project_dirs,
+            osv::TOTAL_BUDGET,
+            osv::query_osv,
+        )
+        .await;
         for (report, findings) in reports.iter_mut().zip(extra) {
             report.findings.extend(findings);
         }
