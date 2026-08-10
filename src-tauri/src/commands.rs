@@ -955,4 +955,101 @@ mod tests {
         assert_eq!(replaced.last_run_at.as_deref(), Some("2026-08-10T09:00:00Z"));
         assert_eq!(replaced.last_lockfile_hash.as_deref(), Some("freshhash"));
     }
+
+    // -------------------------------------------------------------------------------------
+    // Plan 042: `free_port_gate` — every one of §9 step 1's gates, plus the mutation check
+    // reported by the executor for gate 3.
+    // -------------------------------------------------------------------------------------
+
+    const CLAIMED_START: &str = "Mon Aug 10 13:53:48 2026";
+
+    fn full_holder() -> PortHolder {
+        PortHolder {
+            name: "node".into(),
+            pid: 4321,
+            command: Some("node server.js".into()),
+            started_at: Some(CLAIMED_START.into()),
+            parent_exited: Some(false),
+            same_user: Some(true),
+        }
+    }
+
+    fn port_with(listener_count: usize, holder: Option<PortHolder>) -> PortStatus {
+        PortStatus {
+            project_id: "abc123".into(),
+            port: 5173,
+            busy: true,
+            listener_count,
+            holder,
+            checked_at: "2026-08-10T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn gate1_refuses_two_listeners() {
+        let port = port_with(2, None);
+        let err = free_port_gate(&port, Status::Stopped, CLAIMED_START).unwrap_err();
+        assert!(err.contains("2 processes"), "got {err:?}");
+    }
+
+    #[test]
+    fn gate2_refuses_a_different_user() {
+        let holder = PortHolder { same_user: Some(false), ..full_holder() };
+        let port = port_with(1, Some(holder));
+        let err = free_port_gate(&port, Status::Stopped, CLAIMED_START).unwrap_err();
+        assert!(err.contains("owner"), "got {err:?}");
+    }
+
+    #[test]
+    fn gate2_refuses_an_unknown_owner() {
+        let holder = PortHolder { same_user: None, ..full_holder() };
+        let port = port_with(1, Some(holder));
+        let err = free_port_gate(&port, Status::Stopped, CLAIMED_START).unwrap_err();
+        assert!(err.contains("owner"), "got {err:?}");
+    }
+
+    #[test]
+    fn gate3_refuses_a_running_project() {
+        let port = port_with(1, Some(full_holder()));
+        let err = free_port_gate(&port, Status::Running, CLAIMED_START).unwrap_err();
+        assert!(err.contains("Stop"), "got {err:?}");
+    }
+
+    #[test]
+    fn gate3_refuses_every_in_flight_status() {
+        for status in [Status::Starting, Status::Installing, Status::Updating, Status::Stopping] {
+            let port = port_with(1, Some(full_holder()));
+            let err = free_port_gate(&port, status, CLAIMED_START).unwrap_err();
+            assert!(err.contains("Stop"), "status {status:?} got {err:?}");
+        }
+    }
+
+    #[test]
+    fn gate4_refuses_a_missing_command_line() {
+        let holder = PortHolder { command: None, ..full_holder() };
+        let port = port_with(1, Some(holder));
+        let err = free_port_gate(&port, Status::Stopped, CLAIMED_START).unwrap_err();
+        assert!(err.contains("command line"), "got {err:?}");
+    }
+
+    #[test]
+    fn gate5_refuses_a_start_time_that_no_longer_matches_the_claim() {
+        let port = port_with(1, Some(full_holder()));
+        let err = free_port_gate(&port, Status::Stopped, "a different start time").unwrap_err();
+        assert!(err.contains("changed"), "got {err:?}");
+    }
+
+    #[test]
+    fn gate1_refuses_an_unidentified_holder_while_busy() {
+        let port = port_with(0, None);
+        let err = free_port_gate(&port, Status::Stopped, CLAIMED_START).unwrap_err();
+        assert!(err.contains("could not be identified") || err.contains("processes are listening"), "got {err:?}");
+    }
+
+    #[test]
+    fn every_gate_satisfied_on_a_stopped_project_is_allowed() {
+        let port = port_with(1, Some(full_holder()));
+        let pid = free_port_gate(&port, Status::Stopped, CLAIMED_START).unwrap();
+        assert_eq!(pid, 4321);
+    }
 }
