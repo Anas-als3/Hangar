@@ -185,9 +185,15 @@ export function ProjectCard({ project }: { project: ProjectView }) {
   // while the button is in its Run shape (`stopped`/`crashed`), so it can never appear on top of
   // the Stop/Stopping/retry branch below. See `pendingRun`'s definition in store.ts for the full
   // reasoning and the two conditions that clear it.
-  const { pendingRun, drag } = useHangarStore();
+  const { pendingRun, drag, lastFailure } = useHangarStore();
   const isPendingRun = Boolean(pendingRun[project.id]);
   const runDisabled = !project.pathExists || isPendingRun;
+  // §11's crash-reason amendment: sourced from `lastFailure`, which `applyStatusChanged` fills
+  // ONLY from the `status-changed` event's `message` — see that map's own comment in store.ts.
+  const failureReason = lastFailure[project.id];
+  const showFailureLine =
+    (project.status === "crashed" || project.status === "stop-failed") &&
+    Boolean(failureReason);
   // §4/§5: notes are a free-text scratchpad, never parsed — this only checks for presence.
   const hasNotes = Boolean(project.notes && project.notes.trim() !== "");
   const isRunning = project.status === "running";
