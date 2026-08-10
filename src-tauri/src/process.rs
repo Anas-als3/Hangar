@@ -642,6 +642,52 @@ pub fn parse_lsof_owner(stdout: &str) -> Option<PortOwner> {
         })
 }
 
+/// One lsof listener row, deduplicated by pid. Plan 041 (Ports panel) needs the USER column too
+/// (`sameUser`), which the §9 toast path never needed — kept separate from [`PortOwner`] rather
+/// than widening that struct's frozen shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortListener {
+    pub name: String,
+    pub pid: u32,
+    /// lsof field 3. `None` on the Windows fallback, where no equivalent column exists.
+    pub user: Option<String>,
+}
+
+/// Plan 041's all-rows counterpart to [`parse_lsof_owner`] above — every DISTINCT pid, not just
+/// the first. **Not a refinement of it**: `parse_lsof_owner`'s first-row behaviour is depended on
+/// by the §9 toast path and its own tests, so this is a new function beside it, left untouched.
+///
+/// Why "first row" is not good enough here: a dual-stack server produces two rows for one
+/// process, which is the assumption `parse_lsof_owner` is allowed to make — but two *different*
+/// processes on `127.0.0.1:P` and `[::1]:P` is also legal, and `port_accepts` is `v4 || v6`, so
+/// the panel must be able to say "N processes are listening — Hangar will not guess which one"
+/// instead of silently naming whichever came first.
+#[cfg(any(unix, test))]
+pub fn parse_lsof_all_listeners(stdout: &str) -> Vec<PortListener> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for line in stdout.lines() {
+        if line.starts_with("COMMAND") {
+            continue;
+        }
+        let mut fields = line.split_whitespace();
+        let (Some(name), Some(pid), Some(user)) =
+            (fields.next(), fields.next().and_then(|s| s.parse::<u32>().ok()), fields.next())
+        else {
+            continue; // malformed row — skipped, not an error
+        };
+        if !seen.insert(pid) {
+            continue; // a dual-stack pair for the same process
+        }
+        out.push(PortListener {
+            name: name.to_string(),
+            pid,
+            user: Some(user.to_string()),
+        });
+    }
+    out
+}
+
 /// Parses `netstat -ano | findstr :<port>`, where the PID is the last column:
 ///
 /// ```text
@@ -1956,6 +2002,75 @@ node    45548 anas   24u  IPv4 0xfedcba0987654321      0t0  TCP *:3000 (LISTEN)
         assert_eq!(
             parse_lsof_owner("COMMAND   PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME\n"),
             None
+        );
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Plan 041 (Ports panel) — the all-rows lsof parser
+    // -----------------------------------------------------------------------------------------
+
+    #[test]
+    fn a_dual_stack_pair_for_one_process_collapses_to_one_listener() {
+        let stdout = "\
+COMMAND   PID USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+node    45548 anas   23u  IPv6 0x1234567890abcdef      0t0  TCP *:3000 (LISTEN)
+node    45548 anas   24u  IPv4 0xfedcba0987654321      0t0  TCP *:3000 (LISTEN)
+";
+        assert_eq!(
+            parse_lsof_all_listeners(stdout),
+            vec![PortListener {
+                name: "node".into(),
+                pid: 45548,
+                user: Some("anas".into()),
+            }]
+        );
+    }
+
+    #[test]
+    fn two_distinct_processes_on_the_two_stacks_both_come_back() {
+        let stdout = "\
+COMMAND   PID   USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+node    45548   anas   23u  IPv6 0x1234567890abcdef      0t0  TCP *:3000 (LISTEN)
+python   9001   root   12u  IPv4 0xfedcba0987654321      0t0  TCP *:3000 (LISTEN)
+";
+        let listeners = parse_lsof_all_listeners(stdout);
+        assert_eq!(listeners.len(), 2, "got {listeners:?}");
+        assert!(listeners.contains(&PortListener {
+            name: "node".into(),
+            pid: 45548,
+            user: Some("anas".into()),
+        }));
+        assert!(listeners.contains(&PortListener {
+            name: "python".into(),
+            pid: 9001,
+            user: Some("root".into()),
+        }));
+    }
+
+    #[test]
+    fn a_header_only_lsof_yields_no_listeners() {
+        assert_eq!(parse_lsof_all_listeners(""), Vec::new());
+        assert_eq!(
+            parse_lsof_all_listeners("COMMAND   PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME\n"),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn a_malformed_row_is_skipped_not_an_error() {
+        let stdout = "\
+COMMAND   PID USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+node    45548 anas   23u  IPv6 0x1234567890abcdef      0t0  TCP *:3000 (LISTEN)
+garbage line with no pid at all
+node    not-a-pid anas 24u IPv4 0x0 0t0 TCP *:3000 (LISTEN)
+";
+        assert_eq!(
+            parse_lsof_all_listeners(stdout),
+            vec![PortListener {
+                name: "node".into(),
+                pid: 45548,
+                user: Some("anas".into()),
+            }]
         );
     }
 
