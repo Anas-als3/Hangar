@@ -11,7 +11,7 @@
  * the same layering `ProjectCard.tsx`'s own `⋯` menu already relies on.
  */
 import { useEffect, useRef, useState } from "react";
-import { folderSummary, renameFolder, toggleFolder, ungroupFolder } from "../store";
+import { folderSummary, renameFolder, toggleFolder, ungroupFolder, useHangarStore } from "../store";
 import { STATUS_LABEL, STATUS_TONE } from "../status";
 import type { ProjectView } from "../types";
 
@@ -119,9 +119,20 @@ export function FolderTile({
 
   const bandId = `folder-band-${id}`;
 
+  // Plan 030 drag-to-group (§11 Motion): a folder tile is a drop target only — no `onPointerDown`
+  // here, ever. Dragging a folder around would be reordering, which §16 parks. The ring is
+  // opacity/colour only, applied instantly (no transition class on this root).
+  const { drag } = useHangarStore();
+  const isArmedTarget = drag.targetId === id && drag.armed;
+
   return (
     <article
-      className="hangar-fade-in relative flex min-h-[11rem] cursor-pointer flex-col gap-2 rounded-lg border border-white/10 bg-surface p-3 before:absolute before:inset-x-3 before:-top-1 before:h-px before:bg-white/10 before:content-[''] after:absolute after:inset-x-5 after:-top-2 after:h-px after:bg-white/5 after:content-['']"
+      data-hangar-tile={id}
+      data-hangar-tile-kind="folder"
+      data-hangar-tile-name={name}
+      className={`hangar-fade-in relative flex min-h-[11rem] cursor-pointer select-none flex-col gap-2 rounded-lg border border-white/10 bg-surface p-3 [-webkit-user-drag:none] before:absolute before:inset-x-3 before:-top-1 before:h-px before:bg-white/10 before:content-[''] after:absolute after:inset-x-5 after:-top-2 after:h-px after:bg-white/5 after:content-[''] ${
+        isArmedTarget ? "ring-2 ring-accent" : ""
+      }`}
     >
       <button
         type="button"

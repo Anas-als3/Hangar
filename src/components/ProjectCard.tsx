@@ -7,6 +7,7 @@
  * signature phase strip and the running-uptime time slot.
  */
 import { useEffect, useRef, useState } from "react";
+import { startCardDrag } from "../cardDrag";
 import {
   findProject,
   openEditDialog,
@@ -19,6 +20,7 @@ import {
   startProject,
   stopIfRunningWithConfirm,
   stopProjectAction,
+  useHangarStore,
 } from "../store";
 import { lastRunLabel, STATUS_LABEL, STATUS_TONE } from "../status";
 import type { ProjectView, Status } from "../types";
@@ -137,8 +139,22 @@ export function ProjectCard({ project }: { project: ProjectView }) {
     (isRunning ? uptimeLabel(project.lastRunAt, now) : null) ??
     lastRunLabel(project.lastRunAt);
 
+  // Plan 030 drag-to-group (§11 Motion): both effects are opacity/colour only, applied instantly
+  // — no transition class on either, so neither can be caught mid-fade by the base transform
+  // transition already on this root.
+  const { drag } = useHangarStore();
+  const isDragSource = drag.sourceId === project.id;
+  const isArmedTarget = drag.targetId === project.id && drag.armed;
+
   return (
-    <article className="hangar-fade-in relative flex flex-col gap-2 rounded-lg border border-white/5 bg-surface p-3 transition-transform duration-150 hover:-translate-y-0.5">
+    <article
+      data-hangar-tile={project.id}
+      data-hangar-tile-kind="project"
+      onPointerDown={(e) => startCardDrag(e.nativeEvent, project.id)}
+      className={`hangar-fade-in relative flex select-none flex-col gap-2 rounded-lg border border-white/5 bg-surface p-3 transition-transform duration-150 [-webkit-user-drag:none] hover:-translate-y-0.5 ${
+        isArmedTarget ? "ring-2 ring-accent" : ""
+      } ${isDragSource ? "opacity-40" : ""}`}
+    >
       <header className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           {/* §11 visual pass (plan 018): name is the primary hierarchy element — weight only,

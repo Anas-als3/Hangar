@@ -55,6 +55,17 @@ export type ToastTone = "error" | "neutral";
 /** Mirrors the Rust ring buffer (SPEC.md §8) so the panel's copy can never outgrow it. */
 export const LOG_BUFFER_LIMIT = 500;
 
+/**
+ * Plan 030 card-drag view state — deliberately only these three fields. Pointer coordinates never
+ * enter the store: `cardDrag.ts` tracks them in a module-level session, and only pushes here on
+ * the handful of transitions per drag (start, target change, arm), never on every pointermove.
+ */
+export interface DragViewState {
+  sourceId: string | null;
+  targetId: string | null;
+  armed: boolean;
+}
+
 export interface HangarState {
   projects: ProjectView[];
   registryError: RegistryError | null;
@@ -82,6 +93,8 @@ export interface HangarState {
    *  `projects.json`, and `loadRegistry()` must never touch this field (see below), or the folder
    *  you just opened would collapse every time a window-focus reload fires. */
   openFolders: Set<string>;
+  /** Plan 030 card-drag view state — see `DragViewState`. */
+  drag: DragViewState;
 }
 
 let state: HangarState = {
@@ -98,6 +111,7 @@ let state: HangarState = {
   dialog: null,
   search: "",
   openFolders: new Set(),
+  drag: { sourceId: null, targetId: null, armed: false },
 };
 
 const listeners = new Set<() => void>();
@@ -142,6 +156,15 @@ function errorMessage(err: unknown): string {
  */
 export function setToast(message: string | null, tone: ToastTone = "error"): void {
   setState({ toast: message, toastTone: tone });
+}
+
+/**
+ * Plan 030's only store surface for the card-drag gesture — `cardDrag.ts` calls this a handful of
+ * times per drag (start, target change, arm, teardown), never per pointermove. `ProjectCard` and
+ * `FolderTile` read `drag` back via `useHangarStore` to dim the source and ring an armed target.
+ */
+export function setDragView(next: DragViewState): void {
+  setState({ drag: next });
 }
 
 /** Header search box (plan 017) — ephemeral view state, never written to disk. */
