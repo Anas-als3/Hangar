@@ -671,4 +671,66 @@ mod tests {
         assert!(is_run_inert, "a notes save paired with a stale lastLockfileHash must be run-inert");
         assert!(guard_update(is_run_inert, &stored, Status::Installing).is_ok());
     }
+
+    fn sample_stack(detected_at: &str) -> registry::ProjectStack {
+        registry::ProjectStack {
+            framework: Some("Next".into()),
+            libraries: vec!["React".into(), "Tailwind".into()],
+            detected_at: detected_at.into(),
+        }
+    }
+
+    #[test]
+    fn a_stack_differing_only_in_detected_at_does_not_defeat_a_folder_move() {
+        // registry.rs:559 re-stamps `detected_at` on every Run, same staleness as `lastRunAt`.
+        let stored = Project {
+            stack: Some(sample_stack("2026-08-10T09:00:00Z")),
+            ..sample_project("/tmp/ielts")
+        };
+        let incoming = Project {
+            folder_id: Some("fld_1".into()),
+            stack: Some(sample_stack("2026-08-05T09:00:00Z")), // stale frontend copy
+            ..stored.clone()
+        };
+        let is_run_inert = is_run_inert_change(&stored, &incoming);
+        assert!(is_run_inert, "a stack differing only in detectedAt must be run-inert");
+        assert!(guard_update(is_run_inert, &stored, Status::Starting).is_ok());
+    }
+
+    #[test]
+    fn a_stack_differing_in_framework_is_still_guarded_while_running() {
+        let stored = Project {
+            stack: Some(sample_stack("2026-08-10T09:00:00Z")),
+            ..sample_project("/tmp/ielts")
+        };
+        let mut changed_stack = sample_stack("2026-08-10T09:00:00Z");
+        changed_stack.framework = Some("Remix".into());
+        let incoming = Project {
+            stack: Some(changed_stack),
+            ..stored.clone()
+        };
+        let is_run_inert = is_run_inert_change(&stored, &incoming);
+        let err = guard_update(is_run_inert, &stored, Status::Running)
+            .expect_err("a genuine framework change must still be guarded while running");
+        assert!(err.contains("stop it first"), "got {err:?}");
+    }
+
+    #[test]
+    fn a_stale_last_run_at_cannot_smuggle_a_port_change_past_the_guard() {
+        // The normalisation must not become a smuggling route: pairing a stale app-owned field
+        // with a genuinely guarded change must still be guarded.
+        let stored = Project {
+            last_run_at: Some("2026-08-10T09:00:00Z".into()),
+            ..sample_project("/tmp/ielts")
+        };
+        let incoming = Project {
+            port: 3001,
+            last_run_at: Some("2026-08-05T09:00:00Z".into()), // stale frontend copy
+            ..stored.clone()
+        };
+        let is_run_inert = is_run_inert_change(&stored, &incoming);
+        let err = guard_update(is_run_inert, &stored, Status::Starting)
+            .expect_err("a port change must still be guarded even paired with a stale lastRunAt");
+        assert!(err.contains("stop it first"), "got {err:?}");
+    }
 }
