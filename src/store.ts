@@ -494,8 +494,9 @@ export async function startProject(projectId: string): Promise<void> {
     // whether the "Show logs" button renders, so both must know the project.
     setToast(errorMessage(err), "error", projectId);
     // SPEC.md §5: pathExists must refresh "when Run is clicked" — a rejection is often exactly
-    // that check failing, so the card should pick up the warning state that caused it.
-    await loadRegistry();
+    // that check failing, so the card should pick up the warning state that caused it. Plan 038:
+    // the quiet refresh still recomputes pathExists via getProjects, without blanking the grid.
+    await refreshRegistryQuietly();
   }
 }
 
