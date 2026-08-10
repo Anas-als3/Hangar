@@ -110,6 +110,10 @@ pub async fn add_project(
         // SPEC.md §5/§7 (plan 023): the Add dialog's `read_package_json` call already detected
         // this — carried straight through the wire, never recomputed here.
         stack: input.stack,
+        // SPEC.md §5 (folders, 2026-08-10): a new project may already be filed into a folder
+        // from the Add dialog — carried straight through, same as `notes`/`stack`.
+        folder_id: input.folder_id,
+        folder_name: input.folder_name,
     };
 
     projects.push(project.clone());
@@ -121,21 +125,26 @@ pub async fn add_project(
     Ok(to_view(&project, &runtime))
 }
 
-/// SPEC.md §6 mutation guard vs. §5 notes (plan 020 revision): `guard_mutation` exists because
-/// mutating a *running* project can break the run itself — a changed `port` breaks Stop's port
-/// verification, a changed `path`/`command` breaks the kill path. §5 now defines `notes` as "a
-/// free-text scratchpad, user-owned; never parsed or acted on", so a change that touches only
-/// `notes` provably cannot affect a running project — it is exempt from the guard.
+/// SPEC.md §6 mutation guard vs. the run-inert field set (plan 028 revision): `guard_mutation`
+/// exists because mutating a *running* project can break the run itself — a changed `port` breaks
+/// Stop's port verification, a changed `path`/`command` breaks the kill path. §6's amended bullet
+/// names the run-inert set as exactly `notes`, `folderId` and `folderName`: none of them is read
+/// by §8's spawn/kill paths or §9's run sequence, so a change confined to them provably cannot
+/// affect a running project — it is exempt from the guard.
 ///
-/// Deliberately not a hand-enumerated field list: normalising `notes` out of both sides and
-/// comparing the rest with the derived `PartialEq` means any other field — including ones a
+/// Deliberately not a hand-enumerated field list: normalising the run-inert set out of both sides
+/// and comparing the rest with the derived `PartialEq` means any other field — including ones a
 /// future plan adds — is covered by the guard automatically, with nothing to remember to update
 /// here.
-fn is_notes_only_change(stored: &Project, incoming: &Project) -> bool {
+fn is_run_inert_change(stored: &Project, incoming: &Project) -> bool {
     let mut stored = stored.clone();
     let mut incoming = incoming.clone();
     stored.notes = None;
     incoming.notes = None;
+    stored.folder_id = None;
+    incoming.folder_id = None;
+    stored.folder_name = None;
+    incoming.folder_name = None;
     stored == incoming
 }
 
@@ -145,17 +154,38 @@ fn is_notes_only_change(stored: &Project, incoming: &Project) -> bool {
 /// verified death before calling this — `guard_mutation` here is what makes that real: a frontend
 /// that skipped the confirm (or raced it) cannot save over a project whose tree is still alive.
 ///
-/// Exception: a notes-only change (see `is_notes_only_change`) skips the guard, so the Notes
-/// slide-over can autosave while a project is running — the whole point of per-project notes is
-/// to record something while or right after testing it (SPEC.md §11).
+/// Exception: a run-inert change (see `is_run_inert_change`, SPEC.md §6's amended bullet) skips
+/// the guard, so the Notes slide-over can autosave and a card can be filed into a folder while a
+/// project is running — the whole point of per-project notes is to record something while or
+/// right after testing it (SPEC.md §11), and folders would be useless if filing one away required
+/// stopping it first.
+///
+/// Takes `is_run_inert` as a precomputed bool rather than calling `is_run_inert_change` itself:
+/// `update_project` (SPEC.md §6's merge-not-replace bullet, plan 028) needs the same boolean again
+/// afterward to decide whether to merge or replace the stored record, and the predicate must run
+/// exactly once so the guard decision and the write decision can never disagree.
 ///
 /// Pulled out of `update_project` as plain data in, `Result` out — no `State`/`AppHandle` — so
 /// the decision itself is unit-testable without standing up a Tauri app in the test harness.
-fn guard_update(stored: &Project, incoming: &Project, status: Status) -> Result<(), String> {
-    if is_notes_only_change(stored, incoming) {
+fn guard_update(is_run_inert: bool, stored: &Project, status: Status) -> Result<(), String> {
+    if is_run_inert {
         return Ok(());
     }
     crate::run::guard_mutation(status, &stored.name)
+}
+
+/// SPEC.md §6 (added 2026-08-10): "a run-inert update writes only the run-inert fields into the
+/// stored record — it must never replace the whole record from the caller's payload." `run.rs`
+/// persists `last_run_at` and a freshly detected `stack` on every Run, and the frontend's copy of
+/// both goes stale for the whole `updating`→`installing`→`starting` window (the `status-changed`
+/// event carries only `status`), so a whole-record write here would silently roll them back.
+/// Merges only `notes`/`folder_id`/`folder_name` from `incoming` into `stored`; every other field
+/// is left exactly as stored. Plain data in, no return, no `State`/`AppHandle` — unit-testable
+/// without a Tauri app, same reasoning as `guard_update`.
+fn merge_run_inert_fields(stored: &mut Project, incoming: Project) {
+    stored.notes = incoming.notes;
+    stored.folder_id = incoming.folder_id;
+    stored.folder_name = incoming.folder_name;
 }
 
 #[tauri::command]
@@ -175,7 +205,9 @@ pub async fn update_project(
         .get(&project.id)
         .map(|r| r.status)
         .unwrap_or(Status::Stopped);
-    guard_update(&projects[index], &project, status)?;
+    // Computed once, reused below to decide the write shape — never call this a second time.
+    let is_run_inert = is_run_inert_change(&projects[index], &project);
+    guard_update(is_run_inert, &projects[index], status)?;
 
     if let Some(owner) = registry::port_conflict(&projects, project.port, Some(&project.id)) {
         return Err(format!(
@@ -184,10 +216,16 @@ pub async fn update_project(
         ));
     }
 
-    projects[index] = project.clone();
+    if is_run_inert {
+        merge_run_inert_fields(&mut projects[index], project);
+    } else {
+        projects[index] = project;
+    }
     registry::save_projects(&state.config_dir, &projects)?;
 
-    Ok(to_view(&project, &runtime))
+    // Built from the stored record, not the caller's payload: after a merge the two can differ
+    // (`lastRunAt`/`stack`), and the view must reflect what was actually written (SPEC.md §6).
+    Ok(to_view(&projects[index], &runtime))
 }
 
 /// SPEC.md §7 `remove_project`: "rejected with a message if status ∉ {stopped, crashed}". Same
@@ -335,6 +373,8 @@ mod tests {
             last_run_at: None,
             notes: None,
             stack: None,
+            folder_id: None,
+            folder_name: None,
         }
     }
 
@@ -381,7 +421,8 @@ mod tests {
             notes: Some("tried the staging flag".into()),
             ..stored.clone()
         };
-        assert!(guard_update(&stored, &incoming, Status::Running).is_ok());
+        let is_run_inert = is_run_inert_change(&stored, &incoming);
+        assert!(guard_update(is_run_inert, &stored, Status::Running).is_ok());
     }
 
     #[test]
@@ -391,7 +432,8 @@ mod tests {
             port: 3001,
             ..stored.clone()
         };
-        let err = guard_update(&stored, &incoming, Status::Running)
+        let is_run_inert = is_run_inert_change(&stored, &incoming);
+        let err = guard_update(is_run_inert, &stored, Status::Running)
             .expect_err("a port change must still be guarded while running");
         assert!(err.contains("stop it first"), "got {err:?}");
     }
@@ -407,8 +449,14 @@ mod tests {
             port: 3001,
             ..stored.clone()
         };
-        assert!(guard_update(&stored, &notes_only, Status::Stopped).is_ok());
-        assert!(guard_update(&stored, &port_changed, Status::Stopped).is_ok());
+        assert!(
+            guard_update(is_run_inert_change(&stored, &notes_only), &stored, Status::Stopped)
+                .is_ok()
+        );
+        assert!(
+            guard_update(is_run_inert_change(&stored, &port_changed), &stored, Status::Stopped)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -424,13 +472,102 @@ mod tests {
             notes: None,
             ..stored.clone()
         };
-        assert!(guard_update(&stored, &incoming, Status::Running).is_ok());
+        let is_run_inert = is_run_inert_change(&stored, &incoming);
+        assert!(guard_update(is_run_inert, &stored, Status::Running).is_ok());
     }
 
     #[test]
     fn an_identical_project_is_a_no_op_permitted_while_running() {
         let stored = sample_project("/tmp/ielts");
         let incoming = stored.clone();
-        assert!(guard_update(&stored, &incoming, Status::Running).is_ok());
+        let is_run_inert = is_run_inert_change(&stored, &incoming);
+        assert!(guard_update(is_run_inert, &stored, Status::Running).is_ok());
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Plan 028 — folders: `folderId`/`folderName` join `notes` in the run-inert set, and a
+    // run-inert `update_project` call now merges rather than replaces (SPEC.md §6, 2026-08-10).
+    // -----------------------------------------------------------------------------------------
+
+    #[test]
+    fn a_folder_id_only_change_is_permitted_while_running() {
+        let stored = sample_project("/tmp/ielts");
+        let incoming = Project {
+            folder_id: Some("fld_1".into()),
+            ..stored.clone()
+        };
+        let is_run_inert = is_run_inert_change(&stored, &incoming);
+        assert!(guard_update(is_run_inert, &stored, Status::Running).is_ok());
+    }
+
+    #[test]
+    fn a_folder_name_only_change_is_permitted_while_running() {
+        let stored = sample_project("/tmp/ielts");
+        let incoming = Project {
+            folder_name: Some("Client Work".into()),
+            ..stored.clone()
+        };
+        let is_run_inert = is_run_inert_change(&stored, &incoming);
+        assert!(guard_update(is_run_inert, &stored, Status::Running).is_ok());
+    }
+
+    #[test]
+    fn notes_and_folder_id_together_are_still_run_inert() {
+        let stored = sample_project("/tmp/ielts");
+        let incoming = Project {
+            notes: Some("tried the staging flag".into()),
+            folder_id: Some("fld_1".into()),
+            ..stored.clone()
+        };
+        let is_run_inert = is_run_inert_change(&stored, &incoming);
+        assert!(guard_update(is_run_inert, &stored, Status::Running).is_ok());
+    }
+
+    #[test]
+    fn a_port_only_change_is_still_rejected_while_running() {
+        let stored = sample_project("/tmp/ielts");
+        let incoming = Project {
+            port: 3001,
+            ..stored.clone()
+        };
+        let is_run_inert = is_run_inert_change(&stored, &incoming);
+        let err = guard_update(is_run_inert, &stored, Status::Running)
+            .expect_err("a port change must still be guarded while running");
+        assert!(err.contains("stop it first"), "got {err:?}");
+    }
+
+    #[test]
+    fn folder_id_cannot_smuggle_a_port_change_past_the_guard() {
+        // Proves the run-inert exemption cannot be used as a smuggling route: pairing a
+        // run-inert field with a guarded one must still be guarded.
+        let stored = sample_project("/tmp/ielts");
+        let incoming = Project {
+            folder_id: Some("fld_1".into()),
+            port: 3001,
+            ..stored.clone()
+        };
+        let is_run_inert = is_run_inert_change(&stored, &incoming);
+        let err = guard_update(is_run_inert, &stored, Status::Running)
+            .expect_err("a folderId + port change must still be guarded while running");
+        assert!(err.contains("stop it first"), "got {err:?}");
+    }
+
+    #[test]
+    fn merging_run_inert_fields_leaves_last_run_at_as_stored() {
+        // The bug this guards against: `run.rs` persists `last_run_at` on every Run, but the
+        // frontend's copy goes stale for the whole updating->installing->starting window — a
+        // run-inert save from that stale copy must not roll it back (SPEC.md §6, plan 028).
+        let mut stored = Project {
+            last_run_at: Some("2026-08-05T10:00:00Z".into()),
+            ..sample_project("/tmp/ielts")
+        };
+        let incoming = Project {
+            last_run_at: None, // stale frontend copy
+            folder_id: Some("fld_1".into()),
+            ..stored.clone()
+        };
+        merge_run_inert_fields(&mut stored, incoming);
+        assert_eq!(stored.last_run_at.as_deref(), Some("2026-08-05T10:00:00Z"));
+        assert_eq!(stored.folder_id.as_deref(), Some("fld_1"));
     }
 }

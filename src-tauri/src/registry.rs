@@ -58,6 +58,19 @@ pub struct Project {
     /// added before this field existed, or one whose folder has no `package.json` at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stack: Option<ProjectStack>,
+    /// SPEC.md §5 (folders, 2026-08-10): the folder this project is filed under. Opaque and
+    /// generated — NEVER derived from the name, so two folders may share a name exactly as on
+    /// iOS. A folder is exactly the set of projects carrying this id: it has no record of its
+    /// own, so it cannot dangle, cannot be empty, and `remove_project` needs no cleanup. Run-inert:
+    /// nothing in §8's kill paths or §9's run sequence reads it (§6). NOT the project's directory
+    /// on disk — that is `path`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder_id: Option<String>,
+    /// SPEC.md §5: the folder's display name, denormalised onto every member so no second file
+    /// and no new §7 command is needed. A rename is N writes; if members ever disagree (a rename
+    /// interrupted mid-way) the earliest member in array order supplies the displayed name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder_name: Option<String>,
 }
 
 /// SPEC.md §5 `stack` / §7 `read_package_json`'s `stack` field: detected from `package.json`
@@ -104,6 +117,12 @@ pub struct NewProject {
     /// straight through, never recomputed here (plan 023).
     #[serde(default)]
     pub stack: Option<ProjectStack>,
+    /// SPEC.md §5 (folders, 2026-08-10): mirrors `Project::folder_id`.
+    #[serde(default)]
+    pub folder_id: Option<String>,
+    /// SPEC.md §5 (folders, 2026-08-10): mirrors `Project::folder_name`.
+    #[serde(default)]
+    pub folder_name: Option<String>,
 }
 
 /// SPEC.md §5 `id: string // nanoid`. No id-generation crate is added for this one call site
@@ -184,6 +203,8 @@ fn seed_projects() -> Vec<Project> {
         last_run_at: None,
         notes: None,
         stack: None,
+        folder_id: None,
+        folder_name: None,
     }]
 }
 
@@ -616,6 +637,10 @@ mod tests {
                 libraries: vec!["React".into(), "Tailwind".into()],
                 detected_at: "2026-08-05T10:00:00Z".into(),
             }),
+            // Same non-empty-on-purpose reasoning as `notes`/`stack` above, for `folderId` and
+            // `folderName` — `None` would let the drift guard pass without ever checking them.
+            folder_id: Some("fld_1".into()),
+            folder_name: Some("Client Work".into()),
         }
     }
 
@@ -741,6 +766,7 @@ mod tests {
                 r#""lastLockfileHash":"deadbeef","lastRunAt":"2026-08-05T10:00:00Z","#,
                 r#""notes":"Remember to try the staging flag next time.","#,
                 r#""stack":{"framework":"Next","libraries":["React","Tailwind"],"detectedAt":"2026-08-05T10:00:00Z"},"#,
+                r#""folderId":"fld_1","folderName":"Client Work","#,
                 r#""status":"running","pathExists":true}"#
             )
         );

@@ -2000,6 +2000,8 @@ mod tests {
             last_run_at: None,
             notes: None,
             stack: None,
+            folder_id: None,
+            folder_name: None,
         }
     }
 

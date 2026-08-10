@@ -39,6 +39,10 @@ export interface Project {
    * on Edit, and during the install phase (SPEC.md §5, added 2026-08-09).
    */
   stack?: ProjectStack;
+  /** Opaque, generated; the folder IS the set of projects sharing it (SPEC.md §5, added 2026-08-10). */
+  folderId?: string;
+  /** The folder's display name, denormalised onto every member (SPEC.md §5, added 2026-08-10). */
+  folderName?: string;
 }
 
 /** SPEC.md §5 `Project.stack` / §7 `read_package_json`'s `stack` field. */
