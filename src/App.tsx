@@ -181,7 +181,7 @@ function App() {
         ) : visibleProjects(projects, search).length === 0 ? (
           <p className="text-sm text-muted">No projects match &quot;{search.trim()}&quot;.</p>
         ) : (
-          <ProjectGrid projects={visibleProjects(projects, search)} />
+          <ProjectGrid projects={visibleProjects(projects, search)} search={search} />
         )}
       </main>
 
