@@ -154,6 +154,19 @@ export function toggleFolder(folderId: string): void {
   setState({ openFolders: next });
 }
 
+/**
+ * Unconditional close — used by the open band's own Esc handler (§11), never a raw
+ * `toggleFolder`. A band can be visible while its id is absent from `openFolders` (the
+ * stop-failed auto-expand override), and a blind toggle would then *add* the id — recording the
+ * opposite of what Esc means. Closing is idempotent: a no-op if the id isn't present.
+ */
+export function closeFolder(folderId: string): void {
+  if (!state.openFolders.has(folderId)) return;
+  const next = new Set(state.openFolders);
+  next.delete(folderId);
+  setState({ openFolders: next });
+}
+
 /** Case-insensitive substring match on name, order preserved (SPEC.md §11). */
 export function filterProjects(projects: ProjectView[], search: string): ProjectView[] {
   const q = search.trim().toLowerCase();
