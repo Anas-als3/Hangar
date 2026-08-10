@@ -93,18 +93,46 @@ function extractUrlPort(url: string): number | null {
 const RUN_INERT_FIELDS = ["notes", "folderId", "folderName", "openBrowserOnReady"] as const;
 
 /**
+ * Mirrors `stack_is_unchanged_ignoring_timestamp` (commands.rs). This dialog re-detects `stack`
+ * from `package.json` on every open (plan 025), re-stamping `detectedAt` to now even when nothing
+ * on disk changed — without ignoring that timestamp here, every single save would look "guarded"
+ * by a stack nobody touched, defeating this plan's fix before it starts.
+ */
+function stackIsUnchangedIgnoringTimestamp(
+  stored: ProjectStack | undefined,
+  incoming: ProjectStack | undefined,
+): boolean {
+  if (!incoming) return true;
+  if (!stored) return false;
+  return (
+    stored.framework === incoming.framework &&
+    stored.libraries.length === incoming.libraries.length &&
+    stored.libraries.every((lib, i) => lib === incoming.libraries[i])
+  );
+}
+
+/**
  * Structural comparison with `RUN_INERT_FIELDS` normalised out on both sides — same shape as
  * `is_run_inert_change`, deliberately not a hand-enumerated list of fields that ARE guarded, so a
  * field added to `Project` later is guarded by default until it is added to the list above.
  */
 function isRunInertChange(stored: Project, incoming: Project): boolean {
+  const strippedStored: Partial<Project> = { ...stored };
+  const strippedIncoming: Partial<Project> = { ...incoming };
+  for (const field of RUN_INERT_FIELDS) {
+    delete strippedStored[field];
+    delete strippedIncoming[field];
+  }
+  if (stackIsUnchangedIgnoringTimestamp(strippedStored.stack, strippedIncoming.stack)) {
+    delete strippedStored.stack;
+    delete strippedIncoming.stack;
+  }
   const keys = new Set<keyof Project>([
-    ...(Object.keys(stored) as (keyof Project)[]),
-    ...(Object.keys(incoming) as (keyof Project)[]),
+    ...(Object.keys(strippedStored) as (keyof Project)[]),
+    ...(Object.keys(strippedIncoming) as (keyof Project)[]),
   ]);
   for (const key of keys) {
-    if ((RUN_INERT_FIELDS as readonly string[]).includes(key)) continue;
-    if (JSON.stringify(stored[key]) !== JSON.stringify(incoming[key])) return false;
+    if (JSON.stringify(strippedStored[key]) !== JSON.stringify(strippedIncoming[key])) return false;
   }
   return true;
 }
