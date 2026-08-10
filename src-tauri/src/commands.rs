@@ -514,6 +514,45 @@ pub async fn get_port_status(state: State<'_, AppState>) -> Result<Vec<PortStatu
         .collect())
 }
 
+/// SPEC.md §9 step 1 (amended 2026-08-10) / §7 `free_port` (plan 042) — the one command allowed to
+/// signal a process Hangar did not spawn. Gated by `free_port_gate`, checked against TWO fresh
+/// probes (never the panel's possibly-stale snapshot): one to establish the claim, one more
+/// "immediately before signalling" that must agree with the first. Any disagreement — including
+/// the pid the caller clicked no longer matching either probe — aborts without signalling.
+#[tauri::command]
+pub async fn free_port(
+    project_id: String,
+    pid: u32,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<(), String> {
+    // Lock discipline identical to `get_port_status`: snapshot, drop, THEN probe.
+    let port = {
+        let projects = state.projects.lock().await;
+        projects
+            .iter()
+            .find(|p| p.id == project_id)
+            .map(|p| p.port)
+            .ok_or_else(|| format!("no project with id {project_id}"))?
+    };
+    let project_status = {
+        let runtime = state.runtime.lock().await;
+        runtime.get(&project_id).map(|r| r.status).unwrap_or(Status::Stopped)
+    };
+    let env = state.dev_env.get().await.vars.clone();
+    let checked_at = crate::run::iso8601_utc(SystemTime::now());
+
+    let claim = probe_one_port(&project_id, port, &env, &checked_at).await;
+    let claim_started_at = claim.holder.as_ref().and_then(|h| h.started_at.as_deref()).unwrap_or("");
+    free_port_gate(&claim, project_status, claim_started_at)?;
+    if claim.holder.as_ref().map(|h| h.pid) != Some(pid) {
+        return Err(format!("port {port}'s owner changed since it was shown — refusing to signal it."));
+    }
+    let claimed_started_at = claim.holder.and_then(|h| h.started_at).unwrap_or_default();
+
+    free_port_finish(&app, &project_id, port, pid, project_status, &env, &checked_at, &claimed_started_at).await
+}
+
 /// The identity used for `PortHolder.sameUser`: std has no portable "who am I" call, so this
 /// reads the same env var a login shell would set — `USER` on Unix, `USERNAME` on Windows. `None`
 /// (never a guess) when neither is set.
@@ -579,6 +618,45 @@ async fn probe_one_port(project_id: &str, port: u16, env: &EnvMap, checked_at: &
         current_username().as_deref(),
         checked_at,
     )
+}
+
+/// `free_port`'s second half: gate 5, re-verified "immediately before signalling" (SPEC.md §9
+/// step 1) — probes again and requires it to agree with the claim its caller already checked, then
+/// signals, re-probes to report honestly (including "still held" — §8's honesty rule, never a
+/// claimed success that was not verified), and appends a `system` log line recording the outcome.
+#[allow(clippy::too_many_arguments)]
+async fn free_port_finish(
+    app: &AppHandle,
+    project_id: &str,
+    port: u16,
+    pid: u32,
+    project_status: Status,
+    env: &EnvMap,
+    checked_at: &str,
+    claimed_started_at: &str,
+) -> Result<(), String> {
+    let recheck = probe_one_port(project_id, port, env, checked_at).await;
+    let verified_pid = free_port_gate(&recheck, project_status, claimed_started_at)?;
+    if verified_pid != pid {
+        return Err(format!("port {port}'s owner changed since it was shown — refusing to signal it."));
+    }
+
+    process::signal_one_process(pid).map_err(|e| format!("could not signal PID {pid}: {e}"))?;
+
+    let still_busy = process::port_accepts(port).await;
+    let holder_desc = recheck
+        .holder
+        .as_ref()
+        .map(|h| format!("{} (PID {})", h.name, h.pid))
+        .unwrap_or_else(|| format!("PID {pid}"));
+    let outcome = if still_busy {
+        format!("Sent SIGTERM to {holder_desc} on port {port} — it is still held.")
+    } else {
+        format!("Sent SIGTERM to {holder_desc} on port {port} — it is now free.")
+    };
+    process::append_system(app, project_id, outcome).await;
+
+    Ok(())
 }
 
 /// SPEC.md §9 step 1 (amended 2026-08-10, plan 042) — the gate predicate behind `free_port`. Pure:
