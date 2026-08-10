@@ -44,6 +44,7 @@ conditions, and update your row below when done.
 | 031 | Folder tile: measure `min-h` against a real card; §11's `scrollIntoView` when a folder's earliest member leaves | — | P3 | S | 029 | TODO |
 | 032 | Make the run-inert exemption actually reachable (guard staleness) | — | P1 | S | 028 | DONE (merged `548b748`, 2026-08-10) |
 | 033 | Four folder-UI defects found by review | — | P2 | S | 029, 030 | DONE (merged, 2026-08-10) |
+| 034 | Toast → Show logs + project name; three validation bugs | — | P2 | S | — | DONE (merged, 2026-08-10) |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
 
