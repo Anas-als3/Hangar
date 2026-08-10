@@ -19,6 +19,7 @@ import {
   stopIfRunningWithConfirm,
   stopProjectAction,
 } from "../store";
+import { lastRunLabel, STATUS_LABEL, STATUS_TONE } from "../status";
 import type { ProjectView, Status } from "../types";
 import { PhaseStrip } from "./PhaseStrip";
 
@@ -41,29 +42,6 @@ async function handleRemove(projectId: string): Promise<void> {
   await removeProjectAction(projectId);
 }
 
-const STATUS_LABEL: Record<Status, string> = {
-  stopped: "Stopped",
-  updating: "Updating",
-  installing: "Installing",
-  starting: "Starting",
-  running: "Running",
-  stopping: "Stopping",
-  crashed: "Crashed",
-  "stop-failed": "Stop failed",
-};
-
-/** §11: status colors are functional only. Tokens come from `src/index.css` — no raw hex here. */
-const STATUS_TONE: Record<Status, string> = {
-  stopped: "text-status-stopped",
-  updating: "text-status-active hangar-pulse",
-  installing: "text-status-active hangar-pulse",
-  starting: "text-status-active hangar-pulse",
-  running: "text-status-running",
-  stopping: "text-status-active hangar-pulse",
-  crashed: "text-status-danger",
-  "stop-failed": "text-status-danger",
-};
-
 const ACTIVE_STATUSES: ReadonlySet<Status> = new Set<Status>([
   "updating",
   "installing",
@@ -71,20 +49,6 @@ const ACTIVE_STATUSES: ReadonlySet<Status> = new Set<Status>([
   "running",
   "stopping",
 ]);
-
-/** Relative last-run time. Coarse on purpose — §11 forbids ticking seconds. */
-function lastRunLabel(iso: string | undefined): string {
-  if (!iso) return "Never run";
-  const then = Date.parse(iso);
-  if (Number.isNaN(then)) return "Never run";
-  const minutes = Math.floor((Date.now() - then) / 60_000);
-  if (minutes < 1) return "Last run just now";
-  if (minutes < 60) return `Last run ${minutes} m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `Last run ${hours} h ago`;
-  const days = Math.floor(hours / 24);
-  return `Last run ${days} d ago`;
-}
 
 /** §11 time slot while `running`: uptime from the current run's start (`lastRunAt`, set when
  *  entering `starting` — SPEC.md §5/§6), coarse on purpose — no ticking seconds. */
