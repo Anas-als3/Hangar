@@ -296,9 +296,30 @@ Why it matters more than it looks:
 - Everything actually verified so far has been verified by hand on this
   machine, on macOS only.
 
-The repo is **private**, and macOS runners bill at 10× against the free
-allowance. **This is the maintainer's to fix** — it needs a billing/spending-limit
-decision, and no amount of code changes it.
+What was ruled out, so nobody re-checks it:
+
+- Actions are **enabled** on the repo (`allowed_actions: all`).
+- Both workflows are **active**, not disabled.
+- The YAML is **valid** — jobs are created and named correctly, which cannot
+  happen if the file fails to parse.
+- `runner_id` is **0** and `runner_name` is empty on every job. The jobs are
+  queued, never assigned hardware, and fail.
+
+That leaves minutes/billing. The repo is **private**, and on a personal account
+private-repo minutes are capped (macOS bills at **10×**, Windows at **2×**), so
+a macOS-heavy CI exhausts an allowance quickly.
+
+**This is the maintainer's to fix — it is a billing decision, not a code one.**
+Two routes:
+
+1. `github.com/settings/billing` — check the Actions allowance and the spending
+   limit.
+2. **Make the repo public.** Public repos get unlimited free Actions minutes on
+   all runner types. Checked for safety: the repo tracks **no `.env`, no keys,
+   no credentials**. The single token-shaped string in the tree is
+   `secret.rs:42`'s obviously-fake `ghp_TESTTOKEN…` test fixture. So this is a
+   free option on the merits — but it is a product decision, not a technical
+   one, and it is the maintainer's alone to make.
 
 ## The Windows cross-check regressed, and it was the only Windows gate
 
