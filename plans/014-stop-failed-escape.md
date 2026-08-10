@@ -6,10 +6,35 @@
 > report — do not improvise. When done, update the status row for this plan
 > in `plans/README.md`.
 >
-> **Drift check (run first)**: `git diff --stat 91be38f..HEAD -- src-tauri/src/run.rs src-tauri/src/process.rs`
-> On any change, compare the "Current state" excerpts against the live code;
-> on a mismatch, STOP. Plans 007 and 010 touch run.rs — if their rows are DONE,
-> expect line shifts and re-anchor by symbol name, not line number.
+> **Drift check (run first)**: `grep -n "fn stop_is_verified\|fn port_listeners\|fn ps_enrich" src-tauri/src/process.rs`
+> All three must exist. Re-anchor by **symbol name**, never line number.
+>
+> **Re-verified 2026-08-10 at commit `5675a29`.** The finding still holds —
+> `stop_is_verified(death_confirmed, port_still_answers)` is still
+> `death_confirmed && !port_still_answers`, so any listener on the pinned port
+> fails the stop, including one Hangar never spawned.
+>
+> **But this plan got substantially cheaper, and you must use what now exists
+> rather than building attribution from scratch.** Plans 041 and 042 shipped
+> the machinery this plan was going to have to invent:
+>
+> - `process::port_listeners(port, env) -> Vec<PortListener>` — every distinct
+>   listening PID on a port, with its user, from one `lsof`.
+> - `process::parse_lsof_all_listeners` — the all-rows parser, unit-tested.
+>   Note it exists *because* the older `parse_lsof_owner` returns only the first
+>   row, which is not good enough when attribution matters.
+> - `process::ps_enrich(pids, env) -> HashMap<u32, PsInfo>` — one batched `ps`
+>   giving ppid, start time and full command line.
+>
+> Use those. Do **not** add a second lookup path, and do **not** modify
+> `parse_lsof_owner` — the toast path and its tests depend on its first-row
+> behaviour.
+>
+> Two further constraints from that work, which apply here unchanged:
+> **snapshot under the lock, drop it, then run `lsof`** (plan 010 made this a
+> rule, and `get_port_status` is the reference shape); and this plan **sends no
+> signal to anything** — attribution only. `free_port` (plan 042) is the only
+> code permitted to signal a foreign process, and it is not involved here.
 
 ## Status
 
