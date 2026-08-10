@@ -1487,6 +1487,12 @@ pub fn sanitize_line(raw: &str) -> String {
     truncate_line(strip_ansi(raw))
 }
 
+/// Raw-byte cap on the pending line. 4× the visible-line limit so that a line heavy with ANSI
+/// escapes (stripped BEFORE truncation) still yields its full 4 KB of visible text; beyond this, the
+/// stream is not line-oriented and the §8 protections must engage without waiting for a break that
+/// may never come.
+const MAX_PENDING_BYTES: usize = MAX_LINE_BYTES * 4;
+
 /// Splits a byte stream into lines, treating `\r` as a break equivalent to `\n` (SPEC.md §8) and
 /// decoding with lossy UTF-8 so invalid bytes can never fail or panic.
 #[derive(Debug, Default)]
@@ -1494,6 +1500,11 @@ pub struct LineSplitter {
     buf: Vec<u8>,
     /// The previous byte was `\r`, so a following `\n` is the same break, not an empty line.
     pending_cr: bool,
+    /// The pending line hit `MAX_PENDING_BYTES` and was already emitted, so the rest of it is
+    /// dropped until a break arrives. Without this, a child that never emits a break — a minified
+    /// bundle on stdout, a binary blob, a progress writer that redraws with escapes only — grows
+    /// `buf` linearly and without bound.
+    discarding: bool,
 }
 
 impl LineSplitter {
@@ -1510,20 +1521,34 @@ impl LineSplitter {
                         out.push(line);
                     }
                     self.pending_cr = true;
+                    self.discarding = false;
                 }
                 b'\n' => {
-                    if self.pending_cr && self.buf.is_empty() {
-                        // second half of a CRLF — the break was already emitted
+                    if (self.pending_cr || self.discarding) && self.buf.is_empty() {
+                        // second half of a CRLF, or the break that closes an over-long line whose
+                        // head was already emitted at the cap — either way the break is spent
                     } else {
                         // A `\n` break DOES emit a genuine blank line: dev servers use them for
                         // spacing and dropping them would reflow the panel.
                         out.push(self.take_line().unwrap_or_default());
                     }
                     self.pending_cr = false;
+                    self.discarding = false;
                 }
                 _ => {
+                    if self.discarding {
+                        continue;
+                    }
                     self.buf.push(byte);
                     self.pending_cr = false;
+                    if self.buf.len() >= MAX_PENDING_BYTES {
+                        // Emit what we have (`take_line` strips and truncates) and drop the tail:
+                        // the break that would normally trigger the §8 protections may never come.
+                        if let Some(line) = self.take_line() {
+                            out.push(line);
+                        }
+                        self.discarding = true;
+                    }
                 }
             }
         }
@@ -1546,6 +1571,12 @@ impl LineSplitter {
         } else {
             Some(line)
         }
+    }
+
+    /// Bytes currently buffered — the value the cap bounds.
+    #[cfg(test)]
+    fn pending_len(&self) -> usize {
+        self.buf.len()
     }
 }
 
@@ -2074,6 +2105,64 @@ mod tests {
         let bytes = "café\n".as_bytes();
         assert!(splitter.push(&bytes[..4]).is_empty()); // first byte of é only
         assert_eq!(splitter.push(&bytes[4..]), vec!["café"]);
+    }
+
+    #[test]
+    fn a_stream_with_no_line_breaks_is_capped_and_marked_truncated() {
+        // A child that never emits a break — minified bundle on stdout, binary blob — must not grow
+        // Hangar's memory: the §8 protections engage at the cap instead of waiting for the break.
+        let mut splitter = LineSplitter::default();
+        let flood = vec![b'x'; MAX_PENDING_BYTES + 10_000];
+        let mut lines = Vec::new();
+        for chunk in flood.chunks(8192) {
+            // 8 KB chunks — exactly what `spawn_reader` feeds it.
+            lines.extend(splitter.push(chunk));
+            assert!(
+                splitter.pending_len() <= MAX_PENDING_BYTES,
+                "buffer grew to {} bytes, past the {MAX_PENDING_BYTES}-byte cap",
+                splitter.pending_len()
+            );
+        }
+        assert_eq!(lines.len(), 1, "got {lines:?} lines, expected one capped line");
+        assert!(lines[0].ends_with(TRUNCATION_MARKER));
+        assert_eq!(lines[0].len(), MAX_LINE_BYTES + TRUNCATION_MARKER.len());
+        assert_eq!(splitter.finish(), None, "the discarded tail is not a second line");
+    }
+
+    #[test]
+    fn bytes_after_the_cap_are_dropped_until_the_next_break() {
+        let mut splitter = LineSplitter::default();
+        assert_eq!(splitter.push(&vec![b'x'; MAX_PENDING_BYTES]).len(), 1);
+        // The tail of the over-long line vanishes; the next real line survives intact, and the `\n`
+        // that ended the discarded tail does not emit a blank line of its own.
+        assert_eq!(splitter.push(b"IGNORED\nnext line\n"), vec!["next line"]);
+    }
+
+    #[test]
+    fn a_capped_line_heavy_with_ansi_still_keeps_its_visible_text() {
+        // Escapes are stripped BEFORE truncation, so a cap at exactly MAX_LINE_BYTES would throw
+        // away most of the visible text of an escape-heavy line. The 4× slack is what prevents that.
+        let unit = format!("xyz{}", "\x1b[32m".repeat(3)); // 3 visible bytes per 18 raw
+        let payload = unit.repeat(1000).into_bytes();
+        assert!(payload.len() > MAX_PENDING_BYTES, "the payload must reach the cap");
+
+        let mut splitter = LineSplitter::default();
+        let lines = splitter.push(&payload);
+        assert_eq!(lines.len(), 1, "got {lines:?}");
+
+        let line = &lines[0];
+        assert!(
+            line.chars().all(|c| matches!(c, 'x' | 'y' | 'z')),
+            "escape residue survived: {line:?}"
+        );
+        assert!(!line.ends_with(TRUNCATION_MARKER), "under 4 KB of visible text is not truncated");
+        let naive = strip_ansi(&String::from_utf8_lossy(&payload[..MAX_LINE_BYTES]));
+        assert!(
+            line.len() > naive.len() * 3,
+            "the 4× slack kept {} visible bytes; a cap at MAX_LINE_BYTES would have kept {}",
+            line.len(),
+            naive.len()
+        );
     }
 
     #[test]
