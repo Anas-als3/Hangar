@@ -160,6 +160,9 @@ pub async fn add_project(
         // from the Add dialog — carried straight through, same as `notes`/`stack`.
         folder_id: input.folder_id,
         folder_name: input.folder_name,
+        // SPEC.md §5 / §9 step 6 (added 2026-08-10): carried straight through, same as
+        // `notes`/`stack`/the folder pair above.
+        open_browser_on_ready: input.open_browser_on_ready,
     };
 
     projects.push(project.clone());
@@ -757,6 +760,7 @@ mod tests {
             stack: None,
             folder_id: None,
             folder_name: None,
+            open_browser_on_ready: None,
         }
     }
 

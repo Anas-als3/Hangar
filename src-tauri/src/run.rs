@@ -2002,6 +2002,7 @@ mod tests {
             stack: None,
             folder_id: None,
             folder_name: None,
+            open_browser_on_ready: None,
         }
     }
 
