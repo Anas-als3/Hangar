@@ -972,6 +972,74 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------------------------
+    // Plan 048 — `openBrowserOnReady` joins the run-inert set: `run.rs`'s ready hand-off reads it
+    // only from the pre-run `Project` snapshot (§9 step 0), so a mid-run write is structurally
+    // unobservable by the run in progress (SPEC.md §6, 2026-08-10).
+    // -----------------------------------------------------------------------------------------
+
+    #[test]
+    fn an_open_browser_on_ready_only_change_is_permitted_while_running() {
+        let stored = sample_project("/tmp/ielts");
+        let incoming = Project {
+            open_browser_on_ready: Some(false),
+            ..stored.clone()
+        };
+        let is_run_inert = is_run_inert_change(&stored, &incoming);
+        assert!(guard_update(is_run_inert, &stored, Status::Running).is_ok());
+    }
+
+    #[test]
+    fn open_browser_on_ready_cannot_smuggle_a_port_change_past_the_guard() {
+        let stored = sample_project("/tmp/ielts");
+        let incoming = Project {
+            open_browser_on_ready: Some(false),
+            port: 3001,
+            ..stored.clone()
+        };
+        let is_run_inert = is_run_inert_change(&stored, &incoming);
+        let err = guard_update(is_run_inert, &stored, Status::Running)
+            .expect_err("an openBrowserOnReady + port change must still be guarded while running");
+        assert!(err.contains("stop it first"), "got {err:?}");
+    }
+
+    #[test]
+    fn merging_open_browser_on_ready_leaves_last_run_at_and_stack_as_stored() {
+        let mut stored = Project {
+            last_run_at: Some("2026-08-05T10:00:00Z".into()),
+            stack: Some(sample_stack("2026-08-05T10:00:00Z")),
+            ..sample_project("/tmp/ielts")
+        };
+        let incoming = Project {
+            last_run_at: None, // stale frontend copy
+            stack: None,
+            open_browser_on_ready: Some(false),
+            ..stored.clone()
+        };
+        merge_run_inert_fields(&mut stored, incoming);
+        assert_eq!(stored.last_run_at.as_deref(), Some("2026-08-05T10:00:00Z"));
+        assert_eq!(stored.stack.as_ref().unwrap().detected_at, "2026-08-05T10:00:00Z");
+        assert_eq!(stored.open_browser_on_ready, Some(false));
+    }
+
+    #[test]
+    fn some_true_vs_none_does_not_by_itself_make_a_change_guarded() {
+        // The asymmetry plan 048 fixes: AddEditDialog seeds the checkbox `?? true`, so it sends
+        // `Some(true)` for every stored `None` — before this field joined the run-inert set, that
+        // alone made every save from the dialog guarded.
+        let stored = Project {
+            open_browser_on_ready: None,
+            ..sample_project("/tmp/ielts")
+        };
+        let incoming = Project {
+            open_browser_on_ready: Some(true),
+            ..stored.clone()
+        };
+        let is_run_inert = is_run_inert_change(&stored, &incoming);
+        assert!(is_run_inert, "None vs Some(true) alone must not be a guarded change");
+        assert!(guard_update(is_run_inert, &stored, Status::Running).is_ok());
+    }
+
+    // -----------------------------------------------------------------------------------------
     // Plan 032 — the run-inert exemption was unreachable during the very window it exists for:
     // the app-owned fields (`lastRunAt`, `lastLockfileHash`) and `stack.detectedAt` go stale in
     // the frontend's payload for the whole updating/installing/starting window, so a genuinely
