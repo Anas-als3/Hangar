@@ -8,10 +8,13 @@
 import { useEffect, useState } from "react";
 // Native folder picker (§10 step 1) — dialog plugin only, never tauri-plugin-shell (§4).
 import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
-import { readPackageJson } from "../api";
+import { findFreePort, readPackageJson } from "../api";
 import { addProjectAction, closeDialog, updateProjectAction, useHangarStore } from "../store";
 import { relativeTime } from "../status";
-import type { PackageJsonInfo, ProjectStack } from "../types";
+import type { PackageJsonInfo, ProjectStack, ProjectView } from "../types";
+// §10 step 4: the token rewrite is a separate zero-import module (node --test coverage, plan 043)
+// — never inlined here, so the framework/package-manager table stays in one place.
+import { rewritePortToken, type PortTokenForm } from "../portToken";
 
 /** §10 step 3: `npm run <script>` / `pnpm run <script>` / `yarn <script>` per package manager. */
 function commandFor(pm: PackageJsonInfo["packageManager"], script: string): string {
@@ -26,6 +29,29 @@ function pickDefaultScript(scripts: Record<string, string>): string | null {
   if ("start" in scripts) return "start";
   const keys = Object.keys(scripts);
   return keys.length > 0 ? keys[0] : null;
+}
+
+/** §10 step 4: `find_free_port`'s starting point when the Port field is empty (unsniffed
+ * framework, no package.json) — otherwise there is nothing meaningful to walk upward from. */
+const DEFAULT_PORT_FALLBACK = 3000;
+
+/** SPEC.md §10 step 4's caption, shown `aria-live="polite"` beneath the Port field. */
+function describePortPick(
+  from: number,
+  result: number,
+  others: ProjectView[],
+  framework: string | undefined,
+): string {
+  if (result === from) {
+    return framework
+      ? `Pinned :${result} (${framework}'s default, free right now). Command updated.`
+      : `Pinned :${result} (free right now). Command updated.`;
+  }
+  const owner = others.find((p) => p.port === from);
+  if (owner) {
+    return `Pinned :${result} — ${from} is pinned by ${owner.name}. Command updated.`;
+  }
+  return `Pinned :${result} and updated the command. (${from} is in use right now.)`;
 }
 
 /**
@@ -60,7 +86,7 @@ function urlPortMismatchWarning(url: string, port: number): string | null {
 }
 
 export function AddEditDialog() {
-  const { dialog } = useHangarStore();
+  const { dialog, projects } = useHangarStore();
   const editing = dialog?.kind === "edit" ? dialog.project : null;
   const isOpen = dialog?.kind === "add" || dialog?.kind === "edit";
 
@@ -80,6 +106,10 @@ export function AddEditDialog() {
   // §5: app-owned, never hand-edited here — only ever set from a `readPackageJson` result
   // (below) or carried through unchanged from the project being edited.
   const [stack, setStack] = useState<ProjectStack | undefined>(editing?.stack);
+  // §10 step 4 "Choose for me" — the aria-live caption beneath the Port field, and a guard against
+  // a second click landing mid-lookup (find_free_port is the only awaited step).
+  const [portCaption, setPortCaption] = useState<string | null>(null);
+  const [portPickerBusy, setPortPickerBusy] = useState(false);
 
   // Re-initialize whenever the dialog target changes (opened for a different project, or
   // switched from Edit back to Add).
@@ -93,6 +123,7 @@ export function AddEditDialog() {
     setReadyTimeoutSec(editing?.readyTimeoutSec ?? 60);
     setStack(editing?.stack);
     setSaving(false);
+    setPortCaption(null);
     // Fix 2 (plan 034): scripts/selectedScript/packageManager are `handleBrowse` output, not
     // project fields — left unreset, they held the *previous* dialog target's values.
     setScripts({});
@@ -135,6 +166,8 @@ export function AddEditDialog() {
     if (typeof selected !== "string") return; // cancelled
     setPath(selected);
     if (!name.trim()) setName(selected.split(/[\\/]/).filter(Boolean).pop() ?? selected);
+    // A caption naming *this* folder's port situation must not survive a browse to another one.
+    setPortCaption(null);
     try {
       const info = await readPackageJson(selected);
       setScripts(info.scripts);
@@ -174,6 +207,30 @@ export function AddEditDialog() {
   // Fix 3 (plan 034): advisory only — SPEC.md §5 requires this to be non-blocking, so it must
   // never be folded into `canSave`.
   const urlPortWarning = portValid ? urlPortMismatchWarning(url, parsedPort) : null;
+
+  // §10 step 4 "Choose for me": one press picks a free port AND rewrites the command's port token
+  // in the same press — the two halves are inseparable (SPEC.md §10 step 4, amended 2026-08-10),
+  // because Hangar's `port` is a prediction of what the child binds, never an instruction to it.
+  async function handleChooseForMe(form: PortTokenForm) {
+    if (!path.trim() || portPickerBusy) return;
+    // "Prefer the framework default when it is free. Do not move for no reason": walking from the
+    // already-prefilled/edited port means find_free_port returns it immediately when it is free.
+    const from = portValid ? parsedPort : DEFAULT_PORT_FALLBACK;
+    const others = projects.filter((p) => p.id !== editing?.id);
+    setPortPickerBusy(true);
+    try {
+      const result = await findFreePort(from, others.map((p) => p.port));
+      if (result === null) {
+        setPortCaption(`Couldn't find a free port near ${from} — enter one yourself.`);
+        return;
+      }
+      setPort(String(result));
+      setCommand((current) => rewritePortToken(current, result, form, stack?.framework));
+      setPortCaption(describePortPick(from, result, others, stack?.framework));
+    } finally {
+      setPortPickerBusy(false);
+    }
+  }
 
   async function handleSave() {
     if (!canSave) return;
@@ -305,15 +362,61 @@ export function AddEditDialog() {
         <label className="mt-5 block text-sm text-muted" htmlFor="project-port">
           Port
         </label>
-        <input
-          id="project-port"
-          type="number"
-          required
-          value={port}
-          onChange={(e) => setPort(e.target.value)}
-          placeholder="3000"
-          className="mt-1.5 w-full rounded-md border border-white/10 bg-bg px-3 py-2 font-mono text-sm text-text outline-none focus:border-accent"
-        />
+        <div className="mt-1.5 flex items-center gap-2">
+          <input
+            id="project-port"
+            type="number"
+            required
+            value={port}
+            onChange={(e) => setPort(e.target.value)}
+            placeholder="3000"
+            className="min-w-0 flex-1 rounded-md border border-white/10 bg-bg px-3 py-2 font-mono text-sm text-text outline-none focus:border-accent"
+          />
+          {/* §10 step 4: framework known → one button; unknown → both forms, named. Disabled with
+              nothing to walk against (no folder chosen yet). */}
+          {stack?.framework ? (
+            <button
+              type="button"
+              disabled={path.trim() === "" || portPickerBusy}
+              onClick={() => void handleChooseForMe("--port")}
+              className="shrink-0 rounded-md border border-white/10 px-3 py-2 text-sm text-text transition-colors hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Choose for me
+            </button>
+          ) : (
+            <div className="flex shrink-0 items-center gap-1.5">
+              <span className="text-sm text-muted">Choose for me:</span>
+              <button
+                type="button"
+                disabled={path.trim() === "" || portPickerBusy}
+                onClick={() => void handleChooseForMe("--port")}
+                className="rounded-md border border-white/10 px-2.5 py-2 font-mono text-xs text-text transition-colors hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                --port
+              </button>
+              <button
+                type="button"
+                disabled={path.trim() === "" || portPickerBusy}
+                onClick={() => void handleChooseForMe("PORT=")}
+                className="rounded-md border border-white/10 px-2.5 py-2 font-mono text-xs text-text transition-colors hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                PORT=
+              </button>
+            </div>
+          )}
+        </div>
+        {!stack?.framework && (
+          <p className="mt-1.5 text-xs text-muted">
+            Hangar can't tell which this project reads.{" "}
+            <span className="font-mono">--port</span> suits Vite, Next, Astro, Nuxt, SvelteKit and
+            Angular; <span className="font-mono">PORT=</span> suits a plain Node/Express server.
+          </p>
+        )}
+        {portCaption && (
+          <p aria-live="polite" className="mt-1.5 text-xs text-muted">
+            {portCaption}
+          </p>
+        )}
 
         {/* §5: url is "shown only in the Edit dialog (placeholder shows the computed default)". */}
         {editing && (
