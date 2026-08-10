@@ -36,6 +36,32 @@ is a separate copy, so building alone changes nothing you'll actually see.
 `npm run install:app` builds and then replaces the `/Applications` copy in
 one step (macOS-only; there is no Windows build to install yet).
 
+## Releases
+
+To cut a release, tag a commit and push the tag:
+
+```
+git tag v0.1.1 && git push origin v0.1.1
+```
+
+`.github/workflows/release.yml` does the rest: it builds the `.dmg` and
+attaches it to a GitHub Release for that tag.
+
+**The release is unsigned.** Hangar has no Apple Developer certificate, so on
+first launch macOS will say *"Hangar is damaged and can't be opened."* That
+is Gatekeeper rejecting an unsigned, downloaded build — not a bug, and the
+app is not actually damaged. The fix: right-click the app → **Open** →
+**Open**. That bypasses Gatekeeper for that app, once, per machine.
+
+This is for **sharing** a build with someone else. For your own machine,
+`npm run install:app` (above) remains the update path — there is nothing to
+download, because you compile it yourself.
+
+Releases are **macOS arm64 only**. There is no Windows build (SPEC.md's
+orphan-process test has never been run on real Windows hardware, so nothing
+ships there yet) and no Linux build (the CI setup it needs — a webkitgtk apt
+install — is deferred; see `.github/workflows/ci.yml`'s top comment).
+
 ## Develop
 
 ```
