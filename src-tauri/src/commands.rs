@@ -231,6 +231,19 @@ fn merge_run_inert_fields(stored: &mut Project, incoming: Project) {
     stored.folder_name = incoming.folder_name;
 }
 
+/// SPEC.md §6's app-owned bullet (added 2026-08-10): "Both fields are preserved from the stored
+/// record on every write, guarded or not." The merge branch above already satisfies this — it
+/// never touches `last_run_at`/`last_lockfile_hash` at all. This is the replace branch's half: a
+/// guarded (non-run-inert) `update_project` call still carries the caller's stale copy of both
+/// app-owned fields, and a bare `projects[index] = project` would silently roll them back. Plain
+/// data in, data out — unit-testable without a Tauri app, same reasoning as `guard_update`.
+fn replace_preserving_app_owned_fields(stored: &Project, incoming: Project) -> Project {
+    let mut replaced = incoming;
+    replaced.last_run_at = stored.last_run_at.clone();
+    replaced.last_lockfile_hash = stored.last_lockfile_hash.clone();
+    replaced
+}
+
 #[tauri::command]
 pub async fn update_project(
     project: Project,
@@ -262,7 +275,9 @@ pub async fn update_project(
     if is_run_inert {
         merge_run_inert_fields(&mut projects[index], project);
     } else {
-        projects[index] = project;
+        // SPEC.md §6's app-owned bullet: a guarded replace must not roll back `lastRunAt`/
+        // `lastLockfileHash` to whatever stale copy the caller's payload carried.
+        projects[index] = replace_preserving_app_owned_fields(&projects[index], project);
     }
     registry::save_projects(&state.config_dir, &projects)?;
 
