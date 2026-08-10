@@ -27,6 +27,10 @@ use crate::osv;
 use crate::preflight;
 use crate::process::{self, LogLine, RuntimeMap};
 use crate::registry::{self, Project, ProjectView, RegistryError, Settings, Status};
+// SPEC.md §11 "Launch line" / plan 060 — the local-only git reads. Deliberately NOT part of
+// `preflight`: that module is bound to "never runs on the startup path", and this one is the
+// startup path (see `get_vcs_status` below).
+use crate::vcs;
 
 /// SPEC.md §7 `get_port_status` (added 2026-08-10, plan 041 — the Ports panel). One entry per
 /// registered project, snapshot at call time. `busy`/`listenerCount`/`holder` are never widened
@@ -660,6 +664,114 @@ pub async fn get_preflight(
     let _ = (check_dependencies, project_dirs);
 
     Ok(reports)
+}
+
+/// SPEC.md §11 "Launch line" (added 2026-08-11, plan 060) — one local version-control row per
+/// registered project, in `projects.json` array order, snapshot at call time. An addition to the
+/// frozen §7 list, never a rename or a reshape of anything in it.
+///
+/// **A new command rather than an extension of `get_preflight`.** Plan 060 asked for the extension
+/// first, and it does not fit: §11 binds the Doctor's report to "never runs on the startup path"
+/// (and, since plan 059, to an opt-in network call reached through that same command), while this
+/// line is *precisely* the startup path. One command cannot be both. The two share `vcs.rs`'s
+/// reads only in the sense that neither exists in the other.
+///
+/// **No network.** `vcs.rs` runs exactly one `git status` read against local refs — see that
+/// module's THE TWO INVARIANTS. Nothing here fetches, and therefore nothing here reports "behind".
+///
+/// `Ok` even when git is missing, times out or exits non-zero: those are `state: "unavailable"`
+/// rows, not errors, because §7 turns every `Err` into a toast and a toast per project on launch
+/// would be intolerable. `Err` is reserved for the command itself failing.
+#[tauri::command]
+pub async fn get_vcs_status(state: State<'_, AppState>) -> Result<Vec<vcs::VcsStatus>, String> {
+    // Lock discipline (§4 / plan 010, same shape as `get_port_status` and `get_preflight`):
+    // snapshot under the lock, THEN drop it, THEN touch the filesystem.
+    let snapshot: Vec<(String, PathBuf)> = {
+        let projects = state.projects.lock().await;
+        projects.iter().map(|p| (p.id.clone(), PathBuf::from(&p.path))).collect()
+    };
+
+    let env = state.dev_env.get().await.vars.clone();
+    let checked_at = crate::run::iso8601_utc(SystemTime::now());
+
+    // Pass 1: the spawn-free repo test for every project, on the blocking pool — a `.git` walk is
+    // `Path::exists` and a project may sit on a stalled network mount (plan 010's note on
+    // `get_projects`). A folder that is not a repo never reaches git at all.
+    let dirs: Vec<PathBuf> = snapshot.iter().map(|(_, dir)| dir.clone()).collect();
+    let scan: Result<Vec<bool>, String> = tauri::async_runtime::spawn_blocking(move || {
+        dirs.iter().map(|dir| vcs::looks_like_a_repo(dir)).collect::<Vec<bool>>()
+    })
+    .await
+    .map_err(|e| format!("the version-control scan did not finish ({e})."));
+
+    // Plan 059's lesson, applied before the bug could happen: a pass that did not run must NOT
+    // come back as a quiet result. If the scan itself failed, every project is `unavailable` —
+    // never an `Err` (a toast on launch), and never an empty/`not-a-repo` list that the silent-
+    // when-clean line would render as a clean library.
+    let is_repo: Vec<bool> = match &scan {
+        Ok(flags) => flags.clone(),
+        Err(detail) => {
+            return Ok(snapshot
+                .iter()
+                .map(|(project_id, _)| {
+                    vcs::build_status(
+                        project_id,
+                        vcs::VcsState::Unavailable,
+                        None,
+                        Some(detail.clone()),
+                        &checked_at,
+                    )
+                })
+                .collect())
+        }
+    };
+
+    // Pass 2: one `git status` per repository, all in flight together. Spawned first and awaited
+    // afterwards, so N projects cost one timeout, not N — this runs when the user sits down.
+    let mut pending = Vec::with_capacity(snapshot.len());
+    for ((project_id, dir), repo) in snapshot.into_iter().zip(is_repo) {
+        if !repo {
+            pending.push(Err(vcs::build_status(
+                &project_id,
+                vcs::VcsState::NotARepo,
+                None,
+                None,
+                &checked_at,
+            )));
+            continue;
+        }
+        let task_env = env.clone();
+        let task_checked_at = checked_at.clone();
+        let task_id = project_id.clone();
+        pending.push(Ok((
+            project_id,
+            tauri::async_runtime::spawn(async move {
+                vcs::read_status(&task_id, &dir, &task_env, &task_checked_at).await
+            }),
+        )));
+    }
+
+    let mut rows = Vec::with_capacity(pending.len());
+    for entry in pending {
+        match entry {
+            Err(row) => rows.push(row),
+            Ok((project_id, handle)) => rows.push(match handle.await {
+                Ok(row) => row,
+                // A panicked or cancelled probe task is a check that did not run. It becomes an
+                // `unavailable` row, never a dropped one: a project missing from this list would
+                // render exactly like a project that is fine.
+                Err(e) => vcs::build_status(
+                    &project_id,
+                    vcs::VcsState::Unavailable,
+                    None,
+                    Some(format!("the check for this project did not finish ({e}).")),
+                    &checked_at,
+                ),
+            }),
+        }
+    }
+
+    Ok(rows)
 }
 
 /// SPEC.md §7 `find_free_port` (added 2026-08-10, plan 043) — §10 step 4's "Choose for me". Walks

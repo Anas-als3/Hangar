@@ -12,6 +12,7 @@ import { useEffect, useRef } from "react";
 import AddEditDialog from "./components/AddEditDialog";
 import DoctorPanel from "./components/DoctorPanel";
 import InboxPanel from "./components/InboxPanel";
+import LaunchLine from "./components/LaunchLine";
 import LogPanel from "./components/LogPanel";
 import MoveToFolderDialog from "./components/MoveToFolderDialog";
 import NotesPanel from "./components/NotesPanel";
@@ -28,6 +29,7 @@ import {
   openPorts,
   openSettingsDialog,
   refreshRegistryQuietly,
+  refreshVcs,
   runningCount,
   setSearch,
   startProject,
@@ -256,7 +258,12 @@ function App() {
   );
 
   useEffect(() => {
-    void loadRegistry();
+    // SPEC.md §11 "Launch line" (plan 060): the registry first, then the git snapshot — sequential
+    // and never awaited by the render, so the grid paints on the registry alone and the line
+    // appears underneath it a moment later. It is safe on this path only because the read is local
+    // (`vcs.rs`: one `git status`, no network of any kind); the Doctor's report, which may go to
+    // the network, is still forbidden here and is still only ever called by its own panel.
+    void loadRegistry().then(() => refreshVcs());
   }, []);
 
   // SPEC.md §5: pathExists must refresh "at startup, on registry change, and when Run is
@@ -379,6 +386,14 @@ function App() {
             Could not load the project registry: {loadError}
           </div>
         )}
+
+        {/* §11 "Launch line" (plan 060): above the resume line, because "you have thirty commits
+            on one laptop" outranks "want to start yesterday's set?". It has no render condition of
+            its own here — silence is decided inside the component, which returns null whenever
+            there is nothing to report. It is NOT hidden under an active search: a search filters
+            the grid, and hiding what needs attention because the user typed three letters would
+            lose the one fact this element exists to deliver. */}
+        <LaunchLine projects={projects} />
 
         {/* §11 "Resume last session" (plan 051): the third condition — cluster non-empty — is
             covered inside ResumeLine itself, which renders nothing when there is no group. */}

@@ -70,7 +70,7 @@ conditions, and update your row below when done.
 | 057 | Preflight "Doctor" panel — env-key drift, node version, install-needed | — | P1 | M | 056 | DONE (merged `9ba0e56`, 2026-08-11) — 181 tests, was 168; serialization guard mutation-tested **and re-run independently by the reviewer**; **`engines.node` NOT checked — STOP condition fired, see below** |
 | 058 | Restore the Windows cross-check (feature-gate the TLS stack) | — | P1 | S-M | — | DONE (2026-08-11) — `Compiling hangar` = 1, re-run by the reviewer; §8's Windows code compiles clean; tests unchanged at 181/3; **compiles ≠ runs — CI billing is still the real fix** |
 | 059 | Dependency health via OSV.dev — folded into the Doctor panel, opt-in | — | P2 | M | 057 | DONE (2026-08-11) — 200 tests, was 181; **four guards mutation-tested**, two of them re-run independently by the reviewer; new `osv` cargo feature keeps `--no-default-features` (the Windows gate) dropping `reqwest`; no new §7 command, no new dependency; **live API called: 173 packages → 0 advisories**, which is this feature's honest output today; **⚠️ amends §3's OUT list — awaiting the maintainer's ruling, see below** |
-| 060 | Launch line — unpushed commits / uncommitted / crashed, on open | — | **P1** | M | 057 | TODO |
+| 060 | Launch line — unpushed commits / uncommitted / crashed, on open | — | **P1** | M | 057 | DONE (2026-08-11) — 210 tests, was 200; 16 `node --test` cases; **"silent when clean" mutation-tested**; **new `vcs.rs`, not an extension of `get_preflight`** (§11 forbids the Doctor's report on the startup path, and plan 059 put a network call behind it) — see below; **`+N` is a plain count, not a Doctor button**, because the §11 amendment this plan itself mandates says the only action is scroll-into-view; no network call, no git write, `git grep` for the five forbidden verbs still empty |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
 
@@ -484,6 +484,42 @@ hardware settles SPEC.md §15 test 3.
   173 packages, one request, **0 advisories**. That is why there is no score, no
   badge, no shield and no dashboard — §11's "silent when clean" rule applies
   unchanged, and the value is that this answer changes without anyone noticing.
+
+- **Plan 060: a new `get_vcs_status` command, not an extension of `get_preflight`
+  — the plan preferred the extension and it does not fit.** §11 binds the Doctor's
+  report to "nothing it does runs before the grid renders", and plan 059 put an
+  opt-in **network** call behind that same command. The launch line *is* the
+  startup path, so folding it in would either break the Doctor's own §11 rule or
+  drag osv.dev onto launch — which is exactly what plan 060's network section
+  forbids. The reads therefore live in a sibling `src-tauri/src/vcs.rs`, and the
+  Doctor panel is untouched.
+- **Plan 060: `+N` is a plain count, not a button that opens Doctor.** The plan's
+  body said `+N` opens the Doctor panel, and the §11 amendment the same plan
+  mandates says "the only action is scroll-into-view". Both cannot hold. The
+  amendment won: `+N` is text, exactly like `ResumeLine`'s. §11 has the precedent
+  — the libraries line's `+N` became a control only by an explicit amendment, and
+  none was asked for here. It is also the honest reading: Doctor does not list git
+  facts, so a button routing there would have gone nowhere useful.
+- **Plan 060: "behind" is not reported, and there is nowhere to put it.**
+  `git status --porcelain=v2 --branch` prints ahead and behind in one
+  `# branch.ab +A -B` header; the parser reads `+A` and never binds `-B`, and
+  neither `vcs::VcsStatus` nor `src/types.ts`'s mirror has a field that could hold
+  it. Hangar never fetches, so any behind number would be as old as the user's
+  last manual fetch and would read as current. If Hangar ever fetches, the §11
+  paragraph's whole network argument needs rewriting rather than quietly extending.
+- **Plan 060: a git check that could not run is a `state`, not an empty result.**
+  Plan 059's lesson applied before the bug could happen: `VcsState` is
+  `not-a-repo | checked | unavailable`, so a clean repo (`checked`, ahead 0,
+  uncommitted 0) and a failed check (`unavailable`, both counts absent) are
+  different values on the wire, and `unavailable` rows are counted onto the line as
+  `N not checked` rather than falling into the silence. The `.git` ancestor walk
+  runs **first** and spawn-free, which is what makes a non-zero `git status` exit
+  reportable as a failure instead of guessed at as "not a repo".
+- **Plan 060: the launch line's snapshot is taken once, on load.** Not on window
+  focus — `refreshRegistryQuietly` already runs there and it is the most frequent
+  event in the app; adding N git children to it would be the opposite of quiet.
+  The line therefore states its own age. A user who pushes from a terminal sees a
+  stale line until the next launch, which is the accepted cost of not polling.
 
 ## Findings considered and rejected
 

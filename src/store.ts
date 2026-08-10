@@ -20,6 +20,7 @@ import {
   getPreflight,
   getProjects,
   getRegistryError,
+  getVcsStatus,
   openInBrowser,
   openInEditor,
   removeGithubToken,
@@ -44,6 +45,7 @@ import type {
   Settings,
   Status,
   StatusChangedPayload,
+  VcsStatus,
 } from "./types";
 
 /**
@@ -163,6 +165,17 @@ export interface HangarState {
    * seconds, so the loading state had to become real rather than implied.
    */
   preflightPending: boolean;
+  /**
+   * SPEC.md §11 "Launch line" (plan 060): the last `get_vcs_status` snapshot — `null` before the
+   * first fetch, which the line reads as "not yet looked" and stays quiet about (see
+   * `launchLine.ts`). A **snapshot**, like Ports and Doctor: taken once when the registry first
+   * loads and never polled — the whole point is the moment you sit down.
+   *
+   * Unlike those two it IS fetched on the startup path, which is allowed only because the read is
+   * local and cheap by construction: no network call of any kind, so nothing here can hang on DNS.
+   * A failed fetch leaves whatever rows were already here untouched.
+   */
+  vcs: VcsStatus[] | null;
 }
 
 let state: HangarState = {
@@ -190,6 +203,7 @@ let state: HangarState = {
   doctorOpen: false,
   preflight: null,
   preflightPending: false,
+  vcs: null,
 };
 
 const listeners = new Set<() => void>();
@@ -1042,4 +1056,69 @@ export async function refreshPreflight(): Promise<void> {
   } finally {
     setState({ preflightPending: false });
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Launch line (SPEC.md §11, plan 060) — a local, read-only git snapshot, and one scroll.
+//
+// SPEC.md §3's OUT list is absolute here: nothing below pushes, pulls, fetches, commits or
+// stashes, and there is no code path from this file to a git write. The only action the line
+// carries is `revealProject` — it moves the viewport, and nothing else.
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * The one snapshot read, taken once after the registry loads. Never polled, never on a timer, and
+ * never repeated on window focus: `refreshRegistryQuietly` already runs there and adding N git
+ * children to the most frequent event in the app would be the opposite of quiet.
+ *
+ * Failure is silent by design — the *rows* already carry every honest failure (`state:
+ * "unavailable"`), so reaching this catch means the command itself could not run, and a toast on
+ * launch for a decorative line would be worse than the line simply not appearing.
+ */
+export async function refreshVcs(): Promise<void> {
+  try {
+    const vcs = await getVcsStatus();
+    setState({ vcs });
+  } catch {
+    // Leaves whatever rows were already here in place — same "don't blank a working view" rule as
+    // `refreshPorts`/`refreshPreflight`.
+  }
+}
+
+/**
+ * §11: **the only action the launch line carries.** It scrolls a card into view. It does not run
+ * it, stop it, open it, or touch git.
+ *
+ * A member of a closed folder is not in the DOM, so its folder is opened first and the scroll is
+ * deferred to the next frame — the same "open, then reveal" order §11 already specifies for a
+ * relocated folder tile. Opening a folder is ephemeral view state, never a registry write.
+ */
+export function revealProject(projectId: string): void {
+  const project = state.projects.find((p) => p.id === projectId);
+  if (!project) return;
+
+  // The card root already carries `data-hangar-tile` for the plan 030 drag hit test — no card
+  // markup changes for this, and §11's card element list is untouched.
+  const scroll = (): boolean => {
+    const el = document.querySelector<HTMLElement>(`[data-hangar-tile="${CSS.escape(projectId)}"]`);
+    if (!el) return false;
+    // `behavior: "auto"` — instant. §11's Motion allow-list does not include a scroll animation,
+    // and `index.css`'s `prefers-reduced-motion` rule already forces this value globally.
+    el.scrollIntoView({ block: "nearest", behavior: "auto" });
+    return true;
+  };
+
+  if (project.folderId && !state.openFolders.has(project.folderId)) {
+    const next = new Set(state.openFolders);
+    next.add(project.folderId);
+    setState({ openFolders: next });
+  }
+  // Try now, then on the next frame or two — a member card that was inside a just-opened folder
+  // has not mounted yet. Idempotent and cheap, and it gives up rather than looping: a missed
+  // scroll is a non-event, and guessing at a substitute target would move the viewport somewhere
+  // the user did not ask for (a card filtered out by an active search has no element at all).
+  if (scroll()) return;
+  requestAnimationFrame(() => {
+    if (!scroll()) requestAnimationFrame(scroll);
+  });
 }

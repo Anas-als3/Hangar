@@ -18,6 +18,7 @@ import type {
   ProjectView,
   RegistryError,
   Settings,
+  VcsStatus,
 } from "./types";
 
 export function getProjects(): Promise<ProjectView[]> {
@@ -157,6 +158,24 @@ export function findFreePort(from: number, exclude: number[]): Promise<number | 
  */
 export function getPreflight(): Promise<PreflightReport[]> {
   return invoke<PreflightReport[]>("get_preflight");
+}
+
+/**
+ * SPEC.md §11 "Launch line" (added 2026-08-11, plan 060) — one local version-control row per
+ * registered project, snapshot at call time. This is the one snapshot read that DOES run when the
+ * window opens; it is cheap and local by construction (§3, §11):
+ *
+ * - **No network.** One `git status` against local refs — never `fetch`, never `ls-remote`. A hung
+ *   DNS lookup can therefore never become a hung launch.
+ * - **No write.** Not a push, pull, commit or stash; the read even passes `--no-optional-locks` so
+ *   it will not take git's index lock.
+ *
+ * Never rejects for a project-level problem: git missing, a timeout and a non-zero exit all come
+ * back as `state: "unavailable"` rows, which the line renders as "not checked" — never as silence,
+ * and never as a toast.
+ */
+export function getVcsStatus(): Promise<VcsStatus[]> {
+  return invoke<VcsStatus[]>("get_vcs_status");
 }
 
 /**
