@@ -1177,6 +1177,44 @@ mod tests {
     }
 
     #[test]
+    fn plan_036_service_entries_are_detected() {
+        let stack = detect_stack(
+            &serde_json::json!({
+                "dependencies": { "stripe": "1.0.0", "@sentry/node": "8.0.0", "mongoose": "8.0.0" }
+            }),
+            &[],
+        );
+        assert_eq!(
+            stack.libraries,
+            vec!["Stripe".to_string(), "Sentry".to_string(), "MongoDB".to_string()]
+        );
+    }
+
+    #[test]
+    fn aws_sdk_and_aws_sdk_client_s3_dedupe_to_one_aws_entry() {
+        let stack = detect_stack(
+            &serde_json::json!({
+                "dependencies": { "aws-sdk": "2.0.0", "@aws-sdk/client-s3": "3.0.0" }
+            }),
+            &[],
+        );
+        assert_eq!(stack.libraries, vec!["AWS".to_string()]);
+    }
+
+    #[test]
+    fn the_head_group_leads_services_before_frameworks() {
+        // Plan 036: the head group (services) must list before the original 19 (frameworks/libs)
+        // so the card's visible three favour external services.
+        let stack = detect_stack(
+            &serde_json::json!({
+                "dependencies": { "react": "18.2.0", "stripe": "1.0.0" }
+            }),
+            &[],
+        );
+        assert_eq!(stack.libraries, vec!["Stripe".to_string(), "React".to_string()]);
+    }
+
+    #[test]
     fn read_package_json_lists_scripts_and_suggests_a_port() {
         let dir = scratch("read-pkg");
         std::fs::write(
