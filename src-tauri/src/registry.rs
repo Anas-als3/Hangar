@@ -71,6 +71,12 @@ pub struct Project {
     /// interrupted mid-way) the earliest member in array order supplies the displayed name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder_name: Option<String>,
+    /// SPEC.md §5 / §9 step 6 (added 2026-08-10): when `false`, reaching ready does not hand off to
+    /// the browser. The status transition is unaffected — only the tab is skipped. `None` means the
+    /// default, `true`: absent from an existing `projects.json`, and absent from the file for every
+    /// project that never turns it off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_browser_on_ready: Option<bool>,
 }
 
 /// SPEC.md §5 `stack` / §7 `read_package_json`'s `stack` field: detected from `package.json`
@@ -123,6 +129,9 @@ pub struct NewProject {
     /// SPEC.md §5 (folders, 2026-08-10): mirrors `Project::folder_name`.
     #[serde(default)]
     pub folder_name: Option<String>,
+    /// SPEC.md §5 / §9 step 6 (added 2026-08-10): mirrors `Project::open_browser_on_ready`.
+    #[serde(default)]
+    pub open_browser_on_ready: Option<bool>,
 }
 
 /// SPEC.md §5 `id: string // nanoid`. No id-generation crate is added for this one call site
@@ -205,6 +214,7 @@ fn seed_projects() -> Vec<Project> {
         stack: None,
         folder_id: None,
         folder_name: None,
+        open_browser_on_ready: None,
     }]
 }
 
@@ -784,6 +794,10 @@ mod tests {
             // `folderName` — `None` would let the drift guard pass without ever checking them.
             folder_id: Some("fld_1".into()),
             folder_name: Some("Client Work".into()),
+            // Same non-empty-on-purpose reasoning as `notes`/`stack`/`folder_id` above: `None`
+            // here would let `skip_serializing_if` omit the key entirely, so the drift guard would
+            // pass while never checking that `src/types.ts` declares `openBrowserOnReady`.
+            open_browser_on_ready: Some(false),
         }
     }
 
@@ -910,6 +924,7 @@ mod tests {
                 r#""notes":"Remember to try the staging flag next time.","#,
                 r#""stack":{"framework":"Next","libraries":["React","Tailwind"],"detectedAt":"2026-08-05T10:00:00Z"},"#,
                 r#""folderId":"fld_1","folderName":"Client Work","#,
+                r#""openBrowserOnReady":false,"#,
                 r#""status":"running","pathExists":true}"#
             )
         );
