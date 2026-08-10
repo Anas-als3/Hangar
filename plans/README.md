@@ -24,7 +24,7 @@ conditions, and update your row below when done.
 | 011 | LineSplitter buffer cap | — | P1 | S | — | TODO |
 | 012 | settings.json corruption rescue + atomic_write hardening | — | P2 | S | 010 | TODO |
 | 013 | Restrictive webview CSP | — | P2 | S | — | TODO |
-| 014 | Un-brick stop-failed on foreign port owners | — | P2 | M | 007 | TODO |
+| 014 | Un-brick stop-failed on foreign port owners | — | P2 | M | 007 | DONE (merged `28490dd`, 2026-08-11) — 154 tests, was 147 |
 | 015 | Gate the Unix-only orphan test; Windows gate sees test code | — | P1 | S | 009 | DONE (merged) |
 | 016 | SPEC §11 motion amendment (proposal — maintainer ratifies) | — | P2 | S | — | DONE (ratified and applied to SPEC.md, 2026-08-09) |
 | 017 | Project search field | — | P3 | S | — | DONE (merged) |
@@ -259,6 +259,12 @@ explicitly deferred to a human test on a Windows machine (SPEC.md §15 test 3).
 - **Notes typed during a save round trip and Esc'd within 800 ms can still be
   lost** (plan 039's residual). The fix is comparing against the last-saved
   value rather than carrying a dirty flag.
+- **A child that calls `setsid()` escapes the pgid**, so `group_is_gone` reports
+  the group dead while that child still holds the port — and plan 014's new
+  message then calls it "not started by Hangar". Always outside §8's pgid-based
+  guarantee, not introduced by 014; the message names the process and PID so a
+  human can judge. Recorded because the wording is confidently wrong in that
+  one case.
 - **Plan 031**: the folder tile's `min-h` is a hand estimate and §11's
   scroll-into-view on relocation is unimplemented. Both need a human with the
   app open.
