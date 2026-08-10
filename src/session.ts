@@ -40,3 +40,42 @@ export function lastSessionCluster(
   const within = new Set(parsed.filter((p) => latest - p.at <= windowMs).map((p) => p.id));
   return projects.filter((p) => within.has(p.id)).map((p) => p.id);
 }
+
+export interface StackCount {
+  name: string;
+  count: number;
+}
+
+/**
+ * §11 "Workspace strip": every framework/library name across the library, with the count of
+ * distinct `path`s it appears under — two cards sharing a repo root count once, never twice.
+ * Ordered by count descending, then by first appearance in `projects` order (a project's own
+ * framework before its libraries) — never alphabetical, which would bury the backend's own
+ * ordering of external services ahead of frameworks. Capping the output is the caller's job.
+ */
+export function stackInventory(projects: readonly SessionProject[]): StackCount[] {
+  const namesByPath = new Map<string, Set<string>>();
+  const firstSeen = new Map<string, number>();
+  let order = 0;
+  for (const project of projects) {
+    const names = project.stack
+      ? [...(project.stack.framework ? [project.stack.framework] : []), ...project.stack.libraries]
+      : [];
+    let bucket = namesByPath.get(project.path);
+    if (!bucket) {
+      bucket = new Set<string>();
+      namesByPath.set(project.path, bucket);
+    }
+    for (const name of names) {
+      bucket.add(name);
+      if (!firstSeen.has(name)) firstSeen.set(name, order++);
+    }
+  }
+  const counts = new Map<string, number>();
+  for (const bucket of namesByPath.values()) {
+    for (const name of bucket) counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count || firstSeen.get(a.name)! - firstSeen.get(b.name)!);
+}
