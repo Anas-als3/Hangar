@@ -207,7 +207,10 @@ function App() {
       <div ref={contentRef} className="flex flex-1 flex-col">
       <header className="flex items-center justify-between border-b border-white/5 px-8 py-5">
         <div className="flex items-center gap-3">
-          <h1 className="font-display text-xl font-bold tracking-tight text-text">Hangar</h1>
+          {/* Plan 046 step 3: text-xl -> text-2xl (20 -> 24px). text-2xl's 32px line box is still
+              under the 38px search input's height, so the 79px header is unchanged. Today the
+              largest type in the app is the Add tile's "+" glyph — this gives the page a top. */}
+          <h1 className="font-display text-2xl font-bold tracking-tight text-text">Hangar</h1>
           {/* SPEC.md §11: a quiet aggregate — how many projects are running right now. */}
           {runningCount(projects) > 0 && (
             <span className="text-sm text-muted">{runningCount(projects)} running</span>
