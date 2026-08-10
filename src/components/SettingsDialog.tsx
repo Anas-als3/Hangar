@@ -67,6 +67,7 @@ export function SettingsDialog() {
         <input
           id="editor-command"
           type="text"
+          autoFocus
           disabled={loading}
           value={editorCommand}
           onChange={(e) => setEditorCommand(e.target.value)}

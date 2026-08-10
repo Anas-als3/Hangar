@@ -139,6 +139,7 @@ export function NotesPanel() {
         </header>
 
         <textarea
+          autoFocus
           value={value}
           onChange={(e) => handleChange(e.target.value)}
           onBlur={handleBlur}

@@ -221,6 +221,7 @@ export function AddEditDialog() {
         <input
           id="project-name"
           type="text"
+          autoFocus
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="IELTS Coach"
