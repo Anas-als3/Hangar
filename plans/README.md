@@ -20,7 +20,7 @@ conditions, and update your row below when done.
 | 007 | Ready-timeout owns its crash — deliver the §9 step 7 toast | — | P1 | S | — | DONE (merged `347b96d`; §15 test 7 verified live) |
 | 008 | Wire-contract tests + types.ts drift guard | — | P1 | S | — | DONE (merged `5f1db9c`) |
 | 009 | Verify entrypoint, CI (incl. Windows job), de-trapped `dev` script | — | P1 | M | — | DONE (merged `15bfa69`) |
-| 010 | Blocking I/O out from under the async state locks | — | P1 | S | — | TODO |
+| 010 | Blocking I/O out from under the async state locks | — | P1 | S | — | IN PROGRESS (re-verified live at `e7ecada`; two save sites now, not one) |
 | 011 | LineSplitter buffer cap | — | P1 | S | — | TODO |
 | 012 | settings.json corruption rescue + atomic_write hardening | — | P2 | S | 010 | TODO |
 | 013 | Restrictive webview CSP | — | P2 | S | — | TODO |
@@ -57,12 +57,12 @@ conditions, and update your row below when done.
 | 044 | Tagged release workflow producing a downloadable `.dmg` (plan 024 tier 1) | — | P3 | S | 021 | DONE (merged `d8cb5ed`, 2026-08-10) |
 | 045 | `openBrowserOnReady` — stop opening a tab on every Run (supersedes the 040 row) | — | P2 | S | SPEC §5/§9/§10 amendments, 043 | DONE (merged `87f09e5`, 2026-08-10) |
 | 046 | Presence pass — fixed card silhouette, menu z-index, dark first frame, width cap, bigger title | — | P2 | M | SPEC §11 amendments | DONE (merged, 2026-08-10) |
-| 047 | Ports button on the port-collision toast (closes the §12 requirement added by 041) | — | P2 | XS | 041 | TODO |
+| 047 | Ports button on the toast when a Run did not take | — | P2 | XS | 041 | DONE (merged `440bafb`, 2026-08-10) |
 | 048 | Edit must not kill the server — move confirm-and-stop from dialog-open to Save | — | P2 | S-M | SPEC §6 amendment | TODO |
 | 049 | Run button that admits it was clicked (pre-status window on a shared path) | — | P3 | S | — | TODO |
 | 050 | Crash reason on the card | — | P2 | S | — | SUPERSEDED by 052 (folded in as Part B) |
 | 051 | Resume last session + workspace strip | — | P2 | M | SPEC §11 amendments | DONE (merged `97fe575`, 2026-08-10) — 8 `node --test` cases |
-| 052 | Card feedback: pending-Run state + crash reason | — | P2 | S | SPEC §11 amendment | IN PROGRESS |
+| 052 | Card feedback: pending-Run state + crash reason | — | P2 | S | SPEC §11 amendment | DONE (merged `d4e35eb`, 2026-08-10) |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
 
