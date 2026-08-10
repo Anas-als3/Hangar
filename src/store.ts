@@ -763,7 +763,7 @@ export async function moveToFolder(projectId: string, target: FolderTarget): Pro
         : { folderId: target.folderId, folderName: target.folderName };
   try {
     await updateProject({ ...project, ...patch });
-    await loadRegistry();
+    await refreshRegistryQuietly();
     return true;
   } catch (err) {
     setToast(errorMessage(err));
