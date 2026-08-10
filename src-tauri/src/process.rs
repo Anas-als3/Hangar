@@ -133,7 +133,12 @@ pub struct ProjectRuntime {
     /// row "`stop-failed` | Stop clicked | `stopping` — retry the kill") with nothing to signal is
     /// not a retry at all — it falls through to the port probe, which the surviving children
     /// (esbuild service, file watchers) never answer, and announces a stop that never happened.
-    /// Cleared in exactly two places: a *verified* stop, and the start of the next Run.
+    /// Cleared in exactly three places: a *verified* stop, the start of the next Run, and — plan
+    /// 014 — the moment death is CONFIRMED even if the overall verdict is still `stop-failed`
+    /// (`retire_confirmed_kill_pid`). `had_child`/`child_registered` are preserved by that third
+    /// site, so a subsequent retry with nothing left to signal reports "death cannot be confirmed"
+    /// (`nothing_to_signal`) rather than re-signalling a pgid number SPEC.md §16 warns may since
+    /// have been recycled by an unrelated process.
     pub kill_pid: Option<u32>,
     /// True from the moment a child is registered for the current run until that run's tree is
     /// confirmed dead (or the next Run claims the project). It is what tells "Stop pressed with no
@@ -327,6 +332,15 @@ impl ProjectRuntime {
             }
         }
         let _ = outcome;
+    }
+
+    /// Plan 014: called whenever §8 has just confirmed the group/job is empty, regardless of what
+    /// the port later decides — see [`Self::kill_pid`]. Deliberately narrower than
+    /// [`Self::clear_kill_target`]: `child_registered` (`had_child`) is preserved, so a `stop-failed`
+    /// retry that finds `kill_pid: None` still reports an honest "death cannot be confirmed" via
+    /// `nothing_to_signal`, never a laundered "nothing was ever here".
+    pub fn retire_confirmed_kill_pid(&mut self) {
+        self.kill_pid = None;
     }
 }
 
@@ -1211,6 +1225,58 @@ pub async fn kill_tree(target: KillTarget) -> KillOutcome {
 /// Returns `true` for `stopped`, `false` for `stop-failed`.
 pub fn stop_is_verified(death_confirmed: bool, port_still_answers: bool) -> bool {
     death_confirmed && !port_still_answers
+}
+
+/// What [`settle_after_kill`] concludes. Plan 014: a `stop_is_verified` `false` used to mean
+/// `stop-failed` unconditionally; this splits that case so a confirmed-empty group whose port is
+/// held by someone else can still report `stopped`, naming the holder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StopVerdict {
+    /// §8 satisfied — either the port is free, or death is confirmed and every live listener has
+    /// been provably attributed to a process outside the killed tree.
+    Stopped { foreign_owner: Option<PortListener> },
+    /// Death unconfirmed, or the port is held by something that cannot be ruled out as ours.
+    StopFailed,
+}
+
+/// SPEC.md §8 step 5, extended (plan 014). **Deviation from §8's letter, documented per CLAUDE.md's
+/// rule for exactly this situation:** §8 says any listener on the pinned port after a kill is a
+/// failed stop. Its INTENT, stated two paragraphs above in the killing section, is narrower — the
+/// port check exists to catch OUR OWN survivors, leaked children that never listen. Once
+/// `death_confirmed` is true the killed group/job is provably empty (Unix: `kill(-pgid, 0)` returned
+/// `ESRCH`; Windows: the job's process count is 0), so a listener that is demonstrably not that
+/// group cannot be one of our survivors — it satisfies §8's intent even though it fails §8's literal
+/// text. `listeners` must come from [`port_listeners`] (every distinct pid), never [`port_owner`]
+/// (first row only) — a second, unlisted listener must not be waved through as free.
+///
+/// Two cases get NO benefit of the doubt, per this plan's hard limit that guessing optimistic is
+/// exactly the failure §8 exists to prevent: a listener whose pid equals `killed_pid` (SPEC.md §16
+/// forbids trusting a bare pid match as identity once a pid may have been recycled, so this is
+/// treated as *unverifiable*, not as proof it is still ours, but either way it is not attributable
+/// as foreign); and an empty `listeners` when the port is busy (the lookup found nothing parseable —
+/// unattributable is not evidence of success).
+pub fn settle_after_kill(
+    death_confirmed: bool,
+    port_still_answers: bool,
+    killed_pid: Option<u32>,
+    listeners: &[PortListener],
+) -> StopVerdict {
+    if stop_is_verified(death_confirmed, port_still_answers) {
+        return StopVerdict::Stopped { foreign_owner: None };
+    }
+    if !death_confirmed {
+        // Not even asked: with processes still alive, attribution built on the port answer would be
+        // the same false proxy §8 forbids for the port check itself.
+        return StopVerdict::StopFailed;
+    }
+    // death_confirmed && port_still_answers: attempt attribution before giving up.
+    if listeners.iter().any(|l| Some(l.pid) == killed_pid) {
+        return StopVerdict::StopFailed;
+    }
+    match listeners.first() {
+        Some(owner) => StopVerdict::Stopped { foreign_owner: Some(owner.clone()) },
+        None => StopVerdict::StopFailed,
+    }
 }
 
 // `TerminateJobObject` is not exposed by `win32job` 2.x (it has create / assign / query only), and
@@ -2432,6 +2498,26 @@ My Dev Server.exe                1 Console                    1     45,678 K
         assert!(!entry.child_registered);
     }
 
+    #[test]
+    fn the_kill_pid_does_not_survive_a_confirmed_death() {
+        // Plan 014 / SPEC.md §16: once death is confirmed the pgid must not survive to a retry, or
+        // a later Stop could re-signal a number the kernel has since handed to an unrelated process.
+        let (mut entry, _claim) = started_run();
+        let (_exit_tx, exit_rx) = watch::channel(false);
+        entry.register_child(Some(4321), exit_rx, "/usr/bin".to_string());
+        entry.status = Status::Stopping;
+
+        entry.retire_confirmed_kill_pid();
+
+        let target = entry.take_kill_target();
+        assert_eq!(target.pid, None, "the confirmed-dead pgid must not be handed to a retry");
+        assert!(
+            target.had_child,
+            "but the fact a child once existed must survive, so a retry with nothing left to \
+             signal reports an honest 'death cannot be confirmed' rather than 'nothing was ever here'"
+        );
+    }
+
     /// Plan 007 (review round): guards the ready-timeout's ownership claim structurally, not just
     /// as documentation. `claim_timeout_kill` must do BOTH halves — set `user_stop` so the exit
     /// watcher holds its announcement, AND hand back a usable kill target — or the §9 step 7 toast
@@ -2497,6 +2583,61 @@ My Dev Server.exe                1 Console                    1     45,678 K
         );
         assert!(!stop_is_verified(false, false), "death not confirmed");
         assert!(!stop_is_verified(false, true));
+    }
+
+    fn listener(name: &str, pid: u32) -> PortListener {
+        PortListener { name: name.to_string(), pid, user: None }
+    }
+
+    #[test]
+    fn no_listener_after_confirmed_death_is_a_plain_verified_stop() {
+        assert_eq!(
+            settle_after_kill(true, false, Some(4321), &[]),
+            StopVerdict::Stopped { foreign_owner: None }
+        );
+    }
+
+    #[test]
+    fn death_unconfirmed_never_consults_the_owner() {
+        // Even a listener that would otherwise attribute cleanly must not rescue an unconfirmed
+        // death — the port answer (and anything built on it) is meaningless while processes may
+        // still be alive.
+        assert_eq!(
+            settle_after_kill(false, true, Some(4321), &[listener("python3", 999)]),
+            StopVerdict::StopFailed
+        );
+    }
+
+    #[test]
+    fn a_foreign_listener_after_confirmed_death_is_a_verified_stop_with_a_warning() {
+        let owner = listener("python3", 999);
+        assert_eq!(
+            settle_after_kill(true, true, Some(4321), std::slice::from_ref(&owner)),
+            StopVerdict::Stopped { foreign_owner: Some(owner) }
+        );
+    }
+
+    #[test]
+    fn an_unattributable_busy_port_stays_stop_failed() {
+        // The port answers but the lookup found nothing parseable — honesty over convenience.
+        assert_eq!(settle_after_kill(true, true, Some(4321), &[]), StopVerdict::StopFailed);
+    }
+
+    #[test]
+    fn a_same_tree_listener_after_confirmed_death_stays_stop_failed() {
+        // A listener carrying the exact pid we just killed gets no benefit of the doubt (§16: pids
+        // are reused) — treated as unverifiable, not as proof it is foreign.
+        let same = listener("node", 4321);
+        assert_eq!(
+            settle_after_kill(true, true, Some(4321), std::slice::from_ref(&same)),
+            StopVerdict::StopFailed
+        );
+    }
+
+    #[test]
+    fn two_listeners_where_one_is_ours_stays_stop_failed() {
+        let listeners = [listener("node", 4321), listener("python3", 999)];
+        assert_eq!(settle_after_kill(true, true, Some(4321), &listeners), StopVerdict::StopFailed);
     }
 
     /// SPEC.md §15 test 3 — **the orphan test**, in code, against the real kill path.

@@ -1443,6 +1443,12 @@ async fn finish_stop(
     cancelled_mid_phase: bool,
     target: KillTarget,
 ) -> Result<(), String> {
+    // Captured before `kill_tree` consumes `target`: on Unix this is the pgid just signalled. Used
+    // below only so a listener that still carries that identity is never waved through as foreign —
+    // SPEC.md §16 forbids trusting a bare pid match as identity, so this is a "not proven safe" veto,
+    // never "proven ours".
+    let killed_pid = target.pid;
+
     // ---- 2. kill -----------------------------------------------------------------------------
     let mut outcome = process::kill_tree(target).await;
     for note in std::mem::take(&mut outcome.notes) {
@@ -1460,64 +1466,95 @@ async fn finish_stop(
         true
     };
 
-    // ---- 5. status ---------------------------------------------------------------------------
-    if process::stop_is_verified(outcome.death_confirmed, port_still_answers) {
-        if cancelled_mid_phase {
-            // §6: "log line 'Run cancelled by user' if user-stopped mid-phase".
-            process::append_system(app, project_id, "Run cancelled by user").await;
+    // Attribution (plan 014) only runs in the one ambiguous case: death confirmed but the port still
+    // answers — see `settle_after_kill`'s deviation comment. No lock is held across this await
+    // (`dev_env` is a separate cache from the runtime mutex, never taken here).
+    let listeners = if outcome.death_confirmed && port_still_answers {
+        match port {
+            Some(port) => {
+                let env = app.state::<AppState>().dev_env.get().await.vars.clone();
+                process::port_listeners(port, &env).await
+            }
+            None => Vec::new(),
         }
-        process::append_system(
-            app,
-            project_id,
-            match port {
-                Some(port) => format!("stopped — the process tree is gone and port {port} is free"),
-                None => "stopped — the process tree is gone".to_string(),
-            },
-        )
-        .await;
+    } else {
+        Vec::new()
+    };
 
-        // Verified — and this is one of only two places the kill primitive may be retired.
-        if let Err(rejection) = apply_with(app, project_id, Trigger::StopConfirmed, None, |entry| {
-            entry.clear_kill_target()
-        })
-        .await
-        {
-            process::append_system(
+    // ---- 5. status ---------------------------------------------------------------------------
+    match process::settle_after_kill(outcome.death_confirmed, port_still_answers, killed_pid, &listeners)
+    {
+        process::StopVerdict::Stopped { foreign_owner } => {
+            if cancelled_mid_phase {
+                // §6: "log line 'Run cancelled by user' if user-stopped mid-phase".
+                process::append_system(app, project_id, "Run cancelled by user").await;
+            }
+            let message = match (port, foreign_owner) {
+                (Some(port), Some(owner)) => format!(
+                    "stopped — the process tree is gone, but port {port} is now held by {} \
+                     (PID {}) (not started by Hangar)",
+                    owner.name, owner.pid
+                ),
+                (Some(port), None) => {
+                    format!("stopped — the process tree is gone and port {port} is free")
+                }
+                (None, _) => "stopped — the process tree is gone".to_string(),
+            };
+            process::append_system(app, project_id, message).await;
+
+            // Verified — and this is one of only two places the kill primitive may be retired.
+            if let Err(rejection) =
+                apply_with(app, project_id, Trigger::StopConfirmed, None, |entry| {
+                    entry.clear_kill_target()
+                })
+                .await
+            {
+                process::append_system(
+                    app,
+                    project_id,
+                    format!(
+                        "the status had already moved to {} — leaving it alone",
+                        status_label(rejection.from)
+                    ),
+                )
+                .await;
+            }
+            Ok(())
+        }
+        process::StopVerdict::StopFailed => {
+            let reason = if !outcome.death_confirmed {
+                "some processes from this project are still alive".to_string()
+            } else {
+                match port {
+                    Some(port) => format!("port {port} is still accepting connections"),
+                    None => "the port is still in use".to_string(),
+                }
+            };
+            let message =
+                format!("Couldn't confirm {name} stopped: {reason}. Press Stop again to retry.");
+
+            process::append_system(app, project_id, message.clone()).await;
+            // §6: "`stop-failed` | Stop clicked | `stopping` — retry the kill". A retry can only
+            // kill what it still owns, so the primitive goes back into the map — EXCEPT the pid
+            // itself when death was confirmed (plan 014): see `retire_confirmed_kill_pid`.
+            let death_confirmed = outcome.death_confirmed;
+            let _ = apply_with(
                 app,
                 project_id,
-                format!(
-                    "the status had already moved to {} — leaving it alone",
-                    status_label(rejection.from)
-                ),
+                Trigger::KillVerificationFailed,
+                Some(reason),
+                |entry| {
+                    if death_confirmed {
+                        entry.retire_confirmed_kill_pid();
+                    }
+                    entry.restore_kill_target(&mut outcome)
+                },
             )
             .await;
+
+            Err(message)
         }
-        return Ok(());
     }
-
-    let reason = if !outcome.death_confirmed {
-        "some processes from this project are still alive".to_string()
-    } else {
-        match port {
-            Some(port) => format!("port {port} is still accepting connections"),
-            None => "the port is still in use".to_string(),
-        }
-    };
-    let message = format!("Couldn't confirm {name} stopped: {reason}. Press Stop again to retry.");
-
-    process::append_system(app, project_id, message.clone()).await;
-    // §6: "`stop-failed` | Stop clicked | `stopping` — retry the kill". A retry can only kill what
-    // it still owns, so the primitive goes back into the map instead of being dropped here.
-    let _ = apply_with(
-        app,
-        project_id,
-        Trigger::KillVerificationFailed,
-        Some(reason),
-        |entry| entry.restore_kill_target(&mut outcome),
-    )
-    .await;
-
-    Err(message)
 }
 
 /// Total budget for the quit-time kill of every project (SPEC.md §8, app-quit path). A wedged
