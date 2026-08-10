@@ -69,10 +69,25 @@ lockfile changed, how long since it last ran successfully, whether it crashed
 last time and why (**the crash reason line already exists**).
 
 **Cost**: M. **Needs**: git only — local, no auth.
-**Why it might not be worth it**: with 3 cards and one active repo, the brief
-may read "nothing changed" every morning for weeks. It gets better with more
-projects, which is a bet on future usage rather than present value. Build it
-after #1, and only if #1 proves the card has room for status without clutter.
+
+**Measured 2026-08-11, and it overturns this entry's own objection.** The
+original text here guessed the brief would read "nothing changed" every morning
+with only three cards. Then it was actually measured:
+
+| Project | State |
+|---|---|
+| `Ielts-Coach` | in sync, clean |
+| `Hangar` | in sync, 1 uncommitted (a deliberate local edit) |
+| **`auto-job-applier`** | **30 commits unpushed, sitting locally for 7 days** |
+
+Thirty commits existing on exactly one laptop is a real risk to real work, it
+had gone unnoticed for a week, and **nothing in the current UI would ever say
+so.** That is not a "nice status line" — it is the single most valuable thing
+this app could tell its owner on a Monday morning, and it was found by one
+`git ls-remote` per project with no network write and no auth.
+
+**Revised objection, which is smaller**: the brief must not become a second
+git client (§3). It reports and links out; it never pushes, pulls or commits.
 
 ## 3. Dependency health via OSV.dev
 
