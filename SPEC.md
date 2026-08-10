@@ -83,9 +83,9 @@ interface Project {
   lastRunAt?: string;    // ISO — set when entering `starting`
   notes?: string;        // free-text scratchpad, user-owned; never parsed or acted on
   stack?: {              // detected from package.json — app-owned, never hand-edited (added 2026-08-09)
-    framework?: string;      // "next" | "vite" | "react-scripts" | "astro" | ... | undefined
-    libraries: string[];     // notable deps incl. API clients: react, vue, express, tailwindcss, axios, trpc, prisma…
-    detectedAt: string;      // ISO — refreshed on Add, on Edit, and on the install phase; staleness is visible, not hidden
+    framework?: string;      // "next" | "vite" | "react-scripts" | "astro" | ... | undefined. From the REGISTERED folder's own package.json ONLY, never a workspace member's — the badge is a claim about the folder you registered, so a monorepo root that declares no framework shows no badge rather than a false one (amended 2026-08-10)
+    libraries: string[];     // notable deps incl. API clients: react, vue, express, openai, @anthropic-ai/sdk, tailwindcss, axios, trpc, prisma… Union of the registered folder's package.json and, when it declares npm `workspaces`, its declared member manifests — declared literal paths only, depth 1, capped, never a directory scan and never a glob (amended 2026-08-10)
+    detectedAt: string;      // ISO — refreshed on Add, on Edit-open, on every Run, and on the install phase; staleness is visible, not hidden (corrected 2026-08-10: plan 025 made this per-Run)
   };
   folderId?: string;     // opaque, generated; the folder IS the set of projects sharing it (added 2026-08-10)
   folderName?: string;   // the folder's display name, denormalised onto every member
