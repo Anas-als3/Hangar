@@ -13,6 +13,7 @@ import type {
   NewProject,
   PackageJsonInfo,
   PortStatus,
+  PreflightReport,
   Project,
   ProjectView,
   RegistryError,
@@ -143,6 +144,19 @@ export function freePort(projectId: string, pid: number): Promise<void> {
  */
 export function findFreePort(from: number, exclude: number[]): Promise<number | null> {
   return invoke<number | null>("find_free_port", { from, exclude });
+}
+
+/**
+ * SPEC.md §11 "Doctor" (added 2026-08-11, plan 057) — one preflight report per registered project,
+ * snapshot at call time. Called on panel open and on Refresh only: it never polls, and nothing on
+ * the startup path calls it.
+ *
+ * Never rejects for a project-level problem — a missing folder, an unreadable `.env` or an
+ * unhashable lockfile all come back as *findings*, because §7 turns every rejection into a toast
+ * and a toast per project on open would be intolerable.
+ */
+export function getPreflight(): Promise<PreflightReport[]> {
+  return invoke<PreflightReport[]>("get_preflight");
 }
 
 /**

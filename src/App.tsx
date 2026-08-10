@@ -10,6 +10,7 @@
  */
 import { useEffect, useRef } from "react";
 import AddEditDialog from "./components/AddEditDialog";
+import DoctorPanel from "./components/DoctorPanel";
 import InboxPanel from "./components/InboxPanel";
 import LogPanel from "./components/LogPanel";
 import MoveToFolderDialog from "./components/MoveToFolderDialog";
@@ -21,6 +22,7 @@ import { lastSessionCluster } from "./session";
 import {
   loadRegistry,
   openAddDialog,
+  openDoctor,
   openInbox,
   openLogs,
   openPorts,
@@ -238,6 +240,7 @@ function App() {
     dialog,
     portsOpen,
     inboxOpen,
+    doctorOpen,
   } = useHangarStore();
   const toastProject = projects.find((p) => p.id === toastProjectId);
   const toastProjectName = toastProject?.name;
@@ -246,9 +249,11 @@ function App() {
   // §11's aria-modal on each overlay is a promise the DOM doesn't keep by itself (plan 039) —
   // `inert` on the header+main wrapper below is the actual enforcement. Same fields as the
   // folder band's Esc guard in ProjectGrid.tsx (plan 041 adds `portsOpen` to both; SPEC.md §18 /
-  // plan 053 adds `inboxOpen` to both — a fifth over-the-grid surface must be in both, or one Esc
-  // fires two state changes).
-  const overlayOpen = Boolean(dialog || openLogsFor || notesFor || portsOpen || inboxOpen);
+  // plan 053 adds `inboxOpen` to both; SPEC.md §11 Doctor / plan 057 adds `doctorOpen` to both —
+  // a sixth over-the-grid surface must be in both, or one Esc fires two state changes).
+  const overlayOpen = Boolean(
+    dialog || openLogsFor || notesFor || portsOpen || inboxOpen || doctorOpen,
+  );
 
   useEffect(() => {
     void loadRegistry();
@@ -315,6 +320,18 @@ function App() {
               className="rounded-md border border-white/10 px-3 py-1.5 text-sm text-muted transition-colors hover:bg-white/5 hover:text-text"
             >
               Ports
+            </button>
+          )}
+          {/* SPEC.md §11 Doctor (plan 057): a quiet button beside Ports, hidden when there is
+              nothing registered to check. Opening it is the ONLY thing that runs preflight —
+              nothing here or in the mount effect above calls it before the grid renders. */}
+          {projects.length > 0 && (
+            <button
+              type="button"
+              onClick={() => void openDoctor()}
+              className="rounded-md border border-white/10 px-3 py-1.5 text-sm text-muted transition-colors hover:bg-white/5 hover:text-text"
+            >
+              Doctor
             </button>
           )}
           {/* SPEC.md §18 / plan 053: a quiet Inbox button — no unread count yet (that needs the
@@ -385,6 +402,7 @@ function App() {
       <NotesPanel />
       <PortsPanel />
       <InboxPanel />
+      <DoctorPanel />
       <AddEditDialog />
       <MoveToFolderDialog />
       <SettingsDialog />

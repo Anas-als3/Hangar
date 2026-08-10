@@ -19,6 +19,7 @@ use crate::env_resolve::{DevEnvCell, EnvMap};
 // SPEC.md §18 / plan 053: `GithubState` is intentionally NOT part of `AppState` below — see its
 // own doc comment in `github/mod.rs`.
 use crate::github::{self, error::GithubError, GithubState};
+use crate::preflight;
 use crate::process::{self, LogLine, RuntimeMap};
 use crate::registry::{self, Project, ProjectView, RegistryError, Settings, Status};
 
@@ -577,6 +578,48 @@ pub async fn get_port_status(state: State<'_, AppState>) -> Result<Vec<PortStatu
             )
         })
         .collect())
+}
+
+/// SPEC.md §11 "Doctor" (added 2026-08-11, plan 057) — one preflight report per registered
+/// project, in `projects.json` array order, snapshot at call time. An addition to the frozen §7
+/// list, never a rename or a reshape of anything in it.
+///
+/// **Never runs before the grid does**: nothing in the startup path calls it, and the panel that
+/// does calls it on open and on Refresh only — §11's "snapshot, not a monitor".
+///
+/// `Ok` even when a project's folder is gone or its `.env` is unreadable — those are *findings*
+/// (§11), because §7 turns every `Err` into a toast and a toast per project on open would be
+/// intolerable. `Err` is reserved for the command itself failing.
+#[tauri::command]
+pub async fn get_preflight(
+    state: State<'_, AppState>,
+) -> Result<Vec<preflight::PreflightReport>, String> {
+    // Lock discipline (§4 / plan 010, same shape as `get_port_status`): snapshot under the lock,
+    // THEN drop it, THEN touch the filesystem.
+    let snapshot: Vec<Project> = {
+        let projects = state.projects.lock().await;
+        projects.clone()
+    };
+
+    let env = state.dev_env.get().await.vars.clone();
+    let checked_at = crate::run::iso8601_utc(SystemTime::now());
+    // ONE `node --version` for the whole call, not one per project (plan 041's batching rule):
+    // every project child gets the same §8-resolved PATH, so the answer cannot differ per project.
+    let node_version = preflight::running_node_version(&env).await;
+
+    // The per-project reads (`.env`, `.nvmrc`, the lockfile hash) are blocking I/O, and a project
+    // may sit on a stalled network mount — same reasoning as plan 010's `Path::exists` note on
+    // `get_projects`, but with more files, so the whole walk goes to the blocking pool.
+    tauri::async_runtime::spawn_blocking(move || {
+        snapshot
+            .iter()
+            .map(|project| {
+                preflight::build_report(project, node_version.as_deref(), &checked_at)
+            })
+            .collect()
+    })
+    .await
+    .map_err(|e| format!("preflight task failed: {e}"))
 }
 
 /// SPEC.md §7 `find_free_port` (added 2026-08-10, plan 043) — §10 step 4's "Choose for me". Walks

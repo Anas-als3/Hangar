@@ -1231,6 +1231,23 @@ mod tests {
             had_stored_token: Some(true),
         };
 
+        // SPEC.md §11 "Doctor" / plan 057: `findings` is deliberately NON-EMPTY — `assert_keys_in`
+        // walks arrays, so an empty vector would let this guard pass while never checking
+        // `PreflightFinding`'s keys at all (the same vacuous-sample trap the `Some(...)` fields
+        // above exist to avoid). `PreflightFinding` has no `Option` field to populate, because it
+        // has no field capable of holding a `.env` value — see that module's THE INVARIANT.
+        let preflight_report = crate::preflight::PreflightReport {
+            project_id: "abc123".into(),
+            findings: vec![crate::preflight::PreflightFinding {
+                id: "env-key-missing:.env.example:ANTHROPIC_API_KEY".into(),
+                severity: crate::preflight::Severity::Warning,
+                message: "ANTHROPIC_API_KEY is declared in .env.example but is not set in .env."
+                    .into(),
+                file: ".env".into(),
+            }],
+            checked_at: "2026-08-11T09:00:00Z".into(),
+        };
+
         let samples: Vec<serde_json::Value> = vec![
             serde_json::to_value(&project_view).unwrap(),
             serde_json::to_value(&status_changed).unwrap(),
@@ -1240,6 +1257,7 @@ mod tests {
             serde_json::to_value(&package_json_info).unwrap(),
             serde_json::to_value(&port_status).unwrap(),
             serde_json::to_value(&github_status).unwrap(),
+            serde_json::to_value(&preflight_report).unwrap(),
         ];
         for sample in &samples {
             assert_keys_in(sample, types_ts);
@@ -1282,6 +1300,21 @@ mod tests {
                 types_ts.contains(wire_str),
                 "GithubConnectionState::{state:?} serializes to {wire_str:?}, which does not \
                  appear anywhere in src/types.ts"
+            );
+        }
+
+        // SPEC.md §11 "Doctor" / plan 057: same reasoning again, for `Severity`'s union.
+        for severity in [
+            crate::preflight::Severity::Blocker,
+            crate::preflight::Severity::Warning,
+            crate::preflight::Severity::Note,
+        ] {
+            let wire = serde_json::to_value(severity).unwrap();
+            let wire_str = wire.as_str().expect("Severity serializes to a string");
+            assert!(
+                types_ts.contains(wire_str),
+                "Severity::{severity:?} serializes to {wire_str:?}, which does not appear \
+                 anywhere in src/types.ts"
             );
         }
     }

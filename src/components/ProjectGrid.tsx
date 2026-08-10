@@ -75,7 +75,7 @@ function OpenBand({
   folderId: string;
   members: ProjectView[];
 }) {
-  const { openLogsFor, notesFor, dialog, portsOpen, inboxOpen } = useHangarStore();
+  const { openLogsFor, notesFor, dialog, portsOpen, inboxOpen, doctorOpen } = useHangarStore();
   return (
     <section
       id={`folder-band-${folderId}`}
@@ -90,9 +90,18 @@ function OpenBand({
         // listener that this band can't see or stop. A member card can be inside the band while
         // one of those is open, so the band must yield instead of also firing closeFolder — one
         // keypress must never trigger two unrelated state changes. Plan 041 adds the Ports panel
-        // (PortsPanel.tsx); SPEC.md §18 / plan 053 adds the Inbox panel (InboxPanel.tsx) as the
-        // same kind of Esc owner.
-        if (e.key === "Escape" && !openLogsFor && !notesFor && !dialog && !portsOpen && !inboxOpen) {
+        // (PortsPanel.tsx); SPEC.md §18 / plan 053 adds the Inbox panel (InboxPanel.tsx); SPEC.md
+        // §11 Doctor / plan 057 adds the Doctor panel (DoctorPanel.tsx) as the same kind of Esc
+        // owner.
+        if (
+          e.key === "Escape" &&
+          !openLogsFor &&
+          !notesFor &&
+          !dialog &&
+          !portsOpen &&
+          !inboxOpen &&
+          !doctorOpen
+        ) {
           closeFolder(folderId);
         }
       }}
