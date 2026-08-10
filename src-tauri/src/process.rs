@@ -1213,6 +1213,18 @@ pub fn stop_is_verified(death_confirmed: bool, port_still_answers: bool) -> bool
     death_confirmed && !port_still_answers
 }
 
+/// What [`settle_after_kill`] concludes. Plan 014: a `stop_is_verified` `false` used to mean
+/// `stop-failed` unconditionally; this splits that case so a confirmed-empty group whose port is
+/// held by someone else can still report `stopped`, naming the holder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StopVerdict {
+    /// §8 satisfied — either the port is free, or death is confirmed and every live listener has
+    /// been provably attributed to a process outside the killed tree.
+    Stopped { foreign_owner: Option<PortListener> },
+    /// Death unconfirmed, or the port is held by something that cannot be ruled out as ours.
+    StopFailed,
+}
+
 // `TerminateJobObject` is not exposed by `win32job` 2.x (it has create / assign / query only), and
 // SPEC.md §8 names it as *the* Windows kill. Declared here rather than adding a whole `windows`
 // crate dependency for one call — `kernel32` is already linked by std.
