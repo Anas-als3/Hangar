@@ -133,7 +133,12 @@ pub struct ProjectRuntime {
     /// row "`stop-failed` | Stop clicked | `stopping` — retry the kill") with nothing to signal is
     /// not a retry at all — it falls through to the port probe, which the surviving children
     /// (esbuild service, file watchers) never answer, and announces a stop that never happened.
-    /// Cleared in exactly two places: a *verified* stop, and the start of the next Run.
+    /// Cleared in exactly three places: a *verified* stop, the start of the next Run, and — plan
+    /// 014 — the moment death is CONFIRMED even if the overall verdict is still `stop-failed`
+    /// (`retire_confirmed_kill_pid`). `had_child`/`child_registered` are preserved by that third
+    /// site, so a subsequent retry with nothing left to signal reports "death cannot be confirmed"
+    /// (`nothing_to_signal`) rather than re-signalling a pgid number SPEC.md §16 warns may since
+    /// have been recycled by an unrelated process.
     pub kill_pid: Option<u32>,
     /// True from the moment a child is registered for the current run until that run's tree is
     /// confirmed dead (or the next Run claims the project). It is what tells "Stop pressed with no
@@ -327,6 +332,15 @@ impl ProjectRuntime {
             }
         }
         let _ = outcome;
+    }
+
+    /// Plan 014: called whenever §8 has just confirmed the group/job is empty, regardless of what
+    /// the port later decides — see [`Self::kill_pid`]. Deliberately narrower than
+    /// [`Self::clear_kill_target`]: `child_registered` (`had_child`) is preserved, so a `stop-failed`
+    /// retry that finds `kill_pid: None` still reports an honest "death cannot be confirmed" via
+    /// `nothing_to_signal`, never a laundered "nothing was ever here".
+    pub fn retire_confirmed_kill_pid(&mut self) {
+        self.kill_pid = None;
     }
 }
 
