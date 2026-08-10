@@ -10,11 +10,16 @@ import { closeDialog, saveSettingsAction, useHangarStore } from "../store";
 
 export function SettingsDialog() {
   const { dialog } = useHangarStore();
+  const isOpen = dialog?.kind === "settings";
   const [editorCommand, setEditorCommand] = useState("code");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
+  // Plan 039 step 5: re-fetch on every open, not just once per app lifetime — otherwise typing a
+  // wrong command, pressing Cancel, then reopening shows the abandoned in-memory value instead of
+  // what's actually on disk. Same `cancelled` flag pattern as before.
   useEffect(() => {
+    if (!isOpen) return;
     let cancelled = false;
     void getSettings().then((s) => {
       if (!cancelled) {
@@ -25,7 +30,7 @@ export function SettingsDialog() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [isOpen]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -37,7 +42,7 @@ export function SettingsDialog() {
 
   // Guard sits after both hooks above — React forbids conditional hooks — same placement
   // as AddEditDialog's early-return-when-closed guard.
-  if (dialog?.kind !== "settings") return null;
+  if (!isOpen) return null;
 
   async function handleSave() {
     // Enter-to-save (plan 039) reaches this the same way the click path always did, but the
