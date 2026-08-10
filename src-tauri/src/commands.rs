@@ -11,9 +11,51 @@ use std::sync::atomic::AtomicBool;
 use tauri::{AppHandle, State};
 use tokio::sync::Mutex;
 
+use serde::Serialize;
+
 use crate::env_resolve::DevEnvCell;
 use crate::process::{LogLine, RuntimeMap};
 use crate::registry::{self, Project, ProjectView, RegistryError, Settings, Status};
+
+/// SPEC.md §7 `get_port_status` (added 2026-08-10, plan 041 — the Ports panel). One entry per
+/// registered project, snapshot at call time. `busy`/`listenerCount`/`holder` are never widened
+/// into an error: a lookup that fails or times out yields `busy: true, listenerCount: 0,
+/// holder: None` (the "owner unknown" row), because a diagnostic panel that can error on a
+/// perfectly normal "couldn't identify the process" case would be worse than the toast it replaces.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortStatus {
+    pub project_id: String,
+    pub port: u16,
+    pub busy: bool,
+    /// > 1 → §11 names nobody and offers nothing; the panel says so instead of guessing.
+    pub listener_count: usize,
+    /// Only `Some` when `listener_count == 1` and the lsof row parsed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub holder: Option<PortHolder>,
+    /// ISO — one timestamp shared by every row in a single `get_port_status` call.
+    pub checked_at: String,
+}
+
+/// SPEC.md §7 `PortHolder`. `command`/`started_at`/`parent_exited` come from one batched Unix `ps`
+/// read (see `commands::get_port_status`); all three stay `None` on Windows, where no equivalent
+/// read is implemented yet.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortHolder {
+    pub name: String,
+    pub pid: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_exited: Option<bool>,
+    /// `false` → `free_port` (plan 042) must never be offered; `None` when the current user's own
+    /// identity could not be determined, which must be just as inert as `false`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub same_user: Option<bool>,
+}
 
 /// Managed state (SPEC.md §4). The mutexes are `tokio::sync::Mutex` — never the blocking std one:
 /// kill/wait sequences `.await` while this state is consulted, and a blocking guard may never be
