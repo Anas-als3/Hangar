@@ -200,21 +200,25 @@ export function ProjectCard({ project }: { project: ProjectView }) {
       data-hangar-tile={project.id}
       data-hangar-tile-kind="project"
       onPointerDown={(e) => startCardDrag(e.nativeEvent, project.id)}
-      className={`hangar-fade-in relative flex select-none flex-col gap-2 rounded-lg border border-white/5 bg-surface p-3 transition-transform duration-150 [-webkit-user-drag:none] hover:-translate-y-0.5 ${
+      // Plan 046 step 6: p-3 -> p-4, gap-2 -> gap-2.5. PhaseStrip.tsx's negative margins/padding
+      // are the same number in a second file — changed together below, see its own comment.
+      className={`hangar-fade-in relative flex select-none flex-col gap-2.5 rounded-lg border border-white/5 bg-surface p-4 transition-transform duration-150 [-webkit-user-drag:none] hover:-translate-y-0.5 ${
         isArmedTarget ? "ring-2 ring-accent" : ""
       } ${isDragSource ? "opacity-40" : ""} ${
-        // Plan 037 step 3.4: `hover:-translate-y-0.5` above makes this card its own stacking
-        // context, so a `z-10` child stays sealed inside it unless the card itself is lifted
-        // above later-DOM-order siblings while the panel is open.
-        stackOpen ? "z-20" : ""
+        // Plan 037 step 3.4 / plan 046 step 1: `hover:-translate-y-0.5` above makes this card its
+        // own stacking context, so a `z-10` child stays sealed inside it unless the card itself is
+        // lifted above later-DOM-order siblings while an overlay is open — the `⋯` menu (seven
+        // items, ~234px, taller than a stopped card) included, not just the stack reveal panel.
+        stackOpen || menuOpen ? "z-20" : ""
       }`}
     >
       <header className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          {/* §11 visual pass (plan 018): name is the primary hierarchy element — weight only,
-              still Space Grotesk / same size, no new element. */}
+          {/* §11 visual pass (plan 018): name is the primary hierarchy element — weight only.
+              Plan 046 step 6: text-lg -> text-xl is free height — Tailwind gives both the same
+              28px line box, so this costs nothing in the card's fixed silhouette. */}
           <h2
-            className="truncate font-display text-lg font-bold tracking-tight text-text"
+            className="truncate font-display text-xl font-bold tracking-tight text-text"
             title={project.name}
           >
             {project.name}

@@ -10,7 +10,11 @@
 @import "@fontsource/jetbrains-mono/400.css";
 @import "@fontsource/jetbrains-mono/500.css";
 
-/* §11 design tokens. Components reference these tokens only — never raw hex. */
+/* §11 design tokens. Components reference these tokens only — never raw hex.
+   Plan 046: `../src-tauri/tauri.conf.json`'s `app.windows[0].backgroundColor` is a plain JSON
+   file (no comments), so this note lives here instead — its "#0C0D11" is this --color-bg,
+   painted before this stylesheet parses so the WKWebView default (white) never flashes.
+   Change one, change both. */
 @theme {
   --color-bg: #0c0d11;
   --color-surface: #16181e;
