@@ -45,8 +45,9 @@ conditions, and update your row below when done.
 | 032 | Make the run-inert exemption actually reachable (guard staleness) | — | P1 | S | 028 | DONE (merged `548b748`, 2026-08-10) |
 | 033 | Four folder-UI defects found by review | — | P2 | S | 029, 030 | DONE (merged, 2026-08-10) |
 | 034 | Toast → Show logs + project name; three validation bugs | — | P2 | S | — | DONE (merged, 2026-08-10) |
-| 035 | Stack: workspaces, wider library allow-list, and a hover that shows the stack | — | P2 | M | SPEC.md §5 amendment (ratified 2026-08-10) | DONE — executed in worktree `.claude/worktrees/agent-a2fe13609c4014738` (branch `worktree-agent-a2fe13609c4014738`), commits `00bfb0f`..`6af7788`; all gates green (124 Rust tests, was 117; `tsc --noEmit` 0). Not yet merged — maintainer's call. |
-| 036 | Install script: stop losing builds to a manual copy, and widen the external-API group | — | P1 (step 1) | S | 035 | DONE — executed in worktree `.claude/worktrees/agent-a69a6d4cb64bc7f80` (branch `worktree-agent-a69a6d4cb64bc7f80`), commits `c015303`..`c52f221`; executor gates green (127 Rust tests, was 124; `tsc --noEmit` 0; `cargo check --all-targets` 0). `npm run build`/the bundle are the reviewer's gate per the plan, not run by the executor. Not yet merged — maintainer's call. |
+| 035 | Stack: workspaces, wider library allow-list, and a hover that shows the stack | — | P2 | M | SPEC.md §5 amendment (ratified 2026-08-10) | DONE (merged `55d318a`, 2026-08-10) — 124 Rust tests, was 117; all gates re-run on main |
+| 036 | Install script: stop losing builds to a manual copy, and widen the external-API group | — | P1 (step 1) | S | 035 | DONE (merged `5c1c254`, 2026-08-10) — 127 Rust tests, was 124; all gates re-run on main |
+| 037 | `+N` becomes a button revealing the full stack | — | P2 | S | SPEC §11 amendment | DONE (merged `bb65ea1`, 2026-08-10) |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
 
