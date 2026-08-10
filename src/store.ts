@@ -452,10 +452,17 @@ function applyStatusChanged(payload: StatusChangedPayload): void {
       ? [...basePhases, payload.status]
       : basePhases;
 
+  // Plan 052: the first REAL status for this project clears its pending-click flag, whichever
+  // status it is — this is the "first real status-changed" half of the two clear conditions
+  // (the other is the invoke settling, in `startProject`'s `finally`).
+  const pendingRun = { ...state.pendingRun };
+  delete pendingRun[payload.projectId];
+
   setState({
     projects,
     logs: runIsStarting ? { ...state.logs, [payload.projectId]: [] } : state.logs,
     phasesSeen: { ...state.phasesSeen, [payload.projectId]: nextPhases },
+    pendingRun,
   });
 
   // §7: "message carries e.g. the crash reason". A Run is fire-and-forget, so everything that goes
