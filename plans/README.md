@@ -63,7 +63,7 @@ conditions, and update your row below when done.
 | 050 | Crash reason on the card | — | P2 | S | — | SUPERSEDED by 052 (folded in as Part B) |
 | 051 | Resume last session + workspace strip | — | P2 | M | SPEC §11 amendments | DONE (merged `97fe575`, 2026-08-10) — 8 `node --test` cases |
 | 052 | Card feedback: pending-Run state + crash reason | — | P2 | S | SPEC §11 amendment | DONE (merged `d4e35eb`, 2026-08-10) |
-| 053 | GitHub credential — slice 1 of §18 (token, keychain, panel shell) | — | P2 | M | SPEC §18, §11 inbox amendments | IN PROGRESS |
+| 053 | GitHub credential — slice 1 of §18 (token, keychain, panel shell) | — | P2 | M | SPEC §18, §11 inbox amendments | DONE (merged `f9b3fba`, 2026-08-11) — 162 tests, was 147; **keychain experiment still owed by a human** |
 | 054 | GitHub notification list — slice 2 | — | P2 | L | 053 | TODO |
 | 055 | GitHub read + reply — slice 3 | — | P2 | M | 054 | TODO |
 
