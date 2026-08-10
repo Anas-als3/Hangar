@@ -789,7 +789,7 @@ export async function renameFolder(folderId: string, name: string): Promise<void
     // Plan 033 defect 3: reload on BOTH paths. A mid-sequence rejection must never leave the
     // grid showing the pre-rename name while disk holds a partial write — no retry/rollback
     // needed (§5's next-rename-repairs-it recovery already covers that), just an accurate view.
-    await loadRegistry();
+    await refreshRegistryQuietly();
   }
 }
 
