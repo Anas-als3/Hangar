@@ -38,7 +38,7 @@ conditions, and update your row below when done.
 | 025 | Stack backfill: refresh on every Run and on Edit-open, not only after an install | — | P2 | S | 023 | DONE (merged) |
 | 026 | Show detected libraries on the card, capped with a +N overflow | — | P3 | S | 023 | DONE (merged `29d9743`, 2026-08-10) |
 | 027 | Move the phase strip's `seen` set into the store | — | P2 | S | — | DONE (merged `014dc57`, 2026-08-10) |
-| 028 | Folders, backend half — the two fields and the run-inert guard | — | P2 | M | SPEC `c53d767` | TODO |
+| 028 | Folders, backend half — the two fields and the run-inert guard | — | P2 | M | SPEC `c53d767` | DONE (merged `0b21ee9`, 2026-08-10) |
 | 029 | Folders, frontend half — tile, band, Move to folder… | — | P2 | L | 028 | TODO |
 | 030 | Folders, the drag-to-merge gesture | — | P3 | M | 029 | TODO |
 
