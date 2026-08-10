@@ -390,8 +390,11 @@ function isPhaseStatus(status: Status): boolean {
  * changes for a project (e.g. step 3's wider allow-list). Without this, the first Run after such a
  * change would make the store disagree with disk, and the maintainer's next note-save or
  * Move-to-folder on that running project would be refused with "... is running. Stop it first."
+ *
+ * Plan 038: exported and promoted to the default post-mutation refresh for every store action —
+ * `loadRegistry` is now the startup-only path (its one caller is `App.tsx`'s mount effect).
  */
-async function refreshRegistryQuietly(): Promise<void> {
+export async function refreshRegistryQuietly(): Promise<void> {
   try {
     const projects = await getProjects();
     setState({ projects });
@@ -491,8 +494,9 @@ export async function startProject(projectId: string): Promise<void> {
     // whether the "Show logs" button renders, so both must know the project.
     setToast(errorMessage(err), "error", projectId);
     // SPEC.md §5: pathExists must refresh "when Run is clicked" — a rejection is often exactly
-    // that check failing, so the card should pick up the warning state that caused it.
-    await loadRegistry();
+    // that check failing, so the card should pick up the warning state that caused it. Plan 038:
+    // the quiet refresh still recomputes pathExists via getProjects, without blanking the grid.
+    await refreshRegistryQuietly();
   }
 }
 
@@ -603,7 +607,7 @@ export async function saveNotesAction(projectId: string, notes: string): Promise
   if (!project) return;
   try {
     await updateProject({ ...project, notes: notes === "" ? undefined : notes });
-    await loadRegistry();
+    await refreshRegistryQuietly();
   } catch (err) {
     setToast(errorMessage(err));
   }
@@ -648,7 +652,7 @@ export function closeDialog(): void {
 export async function addProjectAction(input: NewProject): Promise<boolean> {
   try {
     await addProject(input);
-    await loadRegistry();
+    await refreshRegistryQuietly();
     setState({ dialog: null });
     return true;
   } catch (err) {
@@ -664,7 +668,7 @@ export async function addProjectAction(input: NewProject): Promise<boolean> {
 export async function updateProjectAction(project: Project): Promise<boolean> {
   try {
     await updateProject(project);
-    await loadRegistry();
+    await refreshRegistryQuietly();
     setState({ dialog: null });
     return true;
   } catch (err) {
@@ -677,7 +681,7 @@ export async function updateProjectAction(project: Project): Promise<boolean> {
 export async function removeProjectAction(projectId: string): Promise<void> {
   try {
     await removeProject(projectId);
-    await loadRegistry();
+    await refreshRegistryQuietly();
   } catch (err) {
     setToast(errorMessage(err));
   }
@@ -759,7 +763,7 @@ export async function moveToFolder(projectId: string, target: FolderTarget): Pro
         : { folderId: target.folderId, folderName: target.folderName };
   try {
     await updateProject({ ...project, ...patch });
-    await loadRegistry();
+    await refreshRegistryQuietly();
     return true;
   } catch (err) {
     setToast(errorMessage(err));
@@ -785,7 +789,7 @@ export async function renameFolder(folderId: string, name: string): Promise<void
     // Plan 033 defect 3: reload on BOTH paths. A mid-sequence rejection must never leave the
     // grid showing the pre-rename name while disk holds a partial write — no retry/rollback
     // needed (§5's next-rename-repairs-it recovery already covers that), just an accurate view.
-    await loadRegistry();
+    await refreshRegistryQuietly();
   }
 }
 
@@ -802,6 +806,6 @@ export async function ungroupFolder(folderId: string): Promise<void> {
   } finally {
     // Plan 033 defect 3: reload on BOTH paths — see renameFolder's comment above. A partial
     // ungroup must not leave the tile showing the old member count while disk already lost some.
-    await loadRegistry();
+    await refreshRegistryQuietly();
   }
 }
