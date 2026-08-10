@@ -209,6 +209,22 @@ on CI to find it.
 Nothing on this machine can *execute* the Windows paths. Their runtime correctness is
 explicitly deferred to a human test on a Windows machine (SPEC.md §15 test 3).
 
+## Build-and-install facts (verified 2026-08-10)
+
+- `npm run install:app` = `tauri build && rm -rf /Applications/Hangar.app && cp -R <bundle> /Applications/`.
+  Plan 036 claimed the `&&` chain makes a failed build unable to delete the installed app.
+  **That claim is narrower than stated.** On 2026-08-10 a run whose `.dmg` step failed
+  (`error running bundle_dmg.sh`) still proceeded to `rm -rf` and `cp` — so `tauri build`
+  returns 0 when the `.app` bundles and only the `.dmg` fails. The guard therefore protects
+  against a failed **compile**, not against every failed **bundle**. The install itself was
+  correct (installed binary hash-identical to the freshly built one), so this has never caused
+  harm — but the guarantee is weaker than the plan asserts and should not be re-quoted as-is.
+- **`bundle_dmg.sh` fails whenever a previous run left a Hangar disk image mounted.** Symptom:
+  `/Volumes/dmg.XXXXXX` entries each containing `Hangar.app`, plus `rw.NNNNN.Hangar_*.dmg`
+  temp files under `src-tauri/target/release/bundle/macos/`. Fix: `hdiutil detach` each volume
+  (`-force` if it reports busy) and delete the `rw.*.dmg` leftovers. Seen twice: 2026-08-09 and
+  2026-08-10. Only affects the `.dmg`; the `.app` and the install are unaffected.
+
 ## Environment facts (verified 2026-08-05, do not re-derive)
 
 - macOS 26.5.1, arm64. Node v24.18.0, npm 11.16.0. Rust 1.97.1 / cargo 1.97.1 (installed for this project).
