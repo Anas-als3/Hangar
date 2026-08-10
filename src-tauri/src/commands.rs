@@ -79,6 +79,13 @@ pub struct AppState {
     /// A confirm dialog is already open (or the kill is already running). Without it, holding Cmd+Q
     /// or clicking the close button twice stacks dialogs and starts two stop-everything passes.
     pub quit_in_flight: AtomicBool,
+    /// Plan 010 (SPEC.md §4): serializes `registry.rs` writers. Held across the ENTIRE
+    /// mutate-under-`projects`-then-snapshot-then-save sequence in each writer, not just the
+    /// save — see `run.rs::run_project`/`store_lockfile_hash` and `set_settings` below. That
+    /// wider scope is what stops a second writer's clone (taken after ours, so it already
+    /// contains our mutation) from losing a race to the blocking pool and writing before ours,
+    /// only for our own now-stale clone to overwrite it moments later.
+    pub save_lock: Mutex<()>,
 }
 
 impl AppState {
@@ -97,6 +104,7 @@ impl AppState {
             dev_env: DevEnvCell::default(),
             cleanup_done: AtomicBool::new(false),
             quit_in_flight: AtomicBool::new(false),
+            save_lock: Mutex::new(()),
         }
     }
 }
@@ -116,10 +124,32 @@ fn to_view(project: &Project, runtime: &RuntimeMap) -> ProjectView {
 
 #[tauri::command]
 pub async fn get_projects(state: State<'_, AppState>) -> Result<Vec<ProjectView>, String> {
-    let projects = state.projects.lock().await;
-    let runtime = state.runtime.lock().await;
+    // §4 / plan 010: snapshot (project, status) under both locks, THEN drop them, THEN stat each
+    // path — `Path::exists` is a syscall that can stall for seconds on an unreachable network
+    // mount or a stalled cloud-sync folder (SPEC §16), and this command now runs after nearly
+    // every mutation (plan 038's `refreshRegistryQuietly`), not just at startup. Mirrors
+    // `get_port_status`'s snapshot-then-probe shape; deliberately does NOT reuse `to_view`, which
+    // is still called with a live `runtime` guard by `add_project`/`update_project` (unchanged,
+    // out of this plan's scope).
+    let snapshot: Vec<(Project, Status)> = {
+        let projects = state.projects.lock().await;
+        let runtime = state.runtime.lock().await;
+        projects
+            .iter()
+            .map(|p| {
+                let status = runtime.get(&p.id).map(|r| r.status).unwrap_or(Status::Stopped);
+                (p.clone(), status)
+            })
+            .collect()
+    };
     // Array order is the display order — no sorting, ever (SPEC.md §11).
-    Ok(projects.iter().map(|p| to_view(p, &runtime)).collect())
+    Ok(snapshot
+        .into_iter()
+        .map(|(project, status)| {
+            let path_exists = Path::new(&project.path).exists();
+            ProjectView { project, status, path_exists }
+        })
+        .collect())
 }
 
 /// SPEC.md §7 `add_project` / §10 steps 1-6. The one place a fresh registry entry is created —
@@ -438,10 +468,25 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<Settings, String
 
 #[tauri::command]
 pub async fn set_settings(s: Settings, state: State<'_, AppState>) -> Result<(), String> {
-    let mut settings = state.settings.lock().await;
-    registry::save_settings(&state.config_dir, &s)?;
-    *settings = s;
-    Ok(())
+    // §4 / plan 010: save under `save_lock`, never the `settings` data lock — `save_settings`'s
+    // fsync must not run while `settings` is held. The data lock is taken only to commit on
+    // success, so a failed save still leaves the in-memory settings unchanged (same behaviour as
+    // before this reshape).
+    let to_save = s.clone();
+    let config_dir = state.config_dir.clone();
+    let save_result = {
+        let _save_guard = state.save_lock.lock().await;
+        tauri::async_runtime::spawn_blocking(move || registry::save_settings(&config_dir, &to_save))
+            .await
+    };
+    match save_result {
+        Ok(Ok(())) => {
+            *state.settings.lock().await = s;
+            Ok(())
+        }
+        Ok(Err(e)) => Err(e),
+        Err(join_err) => Err(format!("save task failed: {join_err}")),
+    }
 }
 
 /// DEVIATION from SPEC.md §7: the frozen list has no vehicle for the corrupt-registry banner that
