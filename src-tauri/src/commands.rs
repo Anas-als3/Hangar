@@ -79,6 +79,13 @@ pub struct AppState {
     /// A confirm dialog is already open (or the kill is already running). Without it, holding Cmd+Q
     /// or clicking the close button twice stacks dialogs and starts two stop-everything passes.
     pub quit_in_flight: AtomicBool,
+    /// Plan 010 (SPEC.md §4): serializes `registry.rs` writers. Held across the ENTIRE
+    /// mutate-under-`projects`-then-snapshot-then-save sequence in each writer, not just the
+    /// save — see `run.rs::run_project`/`store_lockfile_hash` and `set_settings` below. That
+    /// wider scope is what stops a second writer's clone (taken after ours, so it already
+    /// contains our mutation) from losing a race to the blocking pool and writing before ours,
+    /// only for our own now-stale clone to overwrite it moments later.
+    pub save_lock: Mutex<()>,
 }
 
 impl AppState {
@@ -97,6 +104,7 @@ impl AppState {
             dev_env: DevEnvCell::default(),
             cleanup_done: AtomicBool::new(false),
             quit_in_flight: AtomicBool::new(false),
+            save_lock: Mutex::new(()),
         }
     }
 }
