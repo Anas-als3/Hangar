@@ -73,6 +73,11 @@ export function AddEditDialog() {
     setReadyTimeoutSec(editing?.readyTimeoutSec ?? 60);
     setStack(editing?.stack);
     setSaving(false);
+    // Fix 2 (plan 034): scripts/selectedScript/packageManager are `handleBrowse` output, not
+    // project fields — left unreset, they held the *previous* dialog target's values.
+    setScripts({});
+    setSelectedScript(null);
+    setPackageManager("npm");
     // Plan 025: opening Edit on a project that predates plan 023 (or whose package.json has
     // changed since) should pick up its stack without forcing a re-browse. `setStack` above
     // seeds from `editing?.stack` so the dialog renders immediately; this overwrites once the
@@ -117,12 +122,15 @@ export function AddEditDialog() {
       const defaultScript = pickDefaultScript(info.scripts);
       setSelectedScript(defaultScript);
       if (defaultScript) setCommand(commandFor(info.packageManager, defaultScript));
-      if (info.portSuggestion !== undefined) setPort(String(info.portSuggestion));
+      // §10 step 4: "a suggestion, never silent magic" — a folder with no detectable port must
+      // not keep showing the *previous* folder's port as if it were a suggestion for this one.
+      setPort(info.portSuggestion !== undefined ? String(info.portSuggestion) : "");
       setStack(info.stack);
     } catch {
       // §10 step 6: no/unparseable package.json falls back to manual command + port entry.
       setScripts({});
       setSelectedScript(null);
+      setPackageManager("npm");
       setStack(undefined);
     }
   }
