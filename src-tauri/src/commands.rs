@@ -733,4 +733,27 @@ mod tests {
             .expect_err("a port change must still be guarded even paired with a stale lastRunAt");
         assert!(err.contains("stop it first"), "got {err:?}");
     }
+
+    #[test]
+    fn the_replace_branch_preserves_app_owned_fields_from_stored() {
+        // A guarded (non-run-inert) edit — e.g. renaming the project — still carries the
+        // caller's stale copy of both app-owned fields. Before step 3 the replace branch wrote
+        // the payload's `None`s straight over the stored values, mislabelling the card's "last
+        // run" time and forcing a spurious reinstall on the next Run.
+        let stored = Project {
+            last_run_at: Some("2026-08-10T09:00:00Z".into()),
+            last_lockfile_hash: Some("freshhash".into()),
+            ..sample_project("/tmp/ielts")
+        };
+        let incoming = Project {
+            name: "IELTS Coach (renamed)".into(),
+            last_run_at: None,
+            last_lockfile_hash: None,
+            ..stored.clone()
+        };
+        let replaced = replace_preserving_app_owned_fields(&stored, incoming);
+        assert_eq!(replaced.name, "IELTS Coach (renamed)");
+        assert_eq!(replaced.last_run_at.as_deref(), Some("2026-08-10T09:00:00Z"));
+        assert_eq!(replaced.last_lockfile_hash.as_deref(), Some("freshhash"));
+    }
 }
