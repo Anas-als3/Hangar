@@ -113,21 +113,28 @@ const MENU_ITEMS: ReadonlyArray<{
 ];
 
 export function ProjectCard({ project }: { project: ProjectView }) {
-  const [menuOpen, setMenuOpen] = useState(false);
+  // Plan 037 step 2: one overlay at a time (the `⋯` menu or the stack reveal panel), each with its
+  // own ref. The outside-click effect below tests whichever ref matches the open overlay — reusing
+  // `menuRef` for the panel would read every click inside the panel as "outside" and close it
+  // instantly, since `menuRef` sits on the header div and does not contain the libraries line.
+  const [overlay, setOverlay] = useState<"menu" | "stack" | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const stackRef = useRef<HTMLDivElement | null>(null);
+  const menuOpen = overlay === "menu";
 
   useEffect(() => {
-    if (!menuOpen) return;
+    if (!overlay) return;
+    const activeRef = overlay === "menu" ? menuRef : stackRef;
     function onPointerDown(event: MouseEvent) {
-      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
-        setMenuOpen(false);
+      if (activeRef.current && !activeRef.current.contains(event.target as Node)) {
+        setOverlay(null);
       }
     }
     document.addEventListener("mousedown", onPointerDown);
     return () => {
       document.removeEventListener("mousedown", onPointerDown);
     };
-  }, [menuOpen]);
+  }, [overlay]);
 
   // Plan 033 defect 1: this used to be a `document` keydown listener, but member cards live
   // inside an open folder's band, which also owns Esc (ProjectGrid.tsx). A document listener
@@ -137,7 +144,7 @@ export function ProjectCard({ project }: { project: ProjectView }) {
   const onMenuKeyDown: KeyboardEventHandler<HTMLDivElement> = (event) => {
     if (event.key === "Escape" && menuOpen) {
       event.stopPropagation();
-      setMenuOpen(false);
+      setOverlay(null);
     }
   };
 
@@ -195,7 +202,7 @@ export function ProjectCard({ project }: { project: ProjectView }) {
             }
             aria-haspopup="menu"
             aria-expanded={menuOpen}
-            onClick={() => setMenuOpen((open) => !open)}
+            onClick={() => setOverlay((open) => (open === "menu" ? null : "menu"))}
             className="relative rounded px-2 py-1 text-muted transition-colors hover:bg-white/5 hover:text-text"
           >
             <span aria-hidden="true">⋯</span>
@@ -221,7 +228,7 @@ export function ProjectCard({ project }: { project: ProjectView }) {
                   onClick={
                     action
                       ? () => {
-                          setMenuOpen(false);
+                          setOverlay(null);
                           action(project.id);
                         }
                       : undefined
