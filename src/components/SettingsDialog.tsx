@@ -40,6 +40,11 @@ export function SettingsDialog() {
   if (dialog?.kind !== "settings") return null;
 
   async function handleSave() {
+    // Enter-to-save (plan 039) reaches this the same way the click path always did, but the
+    // click path was only ever gated by the Save button's `disabled` attribute, not a guard in
+    // here. A submit event isn't guaranteed to respect a disabled submit button in every browser,
+    // so mirror that same condition explicitly — the one place both routes now share.
+    if (saving || loading || editorCommand.trim() === "") return;
     setSaving(true);
     const ok = await saveSettingsAction({ editorCommand });
     if (!ok) setSaving(false);
@@ -61,6 +66,14 @@ export function SettingsDialog() {
       >
         <h2 className="font-display text-lg font-medium text-text">Settings</h2>
 
+        {/* Enter-to-save (plan 039): defers entirely to handleSave's own `saving`/empty guard,
+            exactly like the Save button's onClick below — no duplicate validation here. */}
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            void handleSave();
+          }}
+        >
         <label className="mt-5 block text-sm text-muted" htmlFor="editor-command">
           Editor command
         </label>
@@ -84,14 +97,14 @@ export function SettingsDialog() {
             Cancel
           </button>
           <button
-            type="button"
+            type="submit"
             disabled={saving || loading || editorCommand.trim() === ""}
-            onClick={() => void handleSave()}
             className="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-bg transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {saving ? "Saving…" : "Save"}
           </button>
         </div>
+        </form>
       </div>
     </div>
   );
