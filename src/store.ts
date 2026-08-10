@@ -518,6 +518,10 @@ export function startEventListeners(): void {
 
 /** §7 `run_project`: fire-and-forget; the error is the toast for a rejected Run. */
 export async function startProject(projectId: string): Promise<void> {
+  // Plan 052: mark pending BEFORE the invoke, so the button flips the instant the click happens
+  // rather than after the first await resolves — covering exactly the pre-status-changed gap
+  // (port probe, `git rev-parse`, the §9 step 3 per-path mutex) this state exists for.
+  setState({ pendingRun: { ...state.pendingRun, [projectId]: true } });
   try {
     await runProject(projectId);
   } catch (err) {
@@ -529,6 +533,12 @@ export async function startProject(projectId: string): Promise<void> {
     // that check failing, so the card should pick up the warning state that caused it. Plan 038:
     // the quiet refresh still recomputes pathExists via getProjects, without blanking the grid.
     await refreshRegistryQuietly();
+  } finally {
+    // Plan 052: the second of the two clear conditions — "the invoke settles" — independent of
+    // whether `applyStatusChanged` already cleared it because a status arrived first.
+    const pendingRun = { ...state.pendingRun };
+    delete pendingRun[projectId];
+    setState({ pendingRun });
   }
 }
 
