@@ -14,20 +14,24 @@ import {
   addProject,
   clearLogBuffer,
   freePort,
+  getGithubStatus,
   getLogBuffer,
   getPortStatus,
   getProjects,
   getRegistryError,
   openInBrowser,
   openInEditor,
+  removeGithubToken,
   removeProject,
   runProject,
+  setGithubToken,
   setSettings,
   stopProject,
   updateProject,
 } from "./api";
 import { lastRunLabel } from "./status";
 import type {
+  GithubStatus,
   LogLine,
   LogLinesPayload,
   NewProject,
@@ -131,6 +135,15 @@ export interface HangarState {
    *  monitor** (§11): fetched on open and on Refresh only, never polled. A failed fetch leaves
    *  whatever rows were already here untouched (see `refreshPorts`). */
   ports: PortStatus[] | null;
+  /** SPEC.md §18 / plan 053 Inbox panel: whether the slide-over is open. Ephemeral view state —
+   *  never persisted, never touched by `loadRegistry`/`refreshRegistryQuietly` (same reasoning as
+   *  `portsOpen`). Never set before the grid renders — nothing in `App.tsx`'s mount effect reads
+   *  or writes this. */
+  inboxOpen: boolean;
+  /** The last `get_github_status` read — `null` before the first fetch (never fetched until the
+   *  panel opens, per §11: the header's unread count, when it exists, reads the local cache
+   *  only and "must never make a network call, a keychain call, or run before the grid does"). */
+  githubStatus: GithubStatus | null;
 }
 
 let state: HangarState = {
@@ -153,6 +166,8 @@ let state: HangarState = {
   drag: { sourceId: null, targetId: null, armed: false },
   portsOpen: false,
   ports: null,
+  inboxOpen: false,
+  githubStatus: null,
 };
 
 const listeners = new Set<() => void>();
@@ -918,6 +933,56 @@ export async function freePortAction(projectId: string, pid: number, port: numbe
         : `Port ${port} is free.`,
       "neutral",
     );
+  } catch (err) {
+    setToast(errorMessage(err));
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Inbox (SPEC.md §18 / plan 053) — connection-status shell only; no notification list or thread
+// yet (slices 2/3). None of these calls ever run before the grid does — see `inboxOpen`'s and
+// `githubStatus`'s own doc comments above.
+// ---------------------------------------------------------------------------------------------
+
+/** Opens the slide-over and reads the current connection status. */
+export async function openInbox(): Promise<void> {
+  setState({ inboxOpen: true });
+  await refreshGithubStatus();
+}
+
+export function closeInbox(): void {
+  setState({ inboxOpen: false });
+}
+
+/** §18: never a toast — a connection problem is a state the panel renders in place. A genuinely
+ *  unexpected rejection (not a `GithubStatus` state) is the one case still worth a toast. */
+export async function refreshGithubStatus(): Promise<void> {
+  try {
+    const githubStatus = await getGithubStatus();
+    setState({ githubStatus });
+  } catch (err) {
+    setToast(errorMessage(err));
+  }
+}
+
+/** The Connect/Reconnect form's submit — resolves to whether the token is now connected, so the
+ *  caller can decide whether to clear the input. */
+export async function connectGithubAction(token: string): Promise<boolean> {
+  try {
+    const githubStatus = await setGithubToken(token);
+    setState({ githubStatus });
+    return githubStatus.state === "connected";
+  } catch (err) {
+    setToast(errorMessage(err));
+    return false;
+  }
+}
+
+/** §18: "one obvious action, and must leave no residue." */
+export async function disconnectGithubAction(): Promise<void> {
+  try {
+    await removeGithubToken();
+    setState({ githubStatus: { state: "disconnected" } });
   } catch (err) {
     setToast(errorMessage(err));
   }
