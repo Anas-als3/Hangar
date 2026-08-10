@@ -559,6 +559,58 @@ fn build_port_status(
     }
 }
 
+/// SPEC.md §9 step 1 (amended 2026-08-10, plan 042) — the gate predicate behind `free_port`. Pure:
+/// no `State`, no `AppHandle`, no I/O, same shape as `guard_update` above and for the same reason —
+/// a security boundary that needs an `AppHandle` to test is one nobody tests. `port` must be a
+/// FRESH probe (never the panel's stale snapshot); `claimed_started_at` is what the caller asserts
+/// was already shown for this holder, so gate 5's start-time re-check has something to compare
+/// against. Returns the verified pid on success.
+fn free_port_gate(
+    port: &PortStatus,
+    project_status: Status,
+    claimed_started_at: &str,
+) -> Result<u32, String> {
+    // Gate 1: exactly one listening PID — a dual-stack pair on 127.0.0.1/[::1] is legal and names
+    // nobody; the panel says so instead of guessing.
+    if port.listener_count != 1 {
+        return Err(format!(
+            "{} processes are listening on this port — Hangar will not guess which one.",
+            port.listener_count
+        ));
+    }
+    let Some(holder) = port.holder.as_ref() else {
+        return Err("the listening process could not be identified.".to_string());
+    };
+
+    // Gate 2: never root, never another account. `None` (unknown) is refused too — an unknown
+    // owner is not a permission.
+    if holder.same_user != Some(true) {
+        return Err("that process's owner could not be confirmed as you — refusing.".to_string());
+    }
+
+    // Gate 3: a project Hangar is managing routes to Stop — §8 is the only path allowed to touch
+    // our own trees.
+    if !matches!(project_status, Status::Stopped | Status::Crashed) {
+        return Err("this port belongs to a project Hangar is managing — use Stop instead.".to_string());
+    }
+
+    // Gate 4: a truncated process name is not something a person can authorise a kill from.
+    if holder.command.is_none() {
+        return Err("the full command line could not be read — refusing to offer this.".to_string());
+    }
+
+    // Gate 5 (start-time half): re-verified against what the caller claims was already shown.
+    // PIDs are reused; a mismatch here means the identity behind this pid changed underneath us.
+    let Some(started_at) = holder.started_at.as_deref() else {
+        return Err("the process start time could not be read — refusing to offer this.".to_string());
+    };
+    if started_at != claimed_started_at {
+        return Err("the process changed since it was shown — refusing to signal it.".to_string());
+    }
+
+    Ok(holder.pid)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
