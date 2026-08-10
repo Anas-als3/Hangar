@@ -5,6 +5,8 @@
 //! - a present-but-unparseable `projects.json` is NEVER overwritten: it is renamed to
 //!   `projects.json.broken-<unix-timestamp>` and an empty registry is returned alongside a
 //!   report the UI shows as a persistent banner,
+//! - `settings.json` gets the same rescue rename (§4, "same rules"); its report is only logged,
+//!   because the banner has one slot and `projects.json` owns it,
 //! - unknown JSON fields are ignored, never fatal.
 
 use serde::{Deserialize, Serialize};
@@ -220,8 +222,14 @@ fn seed_projects() -> Vec<Project> {
 
 /// Serialize -> temp file in the SAME directory -> rename over the target.
 /// Never truncates the target in place, so a crash mid-write cannot destroy the registry.
+///
+/// The temp file is unique per process AND per call, and is removed again if anything after its
+/// creation fails — a failed save must not leave litter beside the registry (only a process that
+/// dies mid-write can, and [`sweep_stale_temp_files`] clears that at the next startup).
 pub fn atomic_write(path: &Path, contents: &str) -> std::io::Result<()> {
     use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
 
     let dir = path.parent().ok_or_else(|| {
         std::io::Error::new(
@@ -235,16 +243,71 @@ pub fn atomic_write(path: &Path, contents: &str) -> std::io::Result<()> {
         .file_name()
         .and_then(|n| n.to_str())
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid file name"))?;
-    let tmp = dir.join(format!("{file_name}.tmp"));
+    // pid + counter: two concurrent writers never collide on one temp file, and neither can adopt
+    // the leftovers of a crashed predecessor.
+    let tmp = dir.join(format!(
+        "{file_name}.tmp.{}.{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
 
-    {
-        let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(contents.as_bytes())?;
-        f.sync_all()?;
+    let write_then_rename = || -> std::io::Result<()> {
+        {
+            let mut f = std::fs::File::create(&tmp)?;
+            f.write_all(contents.as_bytes())?;
+            f.sync_all()?;
+        }
+        // rename is atomic on both macOS/Linux and Windows for same-directory targets.
+        std::fs::rename(&tmp, path)
+    };
+
+    if let Err(e) = write_then_rename() {
+        // Best-effort cleanup: the caller sees the real error, not a second one about the temp file.
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
     }
 
-    // rename is atomic on both macOS/Linux and Windows for same-directory targets.
-    std::fs::rename(&tmp, path)
+    sync_parent_dir(dir);
+    Ok(())
+}
+
+/// Best-effort durability upgrade after a successful rename: fsync the directory so the *new* name
+/// is on stable storage. The rename's atomicity is what SPEC.md §4 actually guarantees and it holds
+/// without this; the fsync only narrows a power-loss crash from "old-or-new" to "definitely new".
+/// Its error is deliberately ignored — a save that landed must not be reported as failed just
+/// because the filesystem would not hand out a directory handle.
+#[cfg(unix)]
+fn sync_parent_dir(dir: &Path) {
+    if let Ok(handle) = std::fs::File::open(dir) {
+        let _ = handle.sync_all();
+    }
+}
+
+/// Windows has no `std`-only equivalent: opening a directory as a file needs
+/// `FILE_FLAG_BACKUP_SEMANTICS`, which `std::fs::File::open` does not pass. `MoveFileEx` is still
+/// atomic there, so the §4 guarantee is met; only the extra durability is unavailable.
+#[cfg(not(unix))]
+fn sync_parent_dir(_dir: &Path) {}
+
+/// Best-effort startup hygiene: delete `projects.json`/`settings.json` temp files left behind by a
+/// writer that died between `File::create` and the rename. `atomic_write` cleans up its own
+/// failures, so anything still here outlived the process that made it and can never be completed.
+/// Called once per startup from [`load_projects_with_seed`], before any write of our own.
+fn sweep_stale_temp_files(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        // `projects.json` and `projects.json.broken-<ts>` never match: neither contains `.tmp`.
+        let ours = name.starts_with(PROJECTS_FILE) || name.starts_with(SETTINGS_FILE);
+        if ours && name.contains(".tmp") {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 fn unix_timestamp() -> u64 {
@@ -270,6 +333,10 @@ pub fn load_projects(dir: &Path) -> RegistryLoad {
 
 pub fn load_projects_with_seed(dir: &Path, seed: bool) -> RegistryLoad {
     let path = projects_path(dir);
+
+    // Startup runs this exactly once, before anything can be writing, so the sweep cannot race a
+    // live `atomic_write`. It must come before our own first write for the same reason.
+    sweep_stale_temp_files(dir);
 
     if !path.exists() {
         // SPEC.md §5: a true first run writes an EMPTY array — the §11 empty state is the
@@ -342,7 +409,13 @@ pub fn save_projects(dir: &Path, projects: &[Project]) -> Result<(), String> {
 }
 
 /// Settings load. A missing file is created with the default. A present-but-unparseable file is
-/// left untouched and the default is used — the next `set_settings` rewrites it atomically.
+/// NEVER overwritten: it is renamed to `settings.json.broken-<unix-timestamp>` — SPEC.md §4's
+/// "same rules for `settings.json`" — and the default is used. Nothing is written back in its
+/// place; the next `set_settings`, or the next startup, recreates it from the default.
+///
+/// The rescue is logged, not surfaced: the §11 banner carries a single [`RegistryError`] and that
+/// slot belongs to `projects.json`. Showing this one needs a second slot and §7 thought, so it is
+/// deliberately deferred (plans/012) — this function's job is that the bytes are never lost.
 pub fn load_settings(dir: &Path) -> Settings {
     let path = settings_path(dir);
     if !path.exists() {
@@ -350,9 +423,41 @@ pub fn load_settings(dir: &Path) -> Settings {
         let _ = save_settings(dir, &defaults);
         return defaults;
     }
-    match std::fs::read(&path) {
-        Ok(bytes) => serde_json::from_slice::<Settings>(&bytes).unwrap_or_default(),
-        Err(_) => Settings::default(),
+
+    let raw = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            // Unreadable, not unparseable: leave the file completely alone, exactly as
+            // `load_projects_with_seed` does.
+            eprintln!(
+                "hangar: could not read {} ({e}); using the default settings",
+                path.display()
+            );
+            return Settings::default();
+        }
+    };
+
+    match serde_json::from_slice::<Settings>(&raw) {
+        Ok(settings) => settings,
+        Err(parse_err) => {
+            // NEVER overwrite. Move the original aside; only then fall back to the default.
+            let backup = dir.join(format!("{SETTINGS_FILE}.broken-{}", unix_timestamp()));
+            match std::fs::rename(&path, &backup) {
+                Ok(()) => eprintln!(
+                    "hangar: {} is unparseable ({parse_err}); moved it to {} and using the default settings",
+                    path.display(),
+                    backup.display()
+                ),
+                // The rescue itself failed. Still do not write over the file here — that keeps
+                // "never overwrite" true for this load. A later `set_settings` may overwrite it,
+                // which is accepted: refusing to save would brick Settings entirely.
+                Err(rename_err) => eprintln!(
+                    "hangar: {} is unparseable ({parse_err}) and could not be moved aside ({rename_err}); leaving it in place and using the default settings",
+                    path.display()
+                ),
+            }
+            Settings::default()
+        }
     }
 }
 
@@ -894,6 +999,58 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Every entry in `dir` whose name marks it as one of `atomic_write`'s temp files.
+    fn temp_files(dir: &Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .expect("read scratch dir")
+            .flatten()
+            .filter_map(|e| e.file_name().to_str().map(str::to_owned))
+            .filter(|n| n.contains(".tmp"))
+            .collect()
+    }
+
+    #[test]
+    fn atomic_write_cleans_up_its_temp_file_when_the_rename_target_is_invalid() {
+        let dir = scratch("atomic-cleanup");
+        // A directory at the target path: `File::create` on the temp file still succeeds, so the
+        // failure lands on the rename — exactly the window where a temp file could be orphaned.
+        let target = dir.join(PROJECTS_FILE);
+        std::fs::create_dir(&target).unwrap();
+
+        let err = atomic_write(&target, "[]").expect_err("renaming over a directory must fail");
+
+        assert!(
+            temp_files(&dir).is_empty(),
+            "a failed write must leave no temp file behind; found {:?} (error was {err})",
+            temp_files(&dir)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stale_temp_files_are_swept_at_startup() {
+        let dir = scratch("sweep");
+        let projects = vec![sample()];
+        save_projects(&dir, &projects).unwrap();
+
+        // What a writer killed between `File::create` and the rename leaves behind.
+        std::fs::write(dir.join("projects.json.tmp.999.1"), "half a fi").unwrap();
+        std::fs::write(dir.join("settings.json.tmp.999.7"), "{\"edito").unwrap();
+        // The old single-suffix name a pre-plan-012 build would have used.
+        std::fs::write(dir.join("projects.json.tmp"), "[").unwrap();
+        // Neither of these contains `.tmp`, so neither may be swept.
+        let broken = dir.join("projects.json.broken-1754000000");
+        std::fs::write(&broken, "{ not json ").unwrap();
+
+        let load = load_projects_with_seed(&dir, false);
+
+        assert!(temp_files(&dir).is_empty(), "found {:?}", temp_files(&dir));
+        assert_eq!(load.projects, projects, "the sweep must not disturb the load");
+        assert!(load.error.is_none());
+        assert!(broken.exists(), "a .broken- backup is not a temp file");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn settings_default_and_round_trip() {
         let dir = scratch("settings");
@@ -904,6 +1061,39 @@ mod tests {
 
         save_settings(&dir, &Settings { editor_command: "subl".into() }).unwrap();
         assert_eq!(load_settings(&dir).editor_command, "subl");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn corrupt_settings_is_renamed_not_overwritten() {
+        let dir = scratch("corrupt-settings");
+        let original = "{ \"editorCommand\": this is not valid json ";
+        std::fs::write(settings_path(&dir), original).unwrap();
+
+        let settings = load_settings(&dir);
+
+        assert_eq!(settings, Settings::default(), "a corrupt file falls back to the default");
+
+        // The original bytes survive, in exactly one backup.
+        let backups: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("settings.json.broken-"))
+            })
+            .collect();
+        assert_eq!(backups.len(), 1, "expected exactly one backup, got {backups:?}");
+        assert_eq!(std::fs::read_to_string(&backups[0]).unwrap(), original);
+
+        // Rescued, not copied: the corrupt file is gone rather than left to be overwritten by the
+        // next save. Nothing is written back in its place either.
+        assert!(
+            !settings_path(&dir).exists(),
+            "the corrupt settings.json must be moved aside, not left in place"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
