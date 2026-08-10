@@ -32,6 +32,7 @@ import type {
   ProjectView,
   RegistryError,
   Settings,
+  Status,
   StatusChangedPayload,
 } from "./types";
 
@@ -55,6 +56,10 @@ export interface HangarState {
   loadError: string | null;
   /** Per-project log lines, fed by the global `log-lines` listener and the backfill on open. */
   logs: Record<string, LogLine[]>;
+  /** Phases actually observed per project this run (plan 027) — ephemeral view state that
+   *  outlives a card unmount, so search-filtering a card out and back cannot blank the §11
+   *  phase strip. Never persisted: this is not a `Project` field. */
+  phasesSeen: Record<string, string[]>;
   /** Which project's slide-over is open (§11), or `null`. */
   openLogsFor: string | null;
   /** Which project's notes slide-over is open (§11), or `null`. */
@@ -73,6 +78,7 @@ let state: HangarState = {
   loading: true,
   loadError: null,
   logs: {},
+  phasesSeen: {},
   openLogsFor: null,
   notesFor: null,
   toast: null,
@@ -170,6 +176,16 @@ export async function loadRegistry(): Promise<void> {
 // The two §7 event listeners — registered once, for the lifetime of the app
 // ---------------------------------------------------------------------------------------------
 
+/** Mirrors `PhaseKey` in `PhaseStrip.tsx`, kept local: the dependency runs store -> component. */
+function isPhaseStatus(status: Status): boolean {
+  return (
+    status === "updating" ||
+    status === "installing" ||
+    status === "starting" ||
+    status === "running"
+  );
+}
+
 function applyStatusChanged(payload: StatusChangedPayload): void {
   const previous = state.projects.find((p) => p.id === payload.projectId)?.status;
   const projects = state.projects.map((p) =>
@@ -186,9 +202,18 @@ function applyStatusChanged(payload: StatusChangedPayload): void {
     payload.status !== "stopped" &&
     payload.status !== "crashed";
 
+  // Plan 027: the phases actually observed this run, keyed on the same `runIsStarting`
+  // transition as the log buffer above, so the two can never drift apart.
+  const basePhases = runIsStarting ? [] : (state.phasesSeen[payload.projectId] ?? []);
+  const nextPhases =
+    isPhaseStatus(payload.status) && !basePhases.includes(payload.status)
+      ? [...basePhases, payload.status]
+      : basePhases;
+
   setState({
     projects,
     logs: runIsStarting ? { ...state.logs, [payload.projectId]: [] } : state.logs,
+    phasesSeen: { ...state.phasesSeen, [payload.projectId]: nextPhases },
   });
 
   // §7: "message carries e.g. the crash reason". A Run is fire-and-forget, so everything that goes
