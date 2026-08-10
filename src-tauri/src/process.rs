@@ -642,6 +642,149 @@ pub fn parse_lsof_owner(stdout: &str) -> Option<PortOwner> {
         })
 }
 
+/// One lsof listener row, deduplicated by pid. Plan 041 (Ports panel) needs the USER column too
+/// (`sameUser`), which the §9 toast path never needed — kept separate from [`PortOwner`] rather
+/// than widening that struct's frozen shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortListener {
+    pub name: String,
+    pub pid: u32,
+    /// lsof field 3. `None` on the Windows fallback, where no equivalent column exists.
+    pub user: Option<String>,
+}
+
+/// Plan 041's all-rows counterpart to [`parse_lsof_owner`] above — every DISTINCT pid, not just
+/// the first. **Not a refinement of it**: `parse_lsof_owner`'s first-row behaviour is depended on
+/// by the §9 toast path and its own tests, so this is a new function beside it, left untouched.
+///
+/// Why "first row" is not good enough here: a dual-stack server produces two rows for one
+/// process, which is the assumption `parse_lsof_owner` is allowed to make — but two *different*
+/// processes on `127.0.0.1:P` and `[::1]:P` is also legal, and `port_accepts` is `v4 || v6`, so
+/// the panel must be able to say "N processes are listening — Hangar will not guess which one"
+/// instead of silently naming whichever came first.
+#[cfg(any(unix, test))]
+pub fn parse_lsof_all_listeners(stdout: &str) -> Vec<PortListener> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for line in stdout.lines() {
+        if line.starts_with("COMMAND") {
+            continue;
+        }
+        let mut fields = line.split_whitespace();
+        let (Some(name), Some(pid), Some(user)) =
+            (fields.next(), fields.next().and_then(|s| s.parse::<u32>().ok()), fields.next())
+        else {
+            continue; // malformed row — skipped, not an error
+        };
+        if !seen.insert(pid) {
+            continue; // a dual-stack pair for the same process
+        }
+        out.push(PortListener {
+            name: name.to_string(),
+            pid,
+            user: Some(user.to_string()),
+        });
+    }
+    out
+}
+
+/// Plan 041: every distinct listening pid for `port`, through the same spawn helper and cached
+/// dev environment as [`port_owner`]. Windows keeps the single-owner shape `port_owner` already
+/// has — `netstat` has no USER column, so `user` is always `None` there, same as the doc comment
+/// on [`PortListener::user`] says.
+pub async fn port_listeners(port: u16, env: &EnvMap) -> Vec<PortListener> {
+    #[cfg(unix)]
+    {
+        let command = format!("lsof -nP -iTCP:{port} -sTCP:LISTEN");
+        match run_lookup(&command, env).await {
+            Some(stdout) => parse_lsof_all_listeners(&stdout),
+            None => Vec::new(),
+        }
+    }
+    #[cfg(windows)]
+    {
+        match port_owner(port, env).await {
+            Some(owner) => vec![PortListener {
+                name: owner.name,
+                pid: owner.pid,
+                user: None,
+            }],
+            None => Vec::new(),
+        }
+    }
+}
+
+/// One row of the batched `ps -o pid=,ppid=,lstart=,command=` read [`ps_enrich`] runs. The type is
+/// not `cfg`-gated even though only the Unix branch of `ps_enrich` ever populates it, so callers on
+/// every platform share one shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PsInfo {
+    pub ppid: u32,
+    pub lstart: String,
+    pub command: String,
+}
+
+/// Plan 041 step 3: ONE spawned `ps` for every solo-listener pid a `get_port_status` call found,
+/// never one child per pid. Unix only — `ps -o lstart=,command=` has no Windows equivalent, and
+/// `PortHolder.command`/`.startedAt`/`.parentExited` are documented Unix-only (SPEC.md §7).
+#[cfg(unix)]
+pub async fn ps_enrich(pids: &[u32], env: &EnvMap) -> HashMap<u32, PsInfo> {
+    if pids.is_empty() {
+        return HashMap::new();
+    }
+    let pid_list = pids.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+    // `command=` must come last: SPEC.md's Ports panel step 3 — it is the one column that can
+    // contain spaces, and there is nothing after it to swallow them into.
+    let command = format!("ps -o pid=,ppid=,lstart=,command= -p {pid_list}");
+    match run_lookup(&command, env).await {
+        Some(stdout) => parse_ps_rows(&stdout),
+        None => HashMap::new(),
+    }
+}
+
+#[cfg(windows)]
+pub async fn ps_enrich(_pids: &[u32], _env: &EnvMap) -> HashMap<u32, PsInfo> {
+    // No Windows read implemented yet — PortHolder's optional fields simply stay absent there.
+    HashMap::new()
+}
+
+/// Parses `ps -o pid=,ppid=,lstart=,command=` output, split so it is testable without spawning
+/// (plan 041's test plan). `pid`/`ppid`/`lstart`'s five tokens are a fixed count; `command` is
+/// read as "the rest of the line" so its own internal spaces survive intact.
+#[cfg(any(unix, test))]
+fn parse_ps_rows(stdout: &str) -> HashMap<u32, PsInfo> {
+    let mut out = HashMap::new();
+    for line in stdout.lines() {
+        if let Some((pid, ppid, lstart, command)) = parse_ps_line(line) {
+            out.insert(pid, PsInfo { ppid, lstart, command });
+        }
+    }
+    out
+}
+
+/// `pid ppid weekday month day time year command…` — the first 7 whitespace-separated tokens are
+/// fixed (`lstart`'s "Wed Aug  5 13:53:00 2026" is always 5 of them), then whatever remains,
+/// trimmed, is the command. A short or unparseable line is skipped, not an error.
+#[cfg(any(unix, test))]
+fn parse_ps_line(line: &str) -> Option<(u32, u32, String, String)> {
+    let mut rest = line;
+    let mut tokens: Vec<&str> = Vec::with_capacity(7);
+    for _ in 0..7 {
+        rest = rest.trim_start();
+        let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        if end == 0 {
+            return None;
+        }
+        tokens.push(&rest[..end]);
+        rest = &rest[end..];
+    }
+    let pid = tokens[0].parse().ok()?;
+    let ppid = tokens[1].parse().ok()?;
+    let lstart = tokens[2..7].join(" ");
+    let command = rest.trim_start();
+    (!command.is_empty()).then(|| (pid, ppid, lstart, command.to_string()))
+}
+
 /// Parses `netstat -ano | findstr :<port>`, where the PID is the last column:
 ///
 /// ```text
@@ -1957,6 +2100,110 @@ node    45548 anas   24u  IPv4 0xfedcba0987654321      0t0  TCP *:3000 (LISTEN)
             parse_lsof_owner("COMMAND   PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME\n"),
             None
         );
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Plan 041 (Ports panel) — the all-rows lsof parser
+    // -----------------------------------------------------------------------------------------
+
+    #[test]
+    fn a_dual_stack_pair_for_one_process_collapses_to_one_listener() {
+        let stdout = "\
+COMMAND   PID USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+node    45548 anas   23u  IPv6 0x1234567890abcdef      0t0  TCP *:3000 (LISTEN)
+node    45548 anas   24u  IPv4 0xfedcba0987654321      0t0  TCP *:3000 (LISTEN)
+";
+        assert_eq!(
+            parse_lsof_all_listeners(stdout),
+            vec![PortListener {
+                name: "node".into(),
+                pid: 45548,
+                user: Some("anas".into()),
+            }]
+        );
+    }
+
+    #[test]
+    fn two_distinct_processes_on_the_two_stacks_both_come_back() {
+        let stdout = "\
+COMMAND   PID   USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+node    45548   anas   23u  IPv6 0x1234567890abcdef      0t0  TCP *:3000 (LISTEN)
+python   9001   root   12u  IPv4 0xfedcba0987654321      0t0  TCP *:3000 (LISTEN)
+";
+        let listeners = parse_lsof_all_listeners(stdout);
+        assert_eq!(listeners.len(), 2, "got {listeners:?}");
+        assert!(listeners.contains(&PortListener {
+            name: "node".into(),
+            pid: 45548,
+            user: Some("anas".into()),
+        }));
+        assert!(listeners.contains(&PortListener {
+            name: "python".into(),
+            pid: 9001,
+            user: Some("root".into()),
+        }));
+    }
+
+    #[test]
+    fn a_header_only_lsof_yields_no_listeners() {
+        assert_eq!(parse_lsof_all_listeners(""), Vec::new());
+        assert_eq!(
+            parse_lsof_all_listeners("COMMAND   PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME\n"),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn a_malformed_row_is_skipped_not_an_error() {
+        let stdout = "\
+COMMAND   PID USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+node    45548 anas   23u  IPv6 0x1234567890abcdef      0t0  TCP *:3000 (LISTEN)
+garbage line with no pid at all
+node    not-a-pid anas 24u IPv4 0x0 0t0 TCP *:3000 (LISTEN)
+";
+        assert_eq!(
+            parse_lsof_all_listeners(stdout),
+            vec![PortListener {
+                name: "node".into(),
+                pid: 45548,
+                user: Some("anas".into()),
+            }]
+        );
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Plan 041 (Ports panel) — the batched `ps` enrichment, tested without spawning
+    // -----------------------------------------------------------------------------------------
+
+    #[test]
+    fn reads_pid_ppid_lstart_and_a_multi_word_command() {
+        let stdout =
+            "57140     1 Wed Aug  5 13:53:00 2026 /private/tmp/fix-a11y/node_modules/.bin/vite --host\n";
+        let rows = parse_ps_rows(stdout);
+        let row = rows.get(&57140).expect("pid 57140 must be present");
+        assert_eq!(row.ppid, 1);
+        assert_eq!(row.lstart, "Wed Aug 5 13:53:00 2026");
+        assert_eq!(row.command, "/private/tmp/fix-a11y/node_modules/.bin/vite --host");
+    }
+
+    #[test]
+    fn parses_every_row_when_several_pids_were_batched_in_one_call() {
+        let stdout = "\
+45548  1234 Wed Aug  5 13:53:00 2026 node server.js
+ 9001     1 Thu Aug  6 09:00:12 2026 python -m http.server
+";
+        let rows = parse_ps_rows(stdout);
+        assert_eq!(rows.len(), 2, "got {rows:?}");
+        assert_eq!(rows[&45548].ppid, 1234);
+        assert_eq!(rows[&45548].command, "node server.js");
+        assert_eq!(rows[&9001].ppid, 1);
+        assert_eq!(rows[&9001].command, "python -m http.server");
+    }
+
+    #[test]
+    fn an_unparseable_ps_line_is_skipped_not_an_error() {
+        assert_eq!(parse_ps_rows(""), HashMap::new());
+        assert_eq!(parse_ps_rows("not enough columns here\n"), HashMap::new());
     }
 
     #[test]

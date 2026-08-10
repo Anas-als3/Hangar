@@ -13,12 +13,14 @@ import AddEditDialog from "./components/AddEditDialog";
 import LogPanel from "./components/LogPanel";
 import MoveToFolderDialog from "./components/MoveToFolderDialog";
 import NotesPanel from "./components/NotesPanel";
+import PortsPanel from "./components/PortsPanel";
 import ProjectGrid from "./components/ProjectGrid";
 import SettingsDialog from "./components/SettingsDialog";
 import {
   loadRegistry,
   openAddDialog,
   openLogs,
+  openPorts,
   openSettingsDialog,
   refreshRegistryQuietly,
   runningCount,
@@ -162,14 +164,15 @@ function App() {
     openLogsFor,
     notesFor,
     dialog,
+    portsOpen,
   } = useHangarStore();
   const toastProjectName = projects.find((p) => p.id === toastProjectId)?.name;
 
   const contentRef = useRef<HTMLDivElement | null>(null);
   // §11's aria-modal on each overlay is a promise the DOM doesn't keep by itself (plan 039) —
-  // `inert` on the header+main wrapper below is the actual enforcement. Same three fields as
-  // the folder band's Esc guard in ProjectGrid.tsx.
-  const overlayOpen = Boolean(dialog || openLogsFor || notesFor);
+  // `inert` on the header+main wrapper below is the actual enforcement. Same four fields as
+  // the folder band's Esc guard in ProjectGrid.tsx (plan 041 adds `portsOpen` to both).
+  const overlayOpen = Boolean(dialog || openLogsFor || notesFor || portsOpen);
 
   useEffect(() => {
     void loadRegistry();
@@ -212,6 +215,16 @@ function App() {
         </div>
         <div className="flex items-center gap-2">
           {projects.length > 0 && <SearchInput value={search} />}
+          {/* §11 Ports panel (plan 041): quiet, hidden when there is nothing registered to show. */}
+          {projects.length > 0 && (
+            <button
+              type="button"
+              onClick={() => void openPorts()}
+              className="rounded-md border border-white/10 px-3 py-1.5 text-sm text-muted transition-colors hover:bg-white/5 hover:text-text"
+            >
+              Ports
+            </button>
+          )}
           <button
             type="button"
             onClick={openAddDialog}
@@ -261,6 +274,7 @@ function App() {
 
       <LogPanel />
       <NotesPanel />
+      <PortsPanel />
       <AddEditDialog />
       <MoveToFolderDialog />
       <SettingsDialog />

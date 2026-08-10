@@ -5,15 +5,59 @@
 //! keep the exact names and shapes §7 gives them. `stop_project` is plan 003: there is deliberately
 //! no stub that "sort of" stops.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
+use std::time::SystemTime;
 
 use tauri::{AppHandle, State};
 use tokio::sync::Mutex;
 
+use serde::Serialize;
+
 use crate::env_resolve::DevEnvCell;
-use crate::process::{LogLine, RuntimeMap};
+use crate::process::{self, LogLine, RuntimeMap};
 use crate::registry::{self, Project, ProjectView, RegistryError, Settings, Status};
+
+/// SPEC.md §7 `get_port_status` (added 2026-08-10, plan 041 — the Ports panel). One entry per
+/// registered project, snapshot at call time. `busy`/`listenerCount`/`holder` are never widened
+/// into an error: a lookup that fails or times out yields `busy: true, listenerCount: 0,
+/// holder: None` (the "owner unknown" row), because a diagnostic panel that can error on a
+/// perfectly normal "couldn't identify the process" case would be worse than the toast it replaces.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortStatus {
+    pub project_id: String,
+    pub port: u16,
+    pub busy: bool,
+    /// > 1 → §11 names nobody and offers nothing; the panel says so instead of guessing.
+    pub listener_count: usize,
+    /// Only `Some` when `listener_count == 1` and the lsof row parsed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub holder: Option<PortHolder>,
+    /// ISO — one timestamp shared by every row in a single `get_port_status` call.
+    pub checked_at: String,
+}
+
+/// SPEC.md §7 `PortHolder`. `command`/`started_at`/`parent_exited` come from one batched Unix `ps`
+/// read (see `commands::get_port_status`); all three stay `None` on Windows, where no equivalent
+/// read is implemented yet.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortHolder {
+    pub name: String,
+    pub pid: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_exited: Option<bool>,
+    /// `false` → `free_port` (plan 042) must never be offered; `None` when the current user's own
+    /// identity could not be determined, which must be just as inert as `false`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub same_user: Option<bool>,
+}
 
 /// Managed state (SPEC.md §4). The mutexes are `tokio::sync::Mutex` — never the blocking std one:
 /// kill/wait sequences `.await` while this state is consulted, and a blocking guard may never be
@@ -414,6 +458,105 @@ pub async fn get_registry_error(
 #[tauri::command]
 pub async fn read_package_json(path: String) -> Result<registry::PackageJsonInfo, String> {
     Ok(registry::read_package_json(Path::new(&path)))
+}
+
+/// SPEC.md §7 `get_port_status` (added 2026-08-10, plan 041 — the §11 Ports panel). One entry per
+/// registered project, in `projects.json` array order, snapshot at call time — the panel itself
+/// never polls (§11: "reads once on open and again only on Refresh").
+#[tauri::command]
+pub async fn get_port_status(state: State<'_, AppState>) -> Result<Vec<PortStatus>, String> {
+    // Lock discipline (plan 041's hard limit): snapshot (id, port) under the lock, THEN drop it,
+    // THEN probe — `lsof`/`ps` below are awaits, and §4 forbids holding the async mutex across
+    // one. Mirrors `run.rs`'s `_path_guard` shape: the block ends and the guard drops before any
+    // lookup runs.
+    let snapshot: Vec<(String, u16)> = {
+        let projects = state.projects.lock().await;
+        projects.iter().map(|p| (p.id.clone(), p.port)).collect()
+    };
+
+    let env = state.dev_env.get().await.vars.clone();
+    let checked_at = crate::run::iso8601_utc(SystemTime::now());
+
+    // Pass 1: probe every port — one `lsof` per port, never a machine-wide query (§3 bans a
+    // network inspector). `busy` travels alongside `listeners` rather than being derived from an
+    // empty Vec: "port not busy" and "busy but the lookup found nobody" are both empty Vecs and
+    // must not be conflated (a failed/timed-out lookup is still `busy: true`).
+    let mut probed: Vec<(String, u16, bool, Vec<process::PortListener>)> =
+        Vec::with_capacity(snapshot.len());
+    for (project_id, port) in snapshot {
+        let busy = process::port_accepts(port).await;
+        let listeners = if busy { process::port_listeners(port, &env).await } else { Vec::new() };
+        probed.push((project_id, port, busy, listeners));
+    }
+
+    // Pass 2: ONE batched `ps` for every solo-listener pid found across every project this call
+    // (plan 041 step 3: "one child for all rows, not one per row").
+    let solo_pids: Vec<u32> = probed
+        .iter()
+        .filter_map(|(_, _, _, listeners)| (listeners.len() == 1).then(|| listeners[0].pid))
+        .collect();
+    let ps_rows = process::ps_enrich(&solo_pids, &env).await;
+    let current_user = current_username();
+
+    Ok(probed
+        .into_iter()
+        .map(|(project_id, port, busy, listeners)| {
+            build_port_status(
+                project_id,
+                port,
+                busy,
+                listeners,
+                &ps_rows,
+                current_user.as_deref(),
+                &checked_at,
+            )
+        })
+        .collect())
+}
+
+/// The identity used for `PortHolder.sameUser`: std has no portable "who am I" call, so this
+/// reads the same env var a login shell would set — `USER` on Unix, `USERNAME` on Windows. `None`
+/// (never a guess) when neither is set.
+fn current_username() -> Option<String> {
+    std::env::var("USER").ok().or_else(|| std::env::var("USERNAME").ok())
+}
+
+/// One project's row, assembled from `get_port_status`'s two passes. Never widened into an `Err`:
+/// an owner that could not be identified already arrives here as `listener_count == 0`, the
+/// documented "owner unknown" state, not a failure.
+fn build_port_status(
+    project_id: String,
+    port: u16,
+    busy: bool,
+    listeners: Vec<process::PortListener>,
+    ps_rows: &HashMap<u32, process::PsInfo>,
+    current_user: Option<&str>,
+    checked_at: &str,
+) -> PortStatus {
+    let listener_count = listeners.len();
+    // SPEC.md §7: "holder … only when listenerCount === 1 and the lookup parsed" — >1 names
+    // nobody (the panel says so instead of guessing), and 0 already IS "owner unknown".
+    let holder = (listener_count == 1).then(|| {
+        let listener = &listeners[0];
+        let ps = ps_rows.get(&listener.pid);
+        PortHolder {
+            name: listener.name.clone(),
+            pid: listener.pid,
+            command: ps.map(|r| r.command.clone()),
+            started_at: ps.map(|r| r.lstart.clone()),
+            parent_exited: ps.map(|r| r.ppid == 1),
+            same_user: listener.user.as_deref().zip(current_user).map(|(u, cur)| u == cur),
+        }
+    });
+
+    PortStatus {
+        project_id,
+        port,
+        busy,
+        listener_count,
+        holder,
+        checked_at: checked_at.to_string(),
+    }
 }
 
 #[cfg(test)]

@@ -14,6 +14,7 @@ import {
   addProject,
   clearLogBuffer,
   getLogBuffer,
+  getPortStatus,
   getProjects,
   getRegistryError,
   openInBrowser,
@@ -29,6 +30,7 @@ import type {
   LogLine,
   LogLinesPayload,
   NewProject,
+  PortStatus,
   Project,
   ProjectView,
   RegistryError,
@@ -100,6 +102,14 @@ export interface HangarState {
   openFolders: Set<string>;
   /** Plan 030 card-drag view state — see `DragViewState`. */
   drag: DragViewState;
+  /** §11 Ports panel (plan 041): whether the slide-over is open. Ephemeral view state — never
+   *  persisted, never touched by `loadRegistry`/`refreshRegistryQuietly` (same reasoning as
+   *  `openFolders`: those reloads must never open or close a panel the user didn't touch). */
+  portsOpen: boolean;
+  /** The last `get_port_status` snapshot — `null` before the first fetch. A **snapshot, not a
+   *  monitor** (§11): fetched on open and on Refresh only, never polled. A failed fetch leaves
+   *  whatever rows were already here untouched (see `refreshPorts`). */
+  ports: PortStatus[] | null;
 }
 
 let state: HangarState = {
@@ -118,6 +128,8 @@ let state: HangarState = {
   search: "",
   openFolders: new Set(),
   drag: { sourceId: null, targetId: null, armed: false },
+  portsOpen: false,
+  ports: null,
 };
 
 const listeners = new Set<() => void>();
@@ -807,5 +819,31 @@ export async function ungroupFolder(folderId: string): Promise<void> {
     // Plan 033 defect 3: reload on BOTH paths — see renameFolder's comment above. A partial
     // ungroup must not leave the tile showing the old member count while disk already lost some.
     await refreshRegistryQuietly();
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Ports (§11 Ports panel, plan 041) — a snapshot read on open and on Refresh, never a poll.
+// ---------------------------------------------------------------------------------------------
+
+/** Opens the slide-over and fetches the first snapshot. */
+export async function openPorts(): Promise<void> {
+  setState({ portsOpen: true });
+  await refreshPorts();
+}
+
+export function closePorts(): void {
+  setState({ portsOpen: false });
+}
+
+/** §11: "reads once on open and again only on Refresh". A failed fetch toasts and leaves
+ *  whatever rows were already shown in place — same "don't blank a working view" reasoning as
+ *  `refreshRegistryQuietly`. */
+export async function refreshPorts(): Promise<void> {
+  try {
+    const ports = await getPortStatus();
+    setState({ ports });
+  } catch (err) {
+    setToast(errorMessage(err));
   }
 }
