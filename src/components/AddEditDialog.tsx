@@ -215,12 +215,21 @@ export function AddEditDialog() {
           {editing ? "Edit project" : "Add project"}
         </h2>
 
+        {/* Enter-to-save (plan 039): defers entirely to handleSave's own `canSave` guard, exactly
+            like the Save button's onClick below — no duplicate validation here. */}
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            void handleSave();
+          }}
+        >
         <label className="mt-5 block text-sm text-muted" htmlFor="project-name">
           Name
         </label>
         <input
           id="project-name"
           type="text"
+          autoFocus
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="IELTS Coach"
@@ -360,9 +369,8 @@ export function AddEditDialog() {
             Cancel
           </button>
           <button
-            type="button"
+            type="submit"
             disabled={saving || !canSave}
-            onClick={() => void handleSave()}
             title={
               !canSave
                 ? "Name, folder, command, a valid port and a ready timeout of at least 1 second are required"
@@ -373,6 +381,7 @@ export function AddEditDialog() {
             {saving ? "Saving…" : "Save"}
           </button>
         </div>
+        </form>
       </div>
     </div>
   );

@@ -8,7 +8,7 @@
  * (§7). Both event listeners are registered once at startup in `src/main.tsx`, not here and
  * certainly not in `LogPanel`.
  */
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import AddEditDialog from "./components/AddEditDialog";
 import LogPanel from "./components/LogPanel";
 import MoveToFolderDialog from "./components/MoveToFolderDialog";
@@ -150,9 +150,26 @@ function SearchInput({ value }: { value: string }) {
 }
 
 function App() {
-  const { projects, registryError, loading, loadError, toast, toastTone, toastProjectId, search } =
-    useHangarStore();
+  const {
+    projects,
+    registryError,
+    loading,
+    loadError,
+    toast,
+    toastTone,
+    toastProjectId,
+    search,
+    openLogsFor,
+    notesFor,
+    dialog,
+  } = useHangarStore();
   const toastProjectName = projects.find((p) => p.id === toastProjectId)?.name;
+
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  // §11's aria-modal on each overlay is a promise the DOM doesn't keep by itself (plan 039) —
+  // `inert` on the header+main wrapper below is the actual enforcement. Same three fields as
+  // the folder band's Esc guard in ProjectGrid.tsx.
+  const overlayOpen = Boolean(dialog || openLogsFor || notesFor);
 
   useEffect(() => {
     void loadRegistry();
@@ -171,8 +188,20 @@ function App() {
     return () => window.removeEventListener("focus", onFocus);
   }, []);
 
+  // React 18 has no typed `inert` JSX prop, so this sets the DOM attribute imperatively via the
+  // ref instead of `{...{ inert: "" }}` or `@ts-expect-error` — `setAttribute`/`removeAttribute`
+  // are plain, fully-typed `HTMLElement` methods. The five overlays below render as siblings
+  // *after* this ref's wrapper, never inside it, so this can never make an open dialog inert.
+  useEffect(() => {
+    const node = contentRef.current;
+    if (!node) return;
+    if (overlayOpen) node.setAttribute("inert", "");
+    else node.removeAttribute("inert");
+  }, [overlayOpen]);
+
   return (
     <div className="flex min-h-full flex-col bg-bg text-text">
+      <div ref={contentRef} className="flex flex-1 flex-col">
       <header className="flex items-center justify-between border-b border-white/5 px-8 py-5">
         <div className="flex items-center gap-3">
           <h1 className="font-display text-xl font-bold tracking-tight text-text">Hangar</h1>
@@ -228,6 +257,7 @@ function App() {
           <ProjectGrid projects={visibleProjects(projects, search)} search={search} />
         )}
       </main>
+      </div>
 
       <LogPanel />
       <NotesPanel />

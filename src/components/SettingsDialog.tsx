@@ -10,11 +10,16 @@ import { closeDialog, saveSettingsAction, useHangarStore } from "../store";
 
 export function SettingsDialog() {
   const { dialog } = useHangarStore();
+  const isOpen = dialog?.kind === "settings";
   const [editorCommand, setEditorCommand] = useState("code");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
+  // Plan 039 step 5: re-fetch on every open, not just once per app lifetime — otherwise typing a
+  // wrong command, pressing Cancel, then reopening shows the abandoned in-memory value instead of
+  // what's actually on disk. Same `cancelled` flag pattern as before.
   useEffect(() => {
+    if (!isOpen) return;
     let cancelled = false;
     void getSettings().then((s) => {
       if (!cancelled) {
@@ -25,7 +30,7 @@ export function SettingsDialog() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [isOpen]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -37,9 +42,14 @@ export function SettingsDialog() {
 
   // Guard sits after both hooks above — React forbids conditional hooks — same placement
   // as AddEditDialog's early-return-when-closed guard.
-  if (dialog?.kind !== "settings") return null;
+  if (!isOpen) return null;
 
   async function handleSave() {
+    // Enter-to-save (plan 039) reaches this the same way the click path always did, but the
+    // click path was only ever gated by the Save button's `disabled` attribute, not a guard in
+    // here. A submit event isn't guaranteed to respect a disabled submit button in every browser,
+    // so mirror that same condition explicitly — the one place both routes now share.
+    if (saving || loading || editorCommand.trim() === "") return;
     setSaving(true);
     const ok = await saveSettingsAction({ editorCommand });
     if (!ok) setSaving(false);
@@ -61,12 +71,21 @@ export function SettingsDialog() {
       >
         <h2 className="font-display text-lg font-medium text-text">Settings</h2>
 
+        {/* Enter-to-save (plan 039): defers entirely to handleSave's own `saving`/empty guard,
+            exactly like the Save button's onClick below — no duplicate validation here. */}
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            void handleSave();
+          }}
+        >
         <label className="mt-5 block text-sm text-muted" htmlFor="editor-command">
           Editor command
         </label>
         <input
           id="editor-command"
           type="text"
+          autoFocus
           disabled={loading}
           value={editorCommand}
           onChange={(e) => setEditorCommand(e.target.value)}
@@ -83,14 +102,14 @@ export function SettingsDialog() {
             Cancel
           </button>
           <button
-            type="button"
+            type="submit"
             disabled={saving || loading || editorCommand.trim() === ""}
-            onClick={() => void handleSave()}
             className="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-bg transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {saving ? "Saving…" : "Save"}
           </button>
         </div>
+        </form>
       </div>
     </div>
   );

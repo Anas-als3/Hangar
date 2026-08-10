@@ -120,6 +120,15 @@ export function MoveToFolderDialog() {
       >
         <h2 className="font-display text-lg font-medium text-text">Move to folder</h2>
 
+        {/* Enter-to-save (plan 039): defers entirely to handleSave's own `canSave` guard, exactly
+            like the Move button's onClick below — no duplicate validation here. This is the field
+            that most wants Enter-to-submit: typing a new folder name then pressing Enter. */}
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            void handleSave();
+          }}
+        >
         <div role="radiogroup" aria-label="Folder" className="mt-4 flex flex-col gap-1">
           {/* §11/plan 029: always present, never conditional — the only non-mouse route out. */}
           <label className="flex items-center gap-2 rounded-md px-2 py-2 text-sm text-text hover:bg-white/5">
@@ -181,15 +190,15 @@ export function MoveToFolderDialog() {
             Cancel
           </button>
           <button
-            type="button"
+            type="submit"
             disabled={saving || !canSave}
-            onClick={() => void handleSave()}
             title={!canSave ? "Name the new folder first" : undefined}
             className="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-bg transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {saving ? "Moving…" : "Move"}
           </button>
         </div>
+        </form>
       </div>
     </div>
   );
