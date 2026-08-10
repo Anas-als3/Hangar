@@ -37,6 +37,10 @@ conditions, and update your row below when done.
 | 024 | Distribution: how to share Hangar (decision plan, mostly not buildable yet) | — | P3 | S-L | 021 | AWAITING MAINTAINER |
 | 025 | Stack backfill: refresh on every Run and on Edit-open, not only after an install | — | P2 | S | 023 | DONE (merged) |
 | 026 | Show detected libraries on the card, capped with a +N overflow | — | P3 | S | 023 | DONE (merged `29d9743`, 2026-08-10) |
+| 027 | Move the phase strip's `seen` set into the store | — | P2 | S | — | DONE (merged `014dc57`, 2026-08-10) |
+| 028 | Folders, backend half — the two fields and the run-inert guard | — | P2 | M | SPEC `c53d767` | TODO |
+| 029 | Folders, frontend half — tile, band, Move to folder… | — | P2 | L | 028 | TODO |
+| 030 | Folders, the drag-to-merge gesture | — | P3 | M | 029 | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
 
@@ -256,6 +260,16 @@ subagent report.
    only and `App.tsx` feeds the filtered list straight to the grid, so a running
    project whose name does not match unmounts — resetting its PhaseStrip `seen`
    set and uptime clock. Introduced by plan 017, missed in its review. S.
+   **RESOLVED, and half of it was wrong** (2026-08-10): visibility was fixed by
+   plan 022 (`visibleProjects` keeps non-idle projects on screen), and the
+   `PhaseStrip` half by plan 027 (`seen` now lives in the store). The **uptime
+   half of this claim was never true** — `useCoarseNow` re-seeds on mount and
+   `uptimeLabel` derives from the persisted `lastRunAt`, so an unmount never
+   affected it. Worth remembering as a case where a plausible second symptom was
+   asserted alongside a real one and went unchecked for four days. The real bug
+   was also **worse at `crashed` than at `running`**: `crashed` is not a phase
+   key, so the old initialiser seeded an empty set and every segment rendered
+   pending — total erasure, not a reset.
 3. **`pathExists` goes stale.** Computed only in `to_view` (commands.rs) and
    `loadRegistry()` runs once on mount, so a moved folder keeps an enabled Run
    button until restart. §5 requires the check "at startup, on registry change,
