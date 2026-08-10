@@ -138,6 +138,43 @@ export interface PreflightReport {
   checkedAt: string;
 }
 
+/**
+ * SPEC.md §11 "Launch line" (added 2026-08-11, plan 060) — `get_vcs_status`'s wire shape. Mirrors
+ * `vcs::VcsStatus`/`vcs::VcsState`.
+ *
+ * **There is deliberately no `behind` field**, here or in the Rust struct. Hangar never fetches, so
+ * any "behind" number would be as old as the user's last manual fetch and would read as current — a
+ * stale "you are up to date" is worse than silence. A field that does not exist cannot be filled.
+ */
+export type VcsState =
+  /** Looked, and there is genuinely nothing to say. Silent. */
+  | "not-a-repo"
+  /** `git status` answered — `ahead`/`uncommitted` carry the answer. */
+  | "checked"
+  /**
+   * `git status` did **not** answer (git missing, timed out, non-zero exit). **Not "clean".** The
+   * line must render something for this, or a check that could not run renders as a clean bill of
+   * health — the exact bug SPEC.md §11 forbids for the Doctor panel's dependency check.
+   */
+  | "unavailable";
+
+export interface VcsStatus {
+  projectId: string;
+  state: VcsState;
+  /**
+   * Unpushed commits: on `HEAD`, absent from the **local** remote-tracking ref. Exact — both refs
+   * are local facts. Absent when `state !== "checked"`, and when the branch has no upstream, is
+   * detached, or the repo has no commits: nothing to count is not the same as counting zero.
+   */
+  ahead?: number;
+  /** How many paths a porcelain status listed. A count — never a name, never a diff. */
+  uncommitted?: number;
+  /** Why the check could not run. Only ever present for `"unavailable"`. */
+  detail?: string;
+  /** ISO — shared by every row from one `get_vcs_status` call. */
+  checkedAt: string;
+}
+
 /** §7 event payload — emitted on every transition. */
 export interface StatusChangedPayload {
   projectId: string;

@@ -1320,6 +1320,20 @@ mod tests {
             checked_at: "2026-08-11T09:00:00Z".into(),
         };
 
+        // SPEC.md §11 "Launch line" / plan 060: fully populated on purpose — `ahead`, `uncommitted`
+        // and `detail` all carry `skip_serializing_if = "Option::is_none"`, so a realistic row
+        // (which never has all three `Some` at once) would let this guard pass while never checking
+        // one of the keys. The state is `Unavailable` only so `detail` is legal to fill; the
+        // combination is a wire-shape sample, not a state this backend produces.
+        let vcs_status = crate::vcs::VcsStatus {
+            project_id: "abc123".into(),
+            state: crate::vcs::VcsState::Unavailable,
+            ahead: Some(30),
+            uncommitted: Some(1),
+            detail: Some("git status did not answer within 3 s, so this project was not checked.".into()),
+            checked_at: "2026-08-11T09:00:00Z".into(),
+        };
+
         #[cfg_attr(not(feature = "github"), allow(unused_mut))]
         let mut samples: Vec<serde_json::Value> = vec![
             serde_json::to_value(&project_view).unwrap(),
@@ -1330,6 +1344,7 @@ mod tests {
             serde_json::to_value(&package_json_info).unwrap(),
             serde_json::to_value(&port_status).unwrap(),
             serde_json::to_value(&preflight_report).unwrap(),
+            serde_json::to_value(&vcs_status).unwrap(),
         ];
         // Plan 058 — see the `github_status` sample above. Order is irrelevant: every sample is
         // asserted independently.
@@ -1395,6 +1410,24 @@ mod tests {
                 types_ts.contains(wire_str),
                 "Severity::{severity:?} serializes to {wire_str:?}, which does not appear \
                  anywhere in src/types.ts"
+            );
+        }
+
+        // SPEC.md §11 "Launch line" / plan 060: same reasoning again, for `VcsState`'s union. This
+        // one matters more than most — `unavailable` and `checked` are the two values the frontend
+        // must be able to tell apart, and a union missing one of them would silently collapse a
+        // check that could not run into a project that is fine.
+        for state in [
+            crate::vcs::VcsState::NotARepo,
+            crate::vcs::VcsState::Checked,
+            crate::vcs::VcsState::Unavailable,
+        ] {
+            let wire = serde_json::to_value(state).unwrap();
+            let wire_str = wire.as_str().expect("VcsState serializes to a string");
+            assert!(
+                types_ts.contains(wire_str),
+                "VcsState::{state:?} serializes to {wire_str:?}, which does not appear anywhere \
+                 in src/types.ts"
             );
         }
     }

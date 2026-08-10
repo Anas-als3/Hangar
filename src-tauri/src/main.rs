@@ -17,6 +17,9 @@ mod preflight;
 mod process;
 mod registry;
 mod run;
+// SPEC.md §11 "Launch line" / plan 060. A sibling of `preflight`, never part of it: this one runs
+// when the window opens, which is exactly what §11 forbids the Doctor's report from doing.
+mod vcs;
 
 use std::sync::atomic::Ordering;
 
@@ -97,6 +100,9 @@ fn main() {
             // SPEC.md §11 "Doctor" / plan 057 — an addition to the frozen §7 list, never a
             // rename/reshape. Lazy: only the panel calls it, on open and on Refresh.
             commands::get_preflight,
+            // SPEC.md §11 "Launch line" / plan 060 — an addition to the frozen §7 list, never a
+            // rename/reshape. It reads local git refs only: no network, and no write of any kind.
+            commands::get_vcs_status,
             // SPEC.md §18 / plan 053 — additions to the frozen §7 list, never a rename/reshape.
             //
             // Plan 058: `#[cfg]` here is NOT a §7 violation. §7 freezes the SHAPE of the API —
