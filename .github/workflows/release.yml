@@ -1,0 +1,47 @@
+name: Release
+
+# Builds and publishes a GitHub Release when a `v*` tag is pushed. This is
+# plan 044 (tier 1 of plan 024): an unsigned macOS arm64 .dmg for sharing
+# with people who can be told "right-click -> Open -> Open" (see README's
+# Gatekeeper paragraph). No signing, no notarisation, no Windows/Linux
+# artifact, no updater plugin -- see plan 024 for why each is out of scope.
+#
+# Deliberately separate from ci.yml's `bundle` job: `bundle` runs on every
+# push and is continue-on-error so a bundling hiccup never blocks the job
+# that gates correctness. A release must be loud when it fails, so this
+# workflow is NOT continue-on-error and only runs on a tag push, never on
+# branch pushes (ci.yml already owns those).
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  release:
+    name: release (macOS)
+    runs-on: macos-latest
+    permissions:
+      # Job-scoped (not workflow-wide): needed so the "Create Release" step
+      # below can create a GitHub Release and upload the .dmg to it.
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check package.json and tauri.conf.json versions agree
+        run: |
+          node -e '
+            const fs = require("fs");
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8")).version;
+            const tauri = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8")).version;
+            if (pkg !== tauri) {
+              console.error("Version mismatch: package.json=" + pkg + " src-tauri/tauri.conf.json=" + tauri);
+              process.exit(1);
+            }
+            const tag = process.env.GITHUB_REF_NAME || "";
+            const m = tag.match(/^v(\d+\.\d+\.\d+)$/);
+            if (m && m[1] !== pkg) {
+              console.error("Tag " + tag + " does not match version " + pkg + " -- package.json and tauri.conf.json agree with each other but not with the tag");
+              process.exit(1);
+            }
+            console.log("Version check passed: " + pkg + " (tag " + tag + ")");
+          '
