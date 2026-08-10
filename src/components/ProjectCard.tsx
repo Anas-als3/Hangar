@@ -200,7 +200,9 @@ export function ProjectCard({ project }: { project: ProjectView }) {
       data-hangar-tile={project.id}
       data-hangar-tile-kind="project"
       onPointerDown={(e) => startCardDrag(e.nativeEvent, project.id)}
-      className={`hangar-fade-in relative flex select-none flex-col gap-2 rounded-lg border border-white/5 bg-surface p-3 transition-transform duration-150 [-webkit-user-drag:none] hover:-translate-y-0.5 ${
+      // Plan 046 step 6: p-3 -> p-4, gap-2 -> gap-2.5. PhaseStrip.tsx's negative margins/padding
+      // are the same number in a second file — changed together below, see its own comment.
+      className={`hangar-fade-in relative flex select-none flex-col gap-2.5 rounded-lg border border-white/5 bg-surface p-4 transition-transform duration-150 [-webkit-user-drag:none] hover:-translate-y-0.5 ${
         isArmedTarget ? "ring-2 ring-accent" : ""
       } ${isDragSource ? "opacity-40" : ""} ${
         // Plan 037 step 3.4 / plan 046 step 1: `hover:-translate-y-0.5` above makes this card its
@@ -212,10 +214,11 @@ export function ProjectCard({ project }: { project: ProjectView }) {
     >
       <header className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          {/* §11 visual pass (plan 018): name is the primary hierarchy element — weight only,
-              still Space Grotesk / same size, no new element. */}
+          {/* §11 visual pass (plan 018): name is the primary hierarchy element — weight only.
+              Plan 046 step 6: text-lg -> text-xl is free height — Tailwind gives both the same
+              28px line box, so this costs nothing in the card's fixed silhouette. */}
           <h2
-            className="truncate font-display text-lg font-bold tracking-tight text-text"
+            className="truncate font-display text-xl font-bold tracking-tight text-text"
             title={project.name}
           >
             {project.name}
