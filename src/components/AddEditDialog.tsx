@@ -27,6 +27,37 @@ function pickDefaultScript(scripts: Record<string, string>): string | null {
   return keys.length > 0 ? keys[0] : null;
 }
 
+/**
+ * Fix 3 (plan 034): the TS mirror of `registry.rs`'s `extract_url_port` — deliberately not a full
+ * URL parser (no dependency for one call site), just enough to find an explicit `host:port`
+ * between the scheme and the next `/`, `?` or `#`. Kept in lockstep with the Rust original, which
+ * stays the tested canonical definition.
+ */
+function extractUrlPort(url: string): number | null {
+  const schemeIdx = url.indexOf("://");
+  const afterScheme = schemeIdx === -1 ? url : url.slice(schemeIdx + 3);
+  const cut = ["/", "?", "#"]
+    .map((c) => afterScheme.indexOf(c))
+    .filter((i) => i !== -1);
+  const authority = afterScheme.slice(0, cut.length > 0 ? Math.min(...cut) : afterScheme.length);
+  // Last colon, not first — an IPv6 literal's own colons (`[::1]:3000`) must not confuse the split.
+  const lastColon = authority.lastIndexOf(":");
+  if (lastColon === -1) return null;
+  const portStr = authority.slice(lastColon + 1);
+  if (!/^\d+$/.test(portStr)) return null;
+  const parsed = Number(portStr);
+  return parsed <= 65535 ? parsed : null;
+}
+
+/** SPEC.md §5: non-blocking warning text, mirroring `url_port_mismatch_warning` in `registry.rs`. */
+function urlPortMismatchWarning(url: string, port: number): string | null {
+  const trimmed = url.trim();
+  if (trimmed === "") return null;
+  const urlPort = extractUrlPort(trimmed);
+  if (urlPort === null || urlPort === port) return null;
+  return "URL port differs from the ready-check port.";
+}
+
 /** §5 `stack.detectedAt`: coarse relative time, same tone as §11's "no ticking seconds" rule. */
 function relativeTime(iso: string): string {
   const then = Date.parse(iso);
@@ -143,6 +174,9 @@ export function AddEditDialog() {
   const parsedPort = Number(port);
   const portValid = port.trim() !== "" && Number.isInteger(parsedPort) && parsedPort > 0;
   const canSave = name.trim() !== "" && path.trim() !== "" && command.trim() !== "" && portValid;
+  // Fix 3 (plan 034): advisory only — SPEC.md §5 requires this to be non-blocking, so it must
+  // never be folded into `canSave`.
+  const urlPortWarning = portValid ? urlPortMismatchWarning(url, parsedPort) : null;
 
   async function handleSave() {
     if (!canSave) return;
@@ -284,6 +318,10 @@ export function AddEditDialog() {
               placeholder={`http://localhost:${port || editing.port}`}
               className="mt-1.5 w-full rounded-md border border-white/10 bg-bg px-3 py-2 font-mono text-sm text-text outline-none focus:border-accent"
             />
+            {/* §5: non-blocking — Save stays enabled, `canSave` never sees this. */}
+            {urlPortWarning && (
+              <p className="mt-1.5 text-xs text-status-danger">{urlPortWarning}</p>
+            )}
           </>
         )}
 
