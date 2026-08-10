@@ -89,6 +89,8 @@ interface Project {
   };
   folderId?: string;     // opaque, generated; the folder IS the set of projects sharing it (added 2026-08-10)
   folderName?: string;   // the folder's display name, denormalised onto every member
+  openBrowserOnReady?: boolean; // default true — §9 step 6. False for a project with no page to open,
+                                // e.g. an API-only server, where every Run otherwise costs a junk tab
 }
 
 // What the frontend receives (derived fields are computed by the backend, never persisted):
@@ -279,7 +281,7 @@ Every child process Hangar ever spawns (dev command, `git rev-parse`, `git pull`
    - Same-folder coordination: steps 2–3 take a **per-canonical-path mutex**; if another project sharing the folder is updating/installing, wait, then re-check the hash (typically skipping a duplicate install).
 4. status `starting` → spawn `command` via the §8 helper; set `lastRunAt`.
 5. Poll **both** `127.0.0.1:port` and `[::1]:port` every 500 ms, **racing the child's exit** — if the child exits while `starting`, immediately set `crashed` and skip the rest (exit 0 → toast: "`<command>` finished (exit 0) without ever answering on port <port> — did you pick a script that starts a server (e.g. dev), not build?"; nonzero → toast with the exit code). The timeout budget is counted in **completed poll attempts** (`readyTimeoutSec × 2` attempts), not wall-clock — a poll gap over 5 s (system slept) does not count against the budget.
-6. Any accepted connection on either stack = ready. Wait 300 ms grace, then: status `running` → open `url` in the default browser via the opener plugin (from Rust).
+6. Any accepted connection on either stack = ready. Wait 300 ms grace, then: status `running` → open `url` in the default browser via the opener plugin (from Rust) — **unless the project sets `openBrowserOnReady: false`** (amended 2026-08-10). The status transition is unconditional; only the browser hand-off is skipped, and the run log still records readiness. Two cases motivated this, both observed: a project with no page to serve (an API-only server) gets a "Cannot GET /" tab on **every** Run since it was added, and a Stop→Run of a live-reloading dev server opens a duplicate tab the already-open one had reconnected on its own. Absent or `true`, the browser opens exactly as before — this default may not change, because opening the browser is §2's payoff and a silent opt-out would be worse than the junk tab.
 7. If the budget expires: **kill the spawned tree via the §8 Stop path, wait for confirmed death, then** set `crashed`. Toast: "Server didn't answer on port <port> within <readyTimeoutSec> s, so it was stopped. If it just needs longer (e.g. a first cold compile), raise Ready timeout in Edit. Check the log — did it start on another port? Pin it in Edit."
 
 ## 10. Add / Edit / Remove flow
@@ -287,10 +289,12 @@ Every child process Hangar ever spawns (dev command, `git rev-parse`, `git pull`
 1. Native folder picker (dialog plugin).
 2. Read `package.json`. List `scripts` as selectable options, pre-select `dev` if present, else `start`.
 3. Command becomes `npm run <script>` — or `pnpm run` / `yarn` if that lockfile exists. The command field stays editable free text. (Hint text under the field: "Env vars work inline — `PORT=3001 npm run dev`, or on Windows `set PORT=3001 && npm run dev` — if the framework ignores the pinned port.")
-4. Port field, prefilled by dependency sniffing only: `next` → 3000, `vite` → 5173, `react-scripts` → 3000, otherwise empty and required. This is a *suggestion*, never silent magic.
-5. Validate: no two projects may register the same **port** — show which project owns it. Two projects **may share a path** (e.g. `dev` and `storybook` from one repo on different ports) — allowed, no error; §9 step 3's per-path mutex handles the overlap.
-6. No `package.json`? Allow manual command + port entry (this is how a Spring Boot project could be added by hand later).
-7. Remove/Edit on a non-stopped project: confirm-and-stop first (§6). "Open in editor" runs `<editorCommand> <path>` through the §8 helper; on failure, toast: "Couldn't run 'code' — is it on your PATH? Change the editor command in Settings." Never fail silently.
+4. Port field, prefilled by dependency sniffing: `next` → 3000, `vite` → 5173, `react-scripts` → 3000, otherwise empty and required. Beside it, a **Choose for me** control picks the first port that no registered project pins and that nothing is currently listening on, and — **in the same press** — writes the matching port token into the command field (amended 2026-08-10). Both halves are required together: Hangar's `port` is a *prediction* of what the child will bind, never an instruction to it, so pinning an arbitrary port without telling the project produces a prediction that fails `readyTimeoutSec` later and then kills a healthy server. When the framework is unknown the control offers both forms — `--port` and `PORT=` — and names what each suits. Both edits land in visible, editable fields and nothing is written until Save: this is still a *suggestion*, never silent magic.
+   - **The prefill itself must stay a framework prediction, not an availability scan.** Bumping the suggestion to 5174 because 5173 happens to be busy would make the very first Run of a Vite project fail. Availability only ever enters through the explicit control above.
+5. **Open browser when ready** checkbox, default **on** (§5 `openBrowserOnReady`, §9 step 6). Turn it off for a project with no page to serve.
+6. Validate: no two projects may register the same **port** — show which project owns it. Two projects **may share a path** (e.g. `dev` and `storybook` from one repo on different ports) — allowed, no error; §9 step 3's per-path mutex handles the overlap.
+7. No `package.json`? Allow manual command + port entry (this is how a Spring Boot project could be added by hand later).
+8. Remove/Edit on a non-stopped project: confirm-and-stop first (§6). "Open in editor" runs `<editorCommand> <path>` through the §8 helper; on failure, toast: "Couldn't run 'code' — is it on your PATH? Change the editor command in Settings." Never fail silently.
 
 ## 11. UI direction
 
