@@ -86,6 +86,8 @@ pub async fn add_project(
     input: registry::NewProject,
     state: State<'_, AppState>,
 ) -> Result<ProjectView, String> {
+    registry::validate_ready_timeout_sec(input.ready_timeout_sec)?;
+
     let mut projects = state.projects.lock().await;
 
     if let Some(owner) = registry::port_conflict(&projects, input.port, None) {
@@ -249,6 +251,8 @@ pub async fn update_project(
     project: Project,
     state: State<'_, AppState>,
 ) -> Result<ProjectView, String> {
+    registry::validate_ready_timeout_sec(project.ready_timeout_sec)?;
+
     let mut projects = state.projects.lock().await;
     let runtime = state.runtime.lock().await;
 
