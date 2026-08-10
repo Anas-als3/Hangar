@@ -255,10 +255,15 @@ export function AddEditDialog() {
           </button>
         </div>
 
-        {/* §5/§11: app-owned, read-only — never an input. Edit dialog only, beneath the path. */}
-        {editing && stack && stack.libraries.length > 0 && (
+        {/* §5/§11: app-owned, read-only — never an input. Edit dialog only, beneath the path.
+            Plan 035 step 2: gate widened from "libraries non-empty" to "framework OR libraries"
+            (a framework-only project, e.g. a fresh Next app with no allow-listed deps yet, must
+            not render blank), and the framework is now prefixed — once step 1's card hover shows
+            the whole stack, this line is where §11 says "the full list remains", so it must be
+            at least as complete. */}
+        {editing && stack && (stack.framework || stack.libraries.length > 0) && (
           <p className="mt-1.5 text-xs text-muted">
-            {stack.libraries.join(" · ")}
+            {[...(stack.framework ? [stack.framework] : []), ...stack.libraries].join(" · ")}
             <span className="text-muted/60"> · detected {relativeTime(stack.detectedAt)}</span>
           </p>
         )}

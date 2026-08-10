@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const PROJECTS_FILE: &str = "projects.json";
@@ -520,7 +520,14 @@ const FRAMEWORK_DETECTORS: &[(&str, &str)] = &[
 /// dependency map's order — so the emitted list is stable regardless of how `package.json`
 /// happens to list its deps. Two keys may share a display name (`prisma` / `@prisma/client`);
 /// `detect_stack` dedupes.
+/// Plan 035 step 3: `openai` and `@anthropic-ai/sdk` at the HEAD are not a §3 "AI agents / AI
+/// context" violation. §3 bans building AI *into Hangar* — an LLM call, a model, a chat surface.
+/// This is `contains_key` against a user's own `package.json` dependency map: no model is
+/// invoked, no network request is made, no context is sent anywhere. It is the same detection
+/// this const already does for `stripe` or `zod` — reading a name off a list.
 const LIBRARY_ALLOW_LIST: &[(&str, &str)] = &[
+    ("openai", "OpenAI"),
+    ("@anthropic-ai/sdk", "Anthropic"),
     ("react", "React"),
     ("vue", "Vue"),
     ("svelte", "Svelte"),
@@ -540,6 +547,15 @@ const LIBRARY_ALLOW_LIST: &[(&str, &str)] = &[
     ("firebase", "Firebase"),
     ("socket.io", "Socket.IO"),
     ("zod", "Zod"),
+    // Tail — testing/automation: the group most likely to bloat and least identity-defining, so
+    // its names land in the card's `+N` rather than the visible three (plan 035 step 3).
+    ("playwright", "Playwright"),
+    ("@playwright/test", "Playwright"),
+    ("vitest", "Vitest"),
+    ("jest", "Jest"),
+    ("@testing-library/react", "Testing Library"),
+    ("@testing-library/jest-dom", "Testing Library"),
+    ("@testing-library/user-event", "Testing Library"),
 ];
 
 /// Same "check both dependency sections" rule as `sniff_port_suggestion`'s own `has_dep`.
@@ -552,18 +568,92 @@ fn has_dependency(package_json: &serde_json::Value, name: &str) -> bool {
     })
 }
 
+/// Plan 035 step 5: npm `workspaces` is capped at this many declared members — depth 1, never a
+/// directory scan, never a glob (§3's auto-discovery ban).
+const MAX_WORKSPACE_MEMBERS: usize = 8;
+
+/// One predicate for all six rejection rules, per plan 035 step 5 — `Path::components()`, NOT
+/// substring tests: `./node_modules/x` defeats a first-component check, and `contains("..")`
+/// wrongly rejects a legitimate `v1..2`. `Component::Normal` is std's own platform-aware parsing,
+/// so a leading `\` or a Windows drive prefix is already non-`Normal` on a Windows build; on Unix
+/// a backslash is just an ordinary filename byte, which cannot escape `dir` either way.
+fn is_safe_workspace_entry(entry: &str) -> bool {
+    if entry.is_empty() {
+        return false; // empty string
+    }
+    if entry.contains(['*', '?', '[']) || entry.starts_with('!') {
+        return false; // glob or negation
+    }
+    let mut components = Path::new(entry).components();
+    match components.next() {
+        // `..`, `.`, absolute, leading `/` or `\`, Windows drive prefix all surface as some
+        // non-`Normal` first component.
+        Some(Component::Normal(first)) if first != "node_modules" => {}
+        _ => return false,
+    }
+    components.all(|c| matches!(c, Component::Normal(_)))
+}
+
+/// PURE — no `&Path`, so it cannot touch the filesystem. All workspace POLICY lives here.
+/// SPEC.md §5 (workspaces, amended 2026-08-10): npm `workspaces` as an array of strings, or an
+/// object with a `packages` array of strings (yarn classic). A malformed shape (not an array or
+/// object, entries that aren't strings, an object with no `packages`) yields zero members, never
+/// an error — matching `read_package_json`'s own "not an error" contract.
+fn declared_workspace_dirs(package_json: &serde_json::Value) -> Vec<String> {
+    let entries = match package_json.get("workspaces") {
+        Some(serde_json::Value::Array(arr)) => arr,
+        Some(serde_json::Value::Object(obj)) => match obj.get("packages") {
+            Some(serde_json::Value::Array(arr)) => arr,
+            _ => return Vec::new(),
+        },
+        _ => return Vec::new(),
+    };
+
+    entries
+        .iter()
+        .filter_map(|v| v.as_str())
+        .filter(|s| is_safe_workspace_entry(s))
+        .take(MAX_WORKSPACE_MEMBERS)
+        .map(str::to_string)
+        .collect()
+}
+
+/// The ONLY new filesystem access in plan 035. `&Path` in the signature is this module's existing
+/// convention for "reads files". Depth is 1 — a member's own `workspaces` is never read, so there
+/// is no recursion to bound and a symlink loop is unreachable. A missing or unparseable member
+/// manifest is skipped silently. No directory-scan call anywhere in this module: every path here
+/// is a declared literal from `declared_workspace_dirs`, never a scan.
+fn read_workspace_members(dir: &Path, root: &serde_json::Value) -> Vec<serde_json::Value> {
+    declared_workspace_dirs(root)
+        .iter()
+        .filter_map(|member| {
+            std::fs::read(dir.join(member).join("package.json"))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        })
+        .collect()
+}
+
 /// SPEC.md §7 `stack`: built from the same merged dependency map `sniff_port_suggestion` reads —
 /// no additional file access, no source file ever parsed (this plan's "Scope of detection").
 /// `detected_at` uses `run::iso8601_utc` — no date crate (CLAUDE.md, SPEC.md §4).
-fn detect_stack(package_json: &serde_json::Value) -> ProjectStack {
+///
+/// PURE, boundary preserved (plan 035 step 5). The asymmetry is IN THE TYPE so it cannot be
+/// forgotten: `root` alone decides `framework` — the badge is a claim about the folder you
+/// registered, and unioning it across `members` would put a false badge on a card whose command
+/// belongs to a different workspace member entirely. `root` + `members` together decide
+/// `libraries` — a set, unioned. The outer loop stays over `LIBRARY_ALLOW_LIST`, so output order
+/// is independent of `members`' order.
+fn detect_stack(root: &serde_json::Value, members: &[serde_json::Value]) -> ProjectStack {
     let framework = FRAMEWORK_DETECTORS
         .iter()
-        .find(|(dep, _)| has_dependency(package_json, dep))
+        .find(|(dep, _)| has_dependency(root, dep))
         .map(|(_, name)| name.to_string());
 
     let mut libraries = Vec::new();
     for (dep, display) in LIBRARY_ALLOW_LIST {
-        if has_dependency(package_json, dep) && !libraries.iter().any(|l: &String| l == display) {
+        let present = has_dependency(root, dep) || members.iter().any(|m| has_dependency(m, dep));
+        if present && !libraries.iter().any(|l: &String| l == display) {
             libraries.push(display.to_string());
         }
     }
@@ -579,6 +669,9 @@ fn detect_stack(package_json: &serde_json::Value) -> ProjectStack {
 /// is not an error — it returns empty scripts so the dialog falls back to manual command + port
 /// entry." The package-manager detection is independent of `package.json` and still runs off the
 /// lockfiles on disk.
+///
+/// Plan 035 step 5: workspace members are read here, between the root parse and the return — the
+/// only place this module reads a second manifest.
 pub fn read_package_json(dir: &Path) -> PackageJsonInfo {
     let package_manager = detect_package_manager(dir);
 
@@ -591,9 +684,11 @@ pub fn read_package_json(dir: &Path) -> PackageJsonInfo {
             scripts: BTreeMap::new(),
             package_manager,
             port_suggestion: None,
-            stack: detect_stack(&serde_json::Value::Null),
+            stack: detect_stack(&serde_json::Value::Null, &[]),
         };
     };
+
+    let members = read_workspace_members(dir, &package_json);
 
     let scripts = package_json
         .get("scripts")
@@ -609,7 +704,7 @@ pub fn read_package_json(dir: &Path) -> PackageJsonInfo {
         scripts,
         package_manager,
         port_suggestion: sniff_port_suggestion(&package_json),
-        stack: detect_stack(&package_json),
+        stack: detect_stack(&package_json, &members),
     }
 }
 
@@ -959,26 +1054,32 @@ mod tests {
 
     #[test]
     fn detects_a_next_project() {
-        let stack = detect_stack(&serde_json::json!({
-            "dependencies": { "next": "14.0.0", "react": "18.2.0" }
-        }));
+        let stack = detect_stack(
+            &serde_json::json!({
+                "dependencies": { "next": "14.0.0", "react": "18.2.0" }
+            }),
+            &[],
+        );
         assert_eq!(stack.framework.as_deref(), Some("Next"));
         assert_eq!(stack.libraries, vec!["React".to_string()]);
     }
 
     #[test]
     fn detects_a_vite_project() {
-        let stack = detect_stack(&serde_json::json!({
-            "devDependencies": { "vite": "5.0.0" },
-            "dependencies": { "vue": "3.4.0" }
-        }));
+        let stack = detect_stack(
+            &serde_json::json!({
+                "devDependencies": { "vite": "5.0.0" },
+                "dependencies": { "vue": "3.4.0" }
+            }),
+            &[],
+        );
         assert_eq!(stack.framework.as_deref(), Some("Vite"));
         assert_eq!(stack.libraries, vec!["Vue".to_string()]);
     }
 
     #[test]
     fn an_unrecognised_dependency_set_has_no_framework() {
-        let stack = detect_stack(&serde_json::json!({"dependencies": {"express": "4.0.0"}}));
+        let stack = detect_stack(&serde_json::json!({"dependencies": {"express": "4.0.0"}}), &[]);
         assert_eq!(stack.framework, None);
         assert_eq!(stack.libraries, vec!["Express".to_string()]);
     }
@@ -987,24 +1088,30 @@ mod tests {
     fn an_empty_or_absent_package_json_is_an_empty_stack_not_an_error() {
         // §10 step 6 / this plan: no `package.json` at all must still work — an empty stack, not
         // an error — so a manual-entry project (no folder scan) never crashes detection.
-        let absent = detect_stack(&serde_json::Value::Null);
+        let absent = detect_stack(&serde_json::Value::Null, &[]);
         assert_eq!(absent.framework, None);
         assert!(absent.libraries.is_empty());
         assert!(!absent.detected_at.is_empty());
 
-        let empty = detect_stack(&serde_json::json!({}));
+        let empty = detect_stack(&serde_json::json!({}), &[]);
         assert_eq!(empty.framework, None);
         assert!(empty.libraries.is_empty());
     }
 
     #[test]
     fn library_order_is_stable_regardless_of_dependency_map_order() {
-        let a = detect_stack(&serde_json::json!({
-            "dependencies": { "react": "18.2.0", "axios": "1.0.0", "zod": "3.0.0" }
-        }));
-        let b = detect_stack(&serde_json::json!({
-            "dependencies": { "zod": "3.0.0", "axios": "1.0.0", "react": "18.2.0" }
-        }));
+        let a = detect_stack(
+            &serde_json::json!({
+                "dependencies": { "react": "18.2.0", "axios": "1.0.0", "zod": "3.0.0" }
+            }),
+            &[],
+        );
+        let b = detect_stack(
+            &serde_json::json!({
+                "dependencies": { "zod": "3.0.0", "axios": "1.0.0", "react": "18.2.0" }
+            }),
+            &[],
+        );
         let expected = vec!["React".to_string(), "Axios".to_string(), "Zod".to_string()];
         assert_eq!(a.libraries, expected);
         assert_eq!(b.libraries, expected, "same deps, different map order, same output order");
@@ -1012,10 +1119,28 @@ mod tests {
 
     #[test]
     fn prisma_and_prisma_client_dedupe_to_one_library_entry() {
-        let stack = detect_stack(&serde_json::json!({
-            "dependencies": { "prisma": "5.0.0", "@prisma/client": "5.0.0" }
-        }));
+        let stack = detect_stack(
+            &serde_json::json!({
+                "dependencies": { "prisma": "5.0.0", "@prisma/client": "5.0.0" }
+            }),
+            &[],
+        );
         assert_eq!(stack.libraries, vec!["Prisma".to_string()]);
+    }
+
+    #[test]
+    fn openai_and_anthropic_sdk_are_detected_first_in_the_list() {
+        // Plan 035 step 3: the half of the original request that plan 023 never delivered.
+        let stack = detect_stack(
+            &serde_json::json!({
+                "dependencies": { "openai": "4.0.0", "@anthropic-ai/sdk": "0.20.0", "zod": "3.0.0" }
+            }),
+            &[],
+        );
+        assert_eq!(
+            stack.libraries,
+            vec!["OpenAI".to_string(), "Anthropic".to_string(), "Zod".to_string()]
+        );
     }
 
     #[test]
@@ -1044,6 +1169,10 @@ mod tests {
         let info = read_package_json(&dir);
         assert!(info.scripts.is_empty());
         assert_eq!(info.port_suggestion, None);
+        // Plan 035 step 6: exercises the `detect_stack(&Value::Null, &[])` branch directly,
+        // rather than only by implication through `port_suggestion`/`scripts`.
+        assert_eq!(info.stack.framework, None);
+        assert!(info.stack.libraries.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1054,6 +1183,100 @@ mod tests {
         let info = read_package_json(&dir);
         assert!(info.scripts.is_empty());
         assert_eq!(info.port_suggestion, None);
+        // Same direct coverage as the missing-file case above: an unparseable root also falls
+        // through to `detect_stack(&Value::Null, &[])`.
+        assert_eq!(info.stack.framework, None);
+        assert!(info.stack.libraries.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Plan 035 step 6 — `declared_workspace_dirs` is PURE policy: every malformed shape is
+    // tested without touching a filesystem, and every one must yield zero members, not an error.
+    // -----------------------------------------------------------------------------------------
+
+    #[test]
+    fn declared_workspace_dirs_accepts_array_and_yarn_classic_object() {
+        assert_eq!(
+            declared_workspace_dirs(&serde_json::json!({"workspaces": ["server", "web"]})),
+            vec!["server".to_string(), "web".to_string()]
+        );
+        assert_eq!(
+            declared_workspace_dirs(&serde_json::json!({"workspaces": {"packages": ["web"]}})),
+            vec!["web".to_string()]
+        );
+    }
+
+    #[test]
+    fn declared_workspace_dirs_rejects_malformed_shapes_with_zero_members_not_an_error() {
+        assert!(declared_workspace_dirs(&serde_json::json!({"workspaces": "web"})).is_empty());
+        assert!(declared_workspace_dirs(&serde_json::json!({"workspaces": [1, 2]})).is_empty());
+        assert!(declared_workspace_dirs(&serde_json::json!({"workspaces": [{}]})).is_empty());
+        assert!(declared_workspace_dirs(&serde_json::json!({"workspaces": {}})).is_empty());
+        assert!(declared_workspace_dirs(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn declared_workspace_dirs_rejects_globs_and_path_escapes() {
+        for bad in ["packages/*", "../evil", "/abs", "./node_modules/x"] {
+            assert!(
+                declared_workspace_dirs(&serde_json::json!({"workspaces": [bad]})).is_empty(),
+                "{bad:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn declared_workspace_dirs_truncates_to_eight_in_declared_order() {
+        let nine: Vec<String> = (1..=9).map(|n| format!("pkg{n}")).collect();
+        let result = declared_workspace_dirs(&serde_json::json!({"workspaces": nine}));
+        assert_eq!(
+            result,
+            (1..=MAX_WORKSPACE_MEMBERS).map(|n| format!("pkg{n}")).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn read_workspace_members_skips_a_missing_member_without_erroring() {
+        let dir = scratch("workspace-members");
+        std::fs::create_dir_all(dir.join("web")).unwrap();
+        std::fs::write(
+            dir.join("web").join("package.json"),
+            r#"{"dependencies": {"react": "18.0.0"}}"#,
+        )
+        .unwrap();
+        // "server" is declared but its directory is never created.
+        let root = serde_json::json!({"workspaces": ["web", "server"]});
+        let members = read_workspace_members(&dir, &root);
+        assert_eq!(members.len(), 1);
+        assert!(has_dependency(&members[0], "react"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_package_json_unions_workspace_members_but_keeps_framework_root_only() {
+        // Plan 035's governing rule: `framework` is root-only, `libraries` unions root + members.
+        let dir = scratch("monorepo");
+        std::fs::write(dir.join("package.json"), r#"{"workspaces": ["server", "web"]}"#).unwrap();
+        std::fs::create_dir_all(dir.join("server")).unwrap();
+        std::fs::write(
+            dir.join("server").join("package.json"),
+            r#"{"dependencies": {"express": "4.0.0"}}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.join("web")).unwrap();
+        std::fs::write(
+            dir.join("web").join("package.json"),
+            r#"{"dependencies": {"react": "18.0.0"}, "devDependencies": {"vite": "5.0.0"}}"#,
+        )
+        .unwrap();
+
+        let info = read_package_json(&dir);
+        // §5 (amended 2026-08-10): the root declares no framework, so `web`'s `vite` must NOT
+        // surface here — unioning `framework` would put a false badge on this card.
+        assert_eq!(info.stack.framework, None);
+        assert!(info.stack.libraries.contains(&"Express".to_string()));
+        assert!(info.stack.libraries.contains(&"React".to_string()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

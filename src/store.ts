@@ -377,6 +377,29 @@ function isPhaseStatus(status: Status): boolean {
   );
 }
 
+/**
+ * Plan 035 step 4 — the quiet refresh. Deliberately fetches only `projects`, not the full
+ * `loadRegistry()` (which also sets `loading: true` — `App.tsx` swaps the whole grid for
+ * "Loading…" while that flag is true, and a mid-run refresh must never blank the grid or the
+ * phase strip). Errors are swallowed and the current list is kept: a failed refresh must never
+ * clear the grid.
+ *
+ * Why this exists: `stack_is_unchanged_ignoring_timestamp` (commands.rs) compares the stored
+ * `stack.libraries` by value, `run.rs` rewrites `stack` on every Run, and `status-changed` carries
+ * only the status — so the store's copy of `stack` goes stale the instant `detect_stack`'s output
+ * changes for a project (e.g. step 3's wider allow-list). Without this, the first Run after such a
+ * change would make the store disagree with disk, and the maintainer's next note-save or
+ * Move-to-folder on that running project would be refused with "... is running. Stop it first."
+ */
+async function refreshRegistryQuietly(): Promise<void> {
+  try {
+    const projects = await getProjects();
+    setState({ projects });
+  } catch {
+    // Swallow: a failed quiet refresh must leave the currently-shown list untouched.
+  }
+}
+
 function applyStatusChanged(payload: StatusChangedPayload): void {
   const previous = state.projects.find((p) => p.id === payload.projectId)?.status;
   const projects = state.projects.map((p) =>
@@ -413,6 +436,13 @@ function applyStatusChanged(payload: StatusChangedPayload): void {
   // from the rejected `stop_project` call, and toasting both would double up.
   if (payload.status === "crashed" && payload.message) {
     setToast(payload.message, "error", payload.projectId);
+  }
+
+  // Plan 035 step 4: refresh on `running`, not `starting` — §9 step 4 emits the `starting`
+  // status BEFORE persisting the freshly-detected `stack`, so refreshing on `starting` would
+  // race that write and could still fetch the pre-Run stack.
+  if (payload.status === "running") {
+    void refreshRegistryQuietly();
   }
 }
 

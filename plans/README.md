@@ -45,6 +45,7 @@ conditions, and update your row below when done.
 | 032 | Make the run-inert exemption actually reachable (guard staleness) | — | P1 | S | 028 | DONE (merged `548b748`, 2026-08-10) |
 | 033 | Four folder-UI defects found by review | — | P2 | S | 029, 030 | DONE (merged, 2026-08-10) |
 | 034 | Toast → Show logs + project name; three validation bugs | — | P2 | S | — | DONE (merged, 2026-08-10) |
+| 035 | Stack: workspaces, wider library allow-list, and a hover that shows the stack | — | P2 | M | SPEC.md §5 amendment (ratified 2026-08-10) | DONE — executed in worktree `.claude/worktrees/agent-a2fe13609c4014738` (branch `worktree-agent-a2fe13609c4014738`), commits `00bfb0f`..`6af7788`; all gates green (124 Rust tests, was 117; `tsc --noEmit` 0). Not yet merged — maintainer's call. |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
 
