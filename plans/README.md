@@ -48,6 +48,9 @@ conditions, and update your row below when done.
 | 035 | Stack: workspaces, wider library allow-list, and a hover that shows the stack | — | P2 | M | SPEC.md §5 amendment (ratified 2026-08-10) | DONE (merged `55d318a`, 2026-08-10) — 124 Rust tests, was 117; all gates re-run on main |
 | 036 | Install script: stop losing builds to a manual copy, and widen the external-API group | — | P1 (step 1) | S | 035 | DONE (merged `5c1c254`, 2026-08-10) — 127 Rust tests, was 124; all gates re-run on main |
 | 037 | `+N` becomes a button revealing the full stack | — | P2 | S | SPEC §11 amendment | DONE (merged `bb65ea1`, 2026-08-10) |
+| 038 | Quiet refresh everywhere — stop blanking the grid on every mutation | — | P2 | S | — | DONE (merged `021963b`, 2026-08-10) |
+| 039 | Notes Esc data loss; dialog autofocus, Enter-to-save, `inert` focus trap | — | P1 (step 1) | M | 038 | IN PROGRESS |
+| 040 | `openBrowserOnReady` — stop opening a tab on every Run | — | P2 | S | SPEC §5/§9/§10 amendments | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
 
