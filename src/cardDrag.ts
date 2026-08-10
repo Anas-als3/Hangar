@@ -82,3 +82,90 @@ function locateTile(
   if (!id || (kind !== "project" && kind !== "folder")) return null;
   return { id, kind, el };
 }
+
+function onPointerMove(event: PointerEvent): void {
+  const s = session;
+  if (!s) return;
+  // §11 reset rule: a `projects` change that removes the source ends the session. Checked here
+  // (every move) and again in `arm()` (for the case the pointer never moves during the dwell).
+  if (!findProject(s.sourceId)) {
+    cancelSession();
+    return;
+  }
+  const point: Point = { x: event.clientX, y: event.clientY };
+
+  if (!s.moved) {
+    if (!hasMovedEnough(s.origin, point)) return;
+    s.moved = true;
+    s.ghost = createGhost(s.sourceId, point);
+    if (!s.ghost) {
+      cancelSession();
+      return;
+    }
+    setDragView({ sourceId: s.sourceId, targetId: null, armed: false });
+  }
+
+  // §11: one style write per pointer event, no rAF loop — the ghost tracks the cursor directly.
+  if (s.ghost) s.ghost.style.transform = `translate(${point.x + 10}px, ${point.y + 10}px)`;
+
+  if (event.timeStamp - lastHitTestAt < HITTEST_THROTTLE_MS) return;
+  lastHitTestAt = event.timeStamp;
+
+  const located = locateTile(point.x, point.y);
+  const tiles: DragTile[] = located
+    ? [{ id: located.id, kind: located.kind, rect: located.el.getBoundingClientRect() }]
+    : [];
+  const intent = hitTest(point, s.sourceId, tiles);
+
+  if (intent.kind !== "merge") {
+    clearTarget(s);
+    return;
+  }
+  if (s.targetId === intent.targetId) {
+    // Same target as last tick: staying within slop leaves the running timer alone (§11: "moving
+    // off the target or beyond the slop cancels and restarts the timer").
+    if (s.dwellAnchor && !stillWithinSlop(s.dwellAnchor, point)) restartDwell(s, point);
+    return;
+  }
+  s.targetId = intent.targetId;
+  s.targetKind = intent.targetKind;
+  s.targetEl = located?.el ?? null;
+  restartDwell(s, point);
+}
+
+function restartDwell(s: Session, point: Point): void {
+  if (s.armTimer) clearTimeout(s.armTimer);
+  s.armed = false;
+  s.dwellAnchor = point;
+  setDragView({ sourceId: s.sourceId, targetId: s.targetId, armed: false });
+  s.armTimer = setTimeout(() => arm(s), DWELL_MS);
+}
+
+function clearTarget(s: Session): void {
+  if (s.targetId === null) return;
+  if (s.armTimer) clearTimeout(s.armTimer);
+  s.armTimer = null;
+  s.armed = false;
+  s.targetId = null;
+  s.targetKind = null;
+  s.targetEl = null;
+  s.dwellAnchor = null;
+  setDragView({ sourceId: s.sourceId, targetId: null, armed: false });
+}
+
+/**
+ * Fires exactly `DWELL_MS` after the timer last (re)started. §11: reduced motion keeps this timer
+ * unchanged — only the visual ring is affected (it is a plain class toggle keyed off `armed`, so
+ * there is nothing to lag: it cannot render before this callback runs).
+ */
+function arm(s: Session): void {
+  if (session !== s || !s.targetId) return;
+  // Re-validate against the live DOM rather than a cached rect or a stale store read: a project
+  // can crash and vanish during the dwell itself, with no pointermove in between to catch it.
+  if (!document.body.contains(s.targetEl) || !findProject(s.sourceId)) {
+    cancelSession();
+    return;
+  }
+  s.armed = true;
+  setDragView({ sourceId: s.sourceId, targetId: s.targetId, armed: true });
+}
