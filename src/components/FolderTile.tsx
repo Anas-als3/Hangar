@@ -22,7 +22,7 @@ function FolderDots({ members }: { members: ProjectView[] }) {
   const shown = members.slice(0, DOT_CAP);
   const overflow = members.length - shown.length;
   return (
-    <div className="relative z-10 flex items-center gap-1">
+    <div className="pointer-events-none relative z-10 flex items-center gap-1">
       <div aria-hidden="true" className="flex items-center gap-1">
         {shown.map((m) => (
           <span
@@ -121,7 +121,7 @@ export function FolderTile({
 
   return (
     <article
-      className="hangar-fade-in relative flex min-h-[11rem] flex-col gap-2 rounded-lg border border-white/10 bg-surface p-3 before:absolute before:inset-x-3 before:-top-1 before:h-px before:bg-white/10 before:content-[''] after:absolute after:inset-x-5 after:-top-2 after:h-px after:bg-white/5 after:content-['']"
+      className="hangar-fade-in relative flex min-h-[11rem] cursor-pointer flex-col gap-2 rounded-lg border border-white/10 bg-surface p-3 before:absolute before:inset-x-3 before:-top-1 before:h-px before:bg-white/10 before:content-[''] after:absolute after:inset-x-5 after:-top-2 after:h-px after:bg-white/5 after:content-['']"
     >
       <button
         type="button"
@@ -135,8 +135,16 @@ export function FolderTile({
         </span>
       </button>
 
-      <header className="relative z-10 flex items-start justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-1.5">
+      {/* Display-only by default — pointer-events-none lets clicks fall through to the stretched
+          open/close button beneath. The `⋯` menu and the name each punch a pointer-events-auto
+          hole back open below, since they're independently interactive. */}
+      <header className="pointer-events-none relative z-10 flex items-start justify-between gap-3">
+        <div
+          className={`pointer-events-auto flex min-w-0 items-center gap-1.5 ${
+            renaming ? "" : "cursor-pointer"
+          }`}
+          onClick={renaming ? undefined : () => toggleFolder(id)}
+        >
           <span aria-hidden="true" className="shrink-0 text-muted">
             {open ? "⌄" : "›"}
           </span>
@@ -155,7 +163,7 @@ export function FolderTile({
                   setRenaming(false);
                 }
               }}
-              className="min-w-0 flex-1 rounded border border-accent bg-bg px-1.5 py-0.5 font-display text-lg font-bold tracking-tight text-text outline-none"
+              className="pointer-events-auto min-w-0 flex-1 rounded border border-accent bg-bg px-1.5 py-0.5 font-display text-lg font-bold tracking-tight text-text outline-none"
             />
           ) : (
             <h2
@@ -167,7 +175,7 @@ export function FolderTile({
           )}
         </div>
 
-        <div className="relative shrink-0" ref={menuRef}>
+        <div className="pointer-events-auto relative shrink-0" ref={menuRef}>
           <button
             type="button"
             aria-label={`Actions for folder ${name}`}
@@ -204,13 +212,16 @@ export function FolderTile({
         </div>
       </header>
 
-      <p className="relative z-10 text-xs text-muted">
+      {/* Display-only — pointer-events-none so clicks fall through to the stretched button. */}
+      <p className="pointer-events-none relative z-10 text-xs text-muted">
         {members.length} project{members.length === 1 ? "" : "s"}
       </p>
 
       <FolderDots members={members} />
 
-      <p className="relative z-10 mt-auto text-xs text-muted">{folderSummary(members)}</p>
+      <p className="pointer-events-none relative z-10 mt-auto text-xs text-muted">
+        {folderSummary(members)}
+      </p>
     </article>
   );
 }
