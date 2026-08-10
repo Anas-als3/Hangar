@@ -36,12 +36,14 @@ function stackHoverText(stack: ProjectStack): string | null {
   return parts.length > 0 ? parts.join(" · ") : null;
 }
 
-/** §6/§10 step 7: Edit — confirm-and-stop first if the project isn't stopped/crashed. */
-async function handleEdit(projectId: string): Promise<void> {
+/** §6/§10 step 7 (plan 048): opens the dialog directly — no confirm, no stop. §6's guard applies
+ *  "before removing/saving", not before *looking*; the confirm-and-stop now runs inside
+ *  `AddEditDialog`'s save path, and only when the pending change reaches beyond the run-inert set
+ *  (SPEC.md §6's amended bullet) — looking at a running project's settings must not cost you the
+ *  process. */
+function handleEdit(projectId: string): void {
   const project = findProject(projectId);
   if (!project) return;
-  const okToProceed = await stopIfRunningWithConfirm(project);
-  if (!okToProceed) return;
   openEditDialog(project);
 }
 
@@ -108,7 +110,7 @@ const MENU_ITEMS: ReadonlyArray<{
   { label: "Show logs", action: (id) => void openLogs(id) },
   { label: "Notes", action: (id) => void openNotes(id) },
   { label: "Move to folder…", action: (id) => handleMoveToFolder(id) },
-  { label: "Edit", action: (id) => void handleEdit(id) },
+  { label: "Edit", action: (id) => handleEdit(id) },
   { label: "Remove", action: (id) => void handleRemove(id) },
 ];
 
