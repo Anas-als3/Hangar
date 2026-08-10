@@ -8,6 +8,7 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  GithubStatus,
   LogLine,
   NewProject,
   PackageJsonInfo,
@@ -142,4 +143,31 @@ export function freePort(projectId: string, pid: number): Promise<void> {
  */
 export function findFreePort(from: number, exclude: number[]): Promise<number | null> {
   return invoke<number | null>("find_free_port", { from, exclude });
+}
+
+/**
+ * SPEC.md §18 / plan 053 `get_github_status` — the Inbox panel's one status read. Never rejects
+ * for a connection problem: offline/rate-limited/invalid/keychain-denied are all `Ok` values on
+ * `GithubStatus.state` (§11: "none of them is a toast, and none is an error"). Reads the OS
+ * keychain lazily, at most once per session — never on startup, never before the grid renders.
+ */
+export function getGithubStatus(): Promise<GithubStatus> {
+  return invoke<GithubStatus>("get_github_status");
+}
+
+/**
+ * SPEC.md §18 / plan 053 `set_github_token` — validates the token against GitHub BEFORE it is
+ * ever written to the keychain. Resolves to the resulting `GithubStatus`, including every
+ * failure case; only a genuinely unexpected internal failure rejects the promise.
+ */
+export function setGithubToken(token: string): Promise<GithubStatus> {
+  return invoke<GithubStatus>("set_github_token", { token });
+}
+
+/**
+ * SPEC.md §18 `remove_github_token` — "one obvious action, and must leave no residue." Rejects
+ * if the keychain itself refused the delete.
+ */
+export function removeGithubToken(): Promise<void> {
+  return invoke<void>("remove_github_token");
 }

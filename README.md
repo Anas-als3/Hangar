@@ -98,6 +98,23 @@ Runs the SPEC.md §15 process tests. The script already bakes in
 renamed to `projects.json.broken-<timestamp>`, and a banner in the app names
 the backup.
 
+## GitHub connection
+
+Hangar can connect to GitHub to surface notifications for the repositories you register
+(SPEC.md §18) — this is the one place the app makes a network call or stores a credential.
+Connect a classic personal access token from the Inbox panel (header button). Hangar asks for
+exactly two scopes:
+
+- `notifications` — read your GitHub notifications.
+- `repo` — full read/write access to your repositories' code. This is broad; grant it only if
+  you understand what it lets a token do. If every repository you want to see is public,
+  `public_repo` (read/write to public repos only) is enough instead.
+
+The token is stored in your OS keychain only — never on disk, never in `projects.json`.
+Disconnecting from the Inbox panel deletes it from the keychain and leaves no residue. Hangar
+never asks for your GitHub password, only a token generated at
+`github.com/settings/tokens`.
+
 ## Prerequisites
 
 - Node 24+
