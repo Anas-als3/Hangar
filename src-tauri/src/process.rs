@@ -2585,6 +2585,61 @@ My Dev Server.exe                1 Console                    1     45,678 K
         assert!(!stop_is_verified(false, true));
     }
 
+    fn listener(name: &str, pid: u32) -> PortListener {
+        PortListener { name: name.to_string(), pid, user: None }
+    }
+
+    #[test]
+    fn no_listener_after_confirmed_death_is_a_plain_verified_stop() {
+        assert_eq!(
+            settle_after_kill(true, false, Some(4321), &[]),
+            StopVerdict::Stopped { foreign_owner: None }
+        );
+    }
+
+    #[test]
+    fn death_unconfirmed_never_consults_the_owner() {
+        // Even a listener that would otherwise attribute cleanly must not rescue an unconfirmed
+        // death — the port answer (and anything built on it) is meaningless while processes may
+        // still be alive.
+        assert_eq!(
+            settle_after_kill(false, true, Some(4321), &[listener("python3", 999)]),
+            StopVerdict::StopFailed
+        );
+    }
+
+    #[test]
+    fn a_foreign_listener_after_confirmed_death_is_a_verified_stop_with_a_warning() {
+        let owner = listener("python3", 999);
+        assert_eq!(
+            settle_after_kill(true, true, Some(4321), std::slice::from_ref(&owner)),
+            StopVerdict::Stopped { foreign_owner: Some(owner) }
+        );
+    }
+
+    #[test]
+    fn an_unattributable_busy_port_stays_stop_failed() {
+        // The port answers but the lookup found nothing parseable — honesty over convenience.
+        assert_eq!(settle_after_kill(true, true, Some(4321), &[]), StopVerdict::StopFailed);
+    }
+
+    #[test]
+    fn a_same_tree_listener_after_confirmed_death_stays_stop_failed() {
+        // A listener carrying the exact pid we just killed gets no benefit of the doubt (§16: pids
+        // are reused) — treated as unverifiable, not as proof it is foreign.
+        let same = listener("node", 4321);
+        assert_eq!(
+            settle_after_kill(true, true, Some(4321), std::slice::from_ref(&same)),
+            StopVerdict::StopFailed
+        );
+    }
+
+    #[test]
+    fn two_listeners_where_one_is_ours_stays_stop_failed() {
+        let listeners = [listener("node", 4321), listener("python3", 999)];
+        assert_eq!(settle_after_kill(true, true, Some(4321), &listeners), StopVerdict::StopFailed);
+    }
+
     /// SPEC.md §15 test 3 — **the orphan test**, in code, against the real kill path.
     ///
     /// Ignored by default because it starts a real `npm run dev` (needs `npm` on PATH and takes a
