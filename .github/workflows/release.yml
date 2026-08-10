@@ -7,10 +7,11 @@ name: Release
 # artifact, no updater plugin -- see plan 024 for why each is out of scope.
 #
 # Deliberately separate from ci.yml's `bundle` job: `bundle` runs on every
-# push and is continue-on-error so a bundling hiccup never blocks the job
-# that gates correctness. A release must be loud when it fails, so this
-# workflow is NOT continue-on-error and only runs on a tag push, never on
-# branch pushes (ci.yml already owns those).
+# push and tolerates failure (see its own comment in ci.yml) so a bundling
+# hiccup never blocks the job that gates correctness. A release must be loud
+# when it fails, so nothing in this job tolerates failure the way `bundle`
+# does, and it only runs on a tag push, never on branch pushes (ci.yml
+# already owns those).
 
 on:
   push:
