@@ -58,11 +58,14 @@ conditions, and update your row below when done.
 | 045 | `openBrowserOnReady` — stop opening a tab on every Run (supersedes the 040 row) | — | P2 | S | SPEC §5/§9/§10 amendments, 043 | DONE (merged `87f09e5`, 2026-08-10) |
 | 046 | Presence pass — fixed card silhouette, menu z-index, dark first frame, width cap, bigger title | — | P2 | M | SPEC §11 amendments | DONE (merged, 2026-08-10) |
 | 047 | Ports button on the toast when a Run did not take | — | P2 | XS | 041 | DONE (merged `440bafb`, 2026-08-10) |
-| 048 | Edit must not kill the server — move confirm-and-stop from dialog-open to Save | — | P2 | S-M | SPEC §6 amendment | TODO |
+| 048 | Edit must not kill the server — confirm moved from dialog-open to Save | — | P2 | S-M | SPEC §6 amendment | DONE (merged `5675a29`, 2026-08-10) — 147 tests, was 143 |
 | 049 | Run button that admits it was clicked (pre-status window on a shared path) | — | P3 | S | — | TODO |
 | 050 | Crash reason on the card | — | P2 | S | — | SUPERSEDED by 052 (folded in as Part B) |
 | 051 | Resume last session + workspace strip | — | P2 | M | SPEC §11 amendments | DONE (merged `97fe575`, 2026-08-10) — 8 `node --test` cases |
 | 052 | Card feedback: pending-Run state + crash reason | — | P2 | S | SPEC §11 amendment | DONE (merged `d4e35eb`, 2026-08-10) |
+| 053 | GitHub credential — slice 1 of §18 (token, keychain, panel shell) | — | P2 | M | SPEC §18, §11 inbox amendments | IN PROGRESS |
+| 054 | GitHub notification list — slice 2 | — | P2 | L | 053 | TODO |
+| 055 | GitHub read + reply — slice 3 | — | P2 | M | 054 | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
 
