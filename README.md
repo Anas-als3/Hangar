@@ -20,6 +20,22 @@ coming from an "unidentified developer" — right-click the app and choose
 Open once to bypass that. This is expected for a local, unsigned build, not
 a bug.
 
+## Reinstall after a change
+
+```
+npm run install:app
+```
+
+**Quit Hangar first with Cmd+Q, not Force Quit** — Cmd+Q runs the app's quit
+path, which stops any dev servers it's supervising cleanly; Force Quit kills
+Hangar without stopping them, orphaning those processes.
+
+`npm run build:app` only writes to
+`src-tauri/target/release/bundle/macos/Hangar.app` — `/Applications/Hangar.app`
+is a separate copy, so building alone changes nothing you'll actually see.
+`npm run install:app` builds and then replaces the `/Applications` copy in
+one step (macOS-only; there is no Windows build to install yet).
+
 ## Develop
 
 ```

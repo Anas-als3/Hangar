@@ -528,6 +528,39 @@ const FRAMEWORK_DETECTORS: &[(&str, &str)] = &[
 const LIBRARY_ALLOW_LIST: &[(&str, &str)] = &[
     ("openai", "OpenAI"),
     ("@anthropic-ai/sdk", "Anthropic"),
+    // Plan 036 step 3: widens the head group only, same selection rule as above — "an external
+    // service this project calls out to." Grouped by kind for legibility; order within a group
+    // is arbitrary (dedupe is by display name, not position).
+    ("@google/generative-ai", "Gemini"),
+    ("@mistralai/mistralai", "Mistral"),
+    ("cohere-ai", "Cohere"),
+    ("replicate", "Replicate"),
+    ("@huggingface/inference", "HuggingFace"),
+    ("langchain", "LangChain"),
+    ("ai", "Vercel AI"),
+    ("stripe", "Stripe"),
+    ("twilio", "Twilio"),
+    ("@sendgrid/mail", "SendGrid"),
+    ("resend", "Resend"),
+    ("nodemailer", "Nodemailer"),
+    ("@aws-sdk/client-s3", "AWS"),
+    ("aws-sdk", "AWS"),
+    ("googleapis", "Google APIs"),
+    ("@octokit/rest", "GitHub API"),
+    ("@vercel/blob", "Vercel Blob"),
+    ("@clerk/clerk-sdk-node", "Clerk"),
+    ("@clerk/nextjs", "Clerk"),
+    ("next-auth", "NextAuth"),
+    ("@auth0/auth0-react", "Auth0"),
+    ("@sentry/node", "Sentry"),
+    ("@sentry/react", "Sentry"),
+    ("posthog-js", "PostHog"),
+    ("mongodb", "MongoDB"),
+    ("mongoose", "MongoDB"),
+    ("pg", "Postgres"),
+    ("mysql2", "MySQL"),
+    ("redis", "Redis"),
+    ("ioredis", "Redis"),
     ("react", "React"),
     ("vue", "Vue"),
     ("svelte", "Svelte"),
@@ -1141,6 +1174,44 @@ mod tests {
             stack.libraries,
             vec!["OpenAI".to_string(), "Anthropic".to_string(), "Zod".to_string()]
         );
+    }
+
+    #[test]
+    fn plan_036_service_entries_are_detected() {
+        let stack = detect_stack(
+            &serde_json::json!({
+                "dependencies": { "stripe": "1.0.0", "@sentry/node": "8.0.0", "mongoose": "8.0.0" }
+            }),
+            &[],
+        );
+        assert_eq!(
+            stack.libraries,
+            vec!["Stripe".to_string(), "Sentry".to_string(), "MongoDB".to_string()]
+        );
+    }
+
+    #[test]
+    fn aws_sdk_and_aws_sdk_client_s3_dedupe_to_one_aws_entry() {
+        let stack = detect_stack(
+            &serde_json::json!({
+                "dependencies": { "aws-sdk": "2.0.0", "@aws-sdk/client-s3": "3.0.0" }
+            }),
+            &[],
+        );
+        assert_eq!(stack.libraries, vec!["AWS".to_string()]);
+    }
+
+    #[test]
+    fn the_head_group_leads_services_before_frameworks() {
+        // Plan 036: the head group (services) must list before the original 19 (frameworks/libs)
+        // so the card's visible three favour external services.
+        let stack = detect_stack(
+            &serde_json::json!({
+                "dependencies": { "react": "18.2.0", "stripe": "1.0.0" }
+            }),
+            &[],
+        );
+        assert_eq!(stack.libraries, vec!["Stripe".to_string(), "React".to_string()]);
     }
 
     #[test]
