@@ -31,6 +31,18 @@ tokio = { version = "1", features = ["process", "io-util", "time", "sync", "macr
 # decide whether an install is needed; std has no hashing primitive, and pulling in a general crypto
 # crate for one digest would be overkill next to this focused, dependency-light implementation.
 sha2 = "0.10"
+# Justification (SPEC.md §18 / plan 053): the ONE credential Hangar ever holds — a GitHub personal
+# access token — must live in the OS keychain with NO disk fallback (§18); std has no keychain
+# access at all. Explicit backends per platform (not the crate's own defaults, which omit macOS)
+# so "keychain unavailable" is a compile-time fact, never a silent runtime guess.
+keyring = { version = "4", features = ["apple-native-keyring-store", "windows-native-keyring-store"] }
+# Justification (SPEC.md §18 / plan 053): §18 permits exactly one network call site — the GitHub
+# API over TLS. `default-features = false` + `rustls`/`json` keeps this to rustls (never OpenSSL,
+# never native-tls) and JSON bodies only — no cookies, multipart, blocking client or HTTP/3.
+# DEVIATION: SPEC.md's own snippet names the historic `rustls-tls` feature; reqwest 0.13 renamed it
+# to `rustls` upstream. Kept the spec's INTENT (rustls, never OpenSSL) per CLAUDE.md's "trust the
+# compiler and current docs" rule — verified with `cargo tree`: no `openssl*` crate appears anywhere.
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
 
 [target.'cfg(unix)'.dependencies]
 # Justification (SPEC.md §4 dependency rule): SPEC.md §8's Unix kill is `kill(-pgid, SIGTERM/SIGKILL)`
