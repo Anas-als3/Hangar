@@ -390,8 +390,11 @@ function isPhaseStatus(status: Status): boolean {
  * changes for a project (e.g. step 3's wider allow-list). Without this, the first Run after such a
  * change would make the store disagree with disk, and the maintainer's next note-save or
  * Move-to-folder on that running project would be refused with "... is running. Stop it first."
+ *
+ * Plan 038: exported and promoted to the default post-mutation refresh for every store action —
+ * `loadRegistry` is now the startup-only path (its one caller is `App.tsx`'s mount effect).
  */
-async function refreshRegistryQuietly(): Promise<void> {
+export async function refreshRegistryQuietly(): Promise<void> {
   try {
     const projects = await getProjects();
     setState({ projects });
