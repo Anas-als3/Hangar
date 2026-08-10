@@ -993,6 +993,26 @@ mod tests {
                 detected_at: "2026-08-05T10:00:00Z".into(),
             },
         };
+        // Plan 041 (Ports panel): `holder: Some(...)` with every `Option` field `Some` — a `None`
+        // field is invisible to `assert_keys_in` because `skip_serializing_if` omits the key, and
+        // an omitted struct would let this guard pass while never checking `PortStatus` at all.
+        let port_status = crate::commands::PortStatus {
+            project_id: "abc123".into(),
+            port: 5173,
+            busy: true,
+            listener_count: 1,
+            holder: Some(crate::commands::PortHolder {
+                name: "node".into(),
+                pid: 57140,
+                command: Some(
+                    "/private/tmp/scratchpad/fix-a11y/node_modules/.bin/vite".into(),
+                ),
+                started_at: Some("Wed Aug  5 13:53:00 2026".into()),
+                parent_exited: Some(true),
+                same_user: Some(true),
+            }),
+            checked_at: "2026-08-10T09:00:00Z".into(),
+        };
 
         let samples: Vec<serde_json::Value> = vec![
             serde_json::to_value(&project_view).unwrap(),
@@ -1001,6 +1021,7 @@ mod tests {
             serde_json::to_value(&settings).unwrap(),
             serde_json::to_value(&registry_error).unwrap(),
             serde_json::to_value(&package_json_info).unwrap(),
+            serde_json::to_value(&port_status).unwrap(),
         ];
         for sample in &samples {
             assert_keys_in(sample, types_ts);
