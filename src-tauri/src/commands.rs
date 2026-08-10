@@ -20,6 +20,10 @@ use crate::env_resolve::{DevEnvCell, EnvMap};
 // own doc comment in `github/mod.rs`. Plan 058: behind the default-ON `github` feature.
 #[cfg(feature = "github")]
 use crate::github::{self, error::GithubError, GithubState};
+// Plan 059: the osv.dev dependency check, a SOURCE of §11 findings and not a §7 command of its own.
+// Behind the default-ON `osv` feature for the same `reqwest`/Windows-cross-check reason as above.
+#[cfg(feature = "osv")]
+use crate::osv;
 use crate::preflight;
 use crate::process::{self, LogLine, RuntimeMap};
 use crate::registry::{self, Project, ProjectView, RegistryError, Settings, Status};
@@ -591,6 +595,11 @@ pub async fn get_port_status(state: State<'_, AppState>) -> Result<Vec<PortStatu
 /// `Ok` even when a project's folder is gone or its `.env` is unreadable — those are *findings*
 /// (§11), because §7 turns every `Err` into a toast and a toast per project on open would be
 /// intolerable. `Err` is reserved for the command itself failing.
+///
+/// Plan 059 added a second *source* of findings — osv.dev dependency advisories — and **no new
+/// command**: §7 stays exactly as frozen. That source is off unless `settings.checkDependencies`
+/// is on, which is read here, per call, and passed down as `osv::dependency_findings`' first
+/// argument; see `osv.rs`'s RULE 1 for why the guard lives there rather than at this call site.
 #[tauri::command]
 pub async fn get_preflight(
     state: State<'_, AppState>,
@@ -601,6 +610,10 @@ pub async fn get_preflight(
         let projects = state.projects.lock().await;
         projects.clone()
     };
+    // Read per call, under its own short-lived lock, so turning the setting off takes effect on the
+    // very next Refresh rather than at the next launch.
+    let check_dependencies = state.settings.lock().await.check_dependencies;
+    let project_dirs: Vec<PathBuf> = snapshot.iter().map(|p| PathBuf::from(&p.path)).collect();
 
     let env = state.dev_env.get().await.vars.clone();
     let checked_at = crate::run::iso8601_utc(SystemTime::now());
@@ -611,16 +624,37 @@ pub async fn get_preflight(
     // The per-project reads (`.env`, `.nvmrc`, the lockfile hash) are blocking I/O, and a project
     // may sit on a stalled network mount — same reasoning as plan 010's `Path::exists` note on
     // `get_projects`, but with more files, so the whole walk goes to the blocking pool.
-    tauri::async_runtime::spawn_blocking(move || {
-        snapshot
-            .iter()
-            .map(|project| {
-                preflight::build_report(project, node_version.as_deref(), &checked_at)
-            })
-            .collect()
-    })
+    #[allow(unused_mut)]
+    let mut reports: Vec<preflight::PreflightReport> = tauri::async_runtime::spawn_blocking(
+        move || {
+            snapshot
+                .iter()
+                .map(|project| {
+                    preflight::build_report(project, node_version.as_deref(), &checked_at)
+                })
+                .collect()
+        },
+    )
     .await
-    .map_err(|e| format!("preflight task failed: {e}"))
+    .map_err(|e| format!("preflight task failed: {e}"))?;
+
+    // Plan 059 — the dependency source, appended after the §11 check order (folder → env → node →
+    // install) so the existing findings keep their positions. Runs LAST because it is the only one
+    // that can touch the network, and only when the user has turned it on.
+    #[cfg(feature = "osv")]
+    {
+        let extra =
+            osv::dependency_findings(check_dependencies, project_dirs, osv::query_osv).await;
+        for (report, findings) in reports.iter_mut().zip(extra) {
+            report.findings.extend(findings);
+        }
+    }
+    // The `--no-default-features` Windows cross-check build has no `osv` module and therefore no
+    // dependency check at all; it is a compile gate, never a shipped binary (see `Cargo.toml`).
+    #[cfg(not(feature = "osv"))]
+    let _ = (check_dependencies, project_dirs);
+
+    Ok(reports)
 }
 
 /// SPEC.md §7 `find_free_port` (added 2026-08-10, plan 043) — §10 step 4's "Choose for me". Walks

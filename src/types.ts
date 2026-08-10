@@ -154,6 +154,12 @@ export interface LogLinesPayload {
 /** §7 `get_settings` / `set_settings`. */
 export interface Settings {
   editorCommand: string;
+  /**
+   * SPEC.md §11 / plan 059 — the osv.dev dependency check in the Doctor panel. **Off by default**;
+   * mirrors `registry::Settings::check_dependencies`. When on, opening Doctor sends the package
+   * names and versions from each project's `package-lock.json` to osv.dev, and nothing else.
+   */
+  checkDependencies: boolean;
 }
 
 /**

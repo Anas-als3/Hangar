@@ -69,7 +69,7 @@ conditions, and update your row below when done.
 | 056 | Integration ideas register — ranked, with evidence and counter-arguments | — | — | — | — | REGISTER (not a build plan) |
 | 057 | Preflight "Doctor" panel — env-key drift, node version, install-needed | — | P1 | M | 056 | DONE (merged `9ba0e56`, 2026-08-11) — 181 tests, was 168; serialization guard mutation-tested **and re-run independently by the reviewer**; **`engines.node` NOT checked — STOP condition fired, see below** |
 | 058 | Restore the Windows cross-check (feature-gate the TLS stack) | — | P1 | S-M | — | DONE (2026-08-11) — `Compiling hangar` = 1, re-run by the reviewer; §8's Windows code compiles clean; tests unchanged at 181/3; **compiles ≠ runs — CI billing is still the real fix** |
-| 059 | Dependency health via OSV.dev — folded into the Doctor panel, opt-in | — | P2 | M | 057 | TODO |
+| 059 | Dependency health via OSV.dev — folded into the Doctor panel, opt-in | — | P2 | M | 057 | DONE (2026-08-11, uncommitted) — 196 tests, was 181; **off-by-default guard mutation-tested** (guard removed → RED, restored → GREEN); new `osv` cargo feature keeps `--no-default-features` (the Windows gate) dropping `reqwest`; no new §7 command, no new dependency; **live API called: Hangar's own 173 packages → 0 advisories**, which is this feature's honest output today |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
 
@@ -225,6 +225,13 @@ reaching Hangar — exit 101 having verified nothing. Plan 058 put the GitHub mo
 again. Nothing about the shipped app changes: `default = ["github"]`, so every build,
 `cargo test` run and bundle still contains all three GitHub commands, and `cargo test`'s
 count was identical before and after (181 passed / 3 ignored).
+
+**Plan 059 added a second such feature, `osv`** — the other `reqwest` user, also **default-ON**,
+also dropped by `--no-default-features`. It is deliberately NOT a second use of `github`:
+turning the GitHub slice off must not silently also turn off an unrelated dependency check, and
+the two modules never reference each other, so all four combinations compile (verified). Whoever
+adds a THIRD `reqwest` user must add it to this list, or the Windows gate dies again exactly the
+way plan 058 describes.
 
 Because "exit 0" is not proof — a dependency build-script failure is also loud but
 worthless — the gate's real assertion is that cargo **reached our crate**:
@@ -441,6 +448,19 @@ hardware settles SPEC.md §15 test 3.
   nothing rather than guessing. A project with `engines.node` and no `.nvmrc` —
   which is `auto-job-applier`'s neighbour case — gets no Node finding at all.
   Reopening this needs a node-semver range evaluator, which is its own plan.
+- **Plan 059: pnpm and yarn lockfiles are NOT parsed — the plan's own STOP
+  condition fired.** `pnpm-lock.yaml` and `yarn.lock` are not JSON, and reading
+  them needs a YAML or bespoke parser, i.e. a new dependency, which plan 059
+  listed as an explicit STOP. Those projects get a `note` saying the lockfile was
+  not read, rather than silence that would be indistinguishable from "clean".
+  `package-lock.json` v2/v3 is parsed; **npm 6's `lockfileVersion: 1` is not**
+  (it has no `packages` map) and reads as the same `note`. Reopening this needs a
+  dependency decision that belongs to the maintainer.
+- **Plan 059: the honest output of the dependency check today is "nothing to
+  report."** Measured live on 2026-08-11 through the shipped client: Hangar's own
+  173 packages, one request, **0 advisories**. That is why there is no score, no
+  badge, no shield and no dashboard — §11's "silent when clean" rule applies
+  unchanged, and the value is that this answer changes without anyone noticing.
 
 ## Findings considered and rejected
 
