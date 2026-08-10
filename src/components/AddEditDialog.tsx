@@ -173,7 +173,15 @@ export function AddEditDialog() {
 
   const parsedPort = Number(port);
   const portValid = port.trim() !== "" && Number.isInteger(parsedPort) && parsedPort > 0;
-  const canSave = name.trim() !== "" && path.trim() !== "" && command.trim() !== "" && portValid;
+  // Fix 4 (plan 034): the input's `min={1}` is advisory only — React does not enforce it, and
+  // `AttemptBudget::new(0)` kills the tree on the very first poll (§9 step 7).
+  const readyTimeoutValid = Number.isInteger(readyTimeoutSec) && readyTimeoutSec >= 1;
+  const canSave =
+    name.trim() !== "" &&
+    path.trim() !== "" &&
+    command.trim() !== "" &&
+    portValid &&
+    readyTimeoutValid;
   // Fix 3 (plan 034): advisory only — SPEC.md §5 requires this to be non-blocking, so it must
   // never be folded into `canSave`.
   const urlPortWarning = portValid ? urlPortMismatchWarning(url, parsedPort) : null;
@@ -361,7 +369,11 @@ export function AddEditDialog() {
             type="button"
             disabled={saving || !canSave}
             onClick={() => void handleSave()}
-            title={!canSave ? "Name, folder, command and a valid port are required" : undefined}
+            title={
+              !canSave
+                ? "Name, folder, command, a valid port and a ready timeout of at least 1 second are required"
+                : undefined
+            }
             className="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-bg transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {saving ? "Saving…" : "Save"}
