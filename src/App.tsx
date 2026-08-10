@@ -11,6 +11,7 @@
 import { useEffect } from "react";
 import AddEditDialog from "./components/AddEditDialog";
 import LogPanel from "./components/LogPanel";
+import MoveToFolderDialog from "./components/MoveToFolderDialog";
 import NotesPanel from "./components/NotesPanel";
 import ProjectGrid from "./components/ProjectGrid";
 import SettingsDialog from "./components/SettingsDialog";
@@ -24,6 +25,7 @@ import {
   useHangarStore,
   visibleProjects,
 } from "./store";
+import type { ToastTone } from "./store";
 
 function CorruptRegistryBanner({
   backupPath,
@@ -72,12 +74,18 @@ function EmptyState() {
   );
 }
 
-/** §7: command errors surface as toasts ("errors always say what happened and what to do next"). */
-function Toast({ message }: { message: string }) {
+/**
+ * §7: command errors surface as toasts ("errors always say what happened and what to do next").
+ * `tone` defaults to the original error styling — plan 029 adds `"neutral"` for the
+ * move-to-folder confirmation, which is an announcement, not something gone wrong.
+ */
+function Toast({ message, tone = "error" }: { message: string; tone?: ToastTone }) {
   return (
     <div
       role="alert"
-      className="hangar-fade-in fixed bottom-6 left-1/2 z-30 flex max-w-[36rem] -translate-x-1/2 items-start gap-4 rounded-md border border-status-danger/40 bg-surface px-4 py-3 text-sm text-text shadow-lg"
+      className={`hangar-fade-in fixed bottom-6 left-1/2 z-30 flex max-w-[36rem] -translate-x-1/2 items-start gap-4 rounded-md border bg-surface px-4 py-3 text-sm text-text shadow-lg ${
+        tone === "neutral" ? "border-white/10" : "border-status-danger/40"
+      }`}
     >
       <span className="min-w-0">{message}</span>
       <button
@@ -110,7 +118,8 @@ function SearchInput({ value }: { value: string }) {
 }
 
 function App() {
-  const { projects, registryError, loading, loadError, toast, search } = useHangarStore();
+  const { projects, registryError, loading, loadError, toast, toastTone, search } =
+    useHangarStore();
 
   useEffect(() => {
     void loadRegistry();
@@ -188,8 +197,9 @@ function App() {
       <LogPanel />
       <NotesPanel />
       <AddEditDialog />
+      <MoveToFolderDialog />
       <SettingsDialog />
-      {toast && <Toast message={toast} />}
+      {toast && <Toast message={toast} tone={toastTone} />}
     </div>
   );
 }
