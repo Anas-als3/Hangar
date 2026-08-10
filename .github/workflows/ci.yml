@@ -65,6 +65,15 @@ jobs:
           LLVM_BIN="$(brew --prefix llvm 2>/dev/null || echo /opt/homebrew/opt/llvm)/bin"
           export PATH="$LLVM_BIN:$PATH"
           rustup target add x86_64-pc-windows-msvc
+          # Force our own crate to rebuild. Without this the grep below is a
+          # coin-flip against the cache: when nothing is stale cargo prints
+          # neither "Compiling" nor "Checking", only "Finished", and the gate
+          # fails while the check actually passed. Measured locally on
+          # 2026-08-11 — the first run after a merge printed 0 matches and read
+          # exactly like a regression. Cleaning one package costs seconds and
+          # makes the signal mean one thing.
+          cargo clean -p hangar --manifest-path src-tauri/Cargo.toml \
+            --target x86_64-pc-windows-msvc || true
           cargo check --manifest-path src-tauri/Cargo.toml \
             --target x86_64-pc-windows-msvc --no-default-features --all-targets \
             2>&1 | tee "$RUNNER_TEMP/cross-check.log"
