@@ -468,10 +468,25 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<Settings, String
 
 #[tauri::command]
 pub async fn set_settings(s: Settings, state: State<'_, AppState>) -> Result<(), String> {
-    let mut settings = state.settings.lock().await;
-    registry::save_settings(&state.config_dir, &s)?;
-    *settings = s;
-    Ok(())
+    // §4 / plan 010: save under `save_lock`, never the `settings` data lock — `save_settings`'s
+    // fsync must not run while `settings` is held. The data lock is taken only to commit on
+    // success, so a failed save still leaves the in-memory settings unchanged (same behaviour as
+    // before this reshape).
+    let to_save = s.clone();
+    let config_dir = state.config_dir.clone();
+    let save_result = {
+        let _save_guard = state.save_lock.lock().await;
+        tauri::async_runtime::spawn_blocking(move || registry::save_settings(&config_dir, &to_save))
+            .await
+    };
+    match save_result {
+        Ok(Ok(())) => {
+            *state.settings.lock().await = s;
+            Ok(())
+        }
+        Ok(Err(e)) => Err(e),
+        Err(join_err) => Err(format!("save task failed: {join_err}")),
+    }
 }
 
 /// DEVIATION from SPEC.md §7: the frozen list has no vehicle for the corrupt-registry banner that
