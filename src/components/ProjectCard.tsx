@@ -273,6 +273,19 @@ export function ProjectCard({ project }: { project: ProjectView }) {
         )}
       </div>
 
+      {/* §11 libraries line (added 2026-08-10): capped, display-only, never a control — the
+          full list stays in the Edit dialog. `truncate` is a second line of defence behind the
+          3-item cap; `title` carries the full list for hover. Sibling of the status row, not a
+          fourth item inside it — a fourth item there is what pushes a 14 rem card to wrap. */}
+      {project.stack && project.stack.libraries.length > 0 && (
+        <p className="truncate text-xs text-muted" title={project.stack.libraries.join(" · ")}>
+          {project.stack.libraries.slice(0, 3).join(" · ")}
+          {project.stack.libraries.length > 3 && (
+            <span className="text-muted/60"> +{project.stack.libraries.length - 3}</span>
+          )}
+        </p>
+      )}
+
       {/* §11 time slot — uptime while running (30 s granularity, no ticking seconds),
           otherwise last-run relative time. */}
       <p className="text-xs text-muted">{timeSlot}</p>
