@@ -85,6 +85,11 @@ export interface HangarState {
   toast: string | null;
   /** §11: the current toast's styling. Defaults to `"error"` — see `ToastTone`. */
   toastTone: ToastTone;
+  /** Plan 034: which project (if any) the current toast is about, so the toast can offer a
+   *  "Show logs" button that opens that project's panel. `null` for generic toasts, and cleared
+   *  whenever a toast is set without one, so a later unrelated toast never inherits a stale
+   *  project's button. */
+  toastProjectId: string | null;
   /** Which dialog (add/edit/settings) is open — see `DialogState`. */
   dialog: DialogState;
   /** Ephemeral header search term (plan 017) — never persisted, filters by name only. */
@@ -108,6 +113,7 @@ let state: HangarState = {
   notesFor: null,
   toast: null,
   toastTone: "error",
+  toastProjectId: null,
   dialog: null,
   search: "",
   openFolders: new Set(),
@@ -153,9 +159,17 @@ function errorMessage(err: unknown): string {
 /**
  * `tone` defaults to `"error"` — the styling every existing call site already gets, unchanged.
  * The move-to-folder confirmation is the one caller that passes `"neutral"` explicitly.
+ *
+ * `projectId` (plan 034) is a third optional parameter so the 13 call sites that don't know a
+ * project stay textually unchanged. Always cleared to `null` when omitted — a generic toast must
+ * never inherit an earlier toast's "Show logs" button.
  */
-export function setToast(message: string | null, tone: ToastTone = "error"): void {
-  setState({ toast: message, toastTone: tone });
+export function setToast(
+  message: string | null,
+  tone: ToastTone = "error",
+  projectId?: string,
+): void {
+  setState({ toast: message, toastTone: tone, toastProjectId: projectId ?? null });
 }
 
 /**
