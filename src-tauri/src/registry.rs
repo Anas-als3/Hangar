@@ -520,7 +520,14 @@ const FRAMEWORK_DETECTORS: &[(&str, &str)] = &[
 /// dependency map's order — so the emitted list is stable regardless of how `package.json`
 /// happens to list its deps. Two keys may share a display name (`prisma` / `@prisma/client`);
 /// `detect_stack` dedupes.
+/// Plan 035 step 3: `openai` and `@anthropic-ai/sdk` at the HEAD are not a §3 "AI agents / AI
+/// context" violation. §3 bans building AI *into Hangar* — an LLM call, a model, a chat surface.
+/// This is `contains_key` against a user's own `package.json` dependency map: no model is
+/// invoked, no network request is made, no context is sent anywhere. It is the same detection
+/// this const already does for `stripe` or `zod` — reading a name off a list.
 const LIBRARY_ALLOW_LIST: &[(&str, &str)] = &[
+    ("openai", "OpenAI"),
+    ("@anthropic-ai/sdk", "Anthropic"),
     ("react", "React"),
     ("vue", "Vue"),
     ("svelte", "Svelte"),
@@ -540,6 +547,15 @@ const LIBRARY_ALLOW_LIST: &[(&str, &str)] = &[
     ("firebase", "Firebase"),
     ("socket.io", "Socket.IO"),
     ("zod", "Zod"),
+    // Tail — testing/automation: the group most likely to bloat and least identity-defining, so
+    // its names land in the card's `+N` rather than the visible three (plan 035 step 3).
+    ("playwright", "Playwright"),
+    ("@playwright/test", "Playwright"),
+    ("vitest", "Vitest"),
+    ("jest", "Jest"),
+    ("@testing-library/react", "Testing Library"),
+    ("@testing-library/jest-dom", "Testing Library"),
+    ("@testing-library/user-event", "Testing Library"),
 ];
 
 /// Same "check both dependency sections" rule as `sniff_port_suggestion`'s own `has_dep`.
