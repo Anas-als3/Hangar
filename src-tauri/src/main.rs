@@ -4,6 +4,7 @@
 mod commands;
 mod env_resolve;
 mod github;
+mod preflight;
 mod process;
 mod registry;
 mod run;
@@ -83,6 +84,9 @@ fn main() {
             commands::get_port_status,
             commands::free_port,
             commands::find_free_port,
+            // SPEC.md §11 "Doctor" / plan 057 — an addition to the frozen §7 list, never a
+            // rename/reshape. Lazy: only the panel calls it, on open and on Refresh.
+            commands::get_preflight,
             // SPEC.md §18 / plan 053 — additions to the frozen §7 list, never a rename/reshape.
             commands::get_github_status,
             commands::set_github_token,

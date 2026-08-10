@@ -67,7 +67,7 @@ conditions, and update your row below when done.
 | 054 | GitHub notification list — slice 2 | — | P2 | L | 053 | TODO |
 | 055 | GitHub read + reply — slice 3 | — | P2 | M | 054 | TODO |
 | 056 | Integration ideas register — ranked, with evidence and counter-arguments | — | — | — | — | REGISTER (not a build plan) |
-| 057 | Preflight "Doctor" panel — env-key drift, node version, install-needed | — | P1 | M | 056 | TODO |
+| 057 | Preflight "Doctor" panel — env-key drift, node version, install-needed | — | P1 | M | 056 | DONE (uncommitted, 2026-08-11) — 181 tests, was 168; serialization guard mutation-tested; **`engines.node` NOT checked — STOP condition fired, see below** |
 | 058 | Restore the Windows cross-check (feature-gate the TLS stack) | — | P1 | S-M | — | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
@@ -388,6 +388,19 @@ See plan 058.
 - **Plan 031**: the folder tile's `min-h` is a hand estimate and §11's
   scroll-into-view on relocation is unimplemented. Both need a human with the
   app open.
+- **Plan 057: `engines.node` is NOT checked — the plan's own STOP condition fired.**
+  Plan 057 check 2 named `.nvmrc` *and* `engines.node`, and its STOP list said
+  "`engines.node` needs a semver crate for a correct range check — report rather
+  than approximating". It does: `^22.22.2 || ^24.15.0 || >=26.0.0` is a
+  **node-semver** range, and the Rust `semver` crate implements Cargo's dialect,
+  which differs on the operators that matter — so even adding a dependency would
+  not have been correct, and the executor was also under a no-new-dependency rule.
+  `preflight.rs`'s `node_findings` carries this reasoning in a comment. `.nvmrc`
+  *is* checked, with nvm's real dot-boundary prefix rule (`24` matches v24.18.0,
+  `24.1` does not), and an unresolvable alias (`lts/*`, `node`, `system`) reports
+  nothing rather than guessing. A project with `engines.node` and no `.nvmrc` —
+  which is `auto-job-applier`'s neighbour case — gets no Node finding at all.
+  Reopening this needs a node-semver range evaluator, which is its own plan.
 
 ## Findings considered and rejected
 

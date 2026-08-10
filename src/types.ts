@@ -110,6 +110,34 @@ export interface PortHolder {
   sameUser?: boolean;
 }
 
+/**
+ * SPEC.md §11 "Doctor" (added 2026-08-11, plan 057) — `get_preflight`'s wire shape. Mirrors
+ * `preflight::PreflightReport`/`PreflightFinding`/`Severity`.
+ *
+ * **A finding carries key NAMES only.** There is deliberately no field here — and none in the
+ * Rust struct — capable of holding a `.env` value: a field that exists can be filled by a later
+ * refactor, a field that does not exist cannot. Do not add one.
+ */
+export type PreflightSeverity = "blocker" | "warning" | "note";
+
+export interface PreflightFinding {
+  /** Stable across calls for the same fact. */
+  id: string;
+  severity: PreflightSeverity;
+  /** One human line, built from key names, filenames and version strings only. */
+  message: string;
+  /** Relative to the project folder, or the project's own path for a folder-level finding. */
+  file: string;
+}
+
+export interface PreflightReport {
+  projectId: string;
+  /** Empty is the common, quiet case. In check order — never sorted by severity (§11). */
+  findings: PreflightFinding[];
+  /** ISO — shared by every report from one `get_preflight` call. */
+  checkedAt: string;
+}
+
 /** §7 event payload — emitted on every transition. */
 export interface StatusChangedPayload {
   projectId: string;

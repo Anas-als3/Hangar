@@ -17,6 +17,7 @@ import {
   getGithubStatus,
   getLogBuffer,
   getPortStatus,
+  getPreflight,
   getProjects,
   getRegistryError,
   openInBrowser,
@@ -36,6 +37,7 @@ import type {
   LogLinesPayload,
   NewProject,
   PortStatus,
+  PreflightReport,
   Project,
   ProjectView,
   RegistryError,
@@ -144,6 +146,14 @@ export interface HangarState {
    *  panel opens, per §11: the header's unread count, when it exists, reads the local cache
    *  only and "must never make a network call, a keychain call, or run before the grid does"). */
   githubStatus: GithubStatus | null;
+  /** SPEC.md §11 "Doctor" (plan 057): whether the slide-over is open. Ephemeral view state —
+   *  never persisted, never touched by `loadRegistry`/`refreshRegistryQuietly` (same reasoning as
+   *  `portsOpen`). Nothing on the startup path reads or writes it. */
+  doctorOpen: boolean;
+  /** The last `get_preflight` snapshot — `null` before the first fetch. A **snapshot, not a
+   *  monitor** (§11): fetched on open and on Refresh only, never polled, and never before the
+   *  grid renders. A failed fetch leaves whatever sections were already here untouched. */
+  preflight: PreflightReport[] | null;
 }
 
 let state: HangarState = {
@@ -168,6 +178,8 @@ let state: HangarState = {
   ports: null,
   inboxOpen: false,
   githubStatus: null,
+  doctorOpen: false,
+  preflight: null,
 };
 
 const listeners = new Set<() => void>();
@@ -983,6 +995,34 @@ export async function disconnectGithubAction(): Promise<void> {
   try {
     await removeGithubToken();
     setState({ githubStatus: { state: "disconnected" } });
+  } catch (err) {
+    setToast(errorMessage(err));
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Doctor (SPEC.md §11, plan 057) — a snapshot read on open and on Refresh, never a poll, and
+// never on the startup path. Nothing here writes, installs or fixes anything.
+// ---------------------------------------------------------------------------------------------
+
+/** Opens the slide-over and fetches the first snapshot. */
+export async function openDoctor(): Promise<void> {
+  setState({ doctorOpen: true });
+  await refreshPreflight();
+}
+
+export function closeDoctor(): void {
+  setState({ doctorOpen: false });
+}
+
+/** §11: "reads once on open and again only on Refresh". A failed fetch toasts and leaves whatever
+ *  sections were already shown in place — same "don't blank a working view" reasoning as
+ *  `refreshPorts`. A project-level problem is never a rejection (see `getPreflight`), so reaching
+ *  the catch here means the command itself could not run. */
+export async function refreshPreflight(): Promise<void> {
+  try {
+    const preflight = await getPreflight();
+    setState({ preflight });
   } catch (err) {
     setToast(errorMessage(err));
   }
