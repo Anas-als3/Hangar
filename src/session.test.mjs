@@ -5,6 +5,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { lastSessionCluster, stackInventory } from "./session.ts";
 
+const nameCount = (result, name) => result.find((s) => s.name === name)?.count;
+
 const iso = (msAgo) => new Date(Date.now() - msAgo).toISOString();
 
 test("two projects seconds apart plus one six hours earlier -> the two", () => {
@@ -39,4 +41,32 @@ test("a malformed timestamp is excluded, no throw", () => {
 
 test("empty input -> empty output", () => {
   assert.deepEqual(lastSessionCluster([]), []);
+  assert.deepEqual(stackInventory([]), []);
+});
+
+test("two projects sharing a path with overlapping stacks -> each name counted once", () => {
+  const projects = [
+    { id: "a", name: "A", status: "stopped", path: "/shared", stack: { framework: "React", libraries: ["TypeScript"] } },
+    { id: "b", name: "B", status: "stopped", path: "/shared", stack: { framework: "React", libraries: ["TypeScript", "Vitest"] } },
+  ];
+  const result = stackInventory(projects);
+  assert.equal(nameCount(result, "React"), 1);
+  assert.equal(nameCount(result, "TypeScript"), 1);
+  assert.equal(nameCount(result, "Vitest"), 1);
+});
+
+test("a name in two different paths -> counted twice", () => {
+  const projects = [
+    { id: "a", name: "A", status: "stopped", path: "/one", stack: { libraries: ["Express"] } },
+    { id: "b", name: "B", status: "stopped", path: "/two", stack: { libraries: ["Express"] } },
+  ];
+  assert.equal(nameCount(stackInventory(projects), "Express"), 2);
+});
+
+test("order is count desc then first appearance, never alphabetical", () => {
+  const projects = [
+    { id: "a", name: "A", status: "stopped", path: "/a", stack: { framework: "Zebra", libraries: ["Apple"] } },
+  ];
+  const result = stackInventory(projects);
+  assert.deepEqual(result.map((s) => s.name), ["Zebra", "Apple"]);
 });
