@@ -125,21 +125,26 @@ pub async fn add_project(
     Ok(to_view(&project, &runtime))
 }
 
-/// SPEC.md §6 mutation guard vs. §5 notes (plan 020 revision): `guard_mutation` exists because
-/// mutating a *running* project can break the run itself — a changed `port` breaks Stop's port
-/// verification, a changed `path`/`command` breaks the kill path. §5 now defines `notes` as "a
-/// free-text scratchpad, user-owned; never parsed or acted on", so a change that touches only
-/// `notes` provably cannot affect a running project — it is exempt from the guard.
+/// SPEC.md §6 mutation guard vs. the run-inert field set (plan 028 revision): `guard_mutation`
+/// exists because mutating a *running* project can break the run itself — a changed `port` breaks
+/// Stop's port verification, a changed `path`/`command` breaks the kill path. §6's amended bullet
+/// names the run-inert set as exactly `notes`, `folderId` and `folderName`: none of them is read
+/// by §8's spawn/kill paths or §9's run sequence, so a change confined to them provably cannot
+/// affect a running project — it is exempt from the guard.
 ///
-/// Deliberately not a hand-enumerated field list: normalising `notes` out of both sides and
-/// comparing the rest with the derived `PartialEq` means any other field — including ones a
+/// Deliberately not a hand-enumerated field list: normalising the run-inert set out of both sides
+/// and comparing the rest with the derived `PartialEq` means any other field — including ones a
 /// future plan adds — is covered by the guard automatically, with nothing to remember to update
 /// here.
-fn is_notes_only_change(stored: &Project, incoming: &Project) -> bool {
+fn is_run_inert_change(stored: &Project, incoming: &Project) -> bool {
     let mut stored = stored.clone();
     let mut incoming = incoming.clone();
     stored.notes = None;
     incoming.notes = None;
+    stored.folder_id = None;
+    incoming.folder_id = None;
+    stored.folder_name = None;
+    incoming.folder_name = None;
     stored == incoming
 }
 
@@ -149,14 +154,16 @@ fn is_notes_only_change(stored: &Project, incoming: &Project) -> bool {
 /// verified death before calling this — `guard_mutation` here is what makes that real: a frontend
 /// that skipped the confirm (or raced it) cannot save over a project whose tree is still alive.
 ///
-/// Exception: a notes-only change (see `is_notes_only_change`) skips the guard, so the Notes
-/// slide-over can autosave while a project is running — the whole point of per-project notes is
-/// to record something while or right after testing it (SPEC.md §11).
+/// Exception: a run-inert change (see `is_run_inert_change`, SPEC.md §6's amended bullet) skips
+/// the guard, so the Notes slide-over can autosave and a card can be filed into a folder while a
+/// project is running — the whole point of per-project notes is to record something while or
+/// right after testing it (SPEC.md §11), and folders would be useless if filing one away required
+/// stopping it first.
 ///
 /// Pulled out of `update_project` as plain data in, `Result` out — no `State`/`AppHandle` — so
 /// the decision itself is unit-testable without standing up a Tauri app in the test harness.
 fn guard_update(stored: &Project, incoming: &Project, status: Status) -> Result<(), String> {
-    if is_notes_only_change(stored, incoming) {
+    if is_run_inert_change(stored, incoming) {
         return Ok(());
     }
     crate::run::guard_mutation(status, &stored.name)
