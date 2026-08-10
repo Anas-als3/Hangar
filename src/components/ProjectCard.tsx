@@ -7,6 +7,7 @@
  * signature phase strip and the running-uptime time slot.
  */
 import { useEffect, useRef, useState } from "react";
+import type { KeyboardEventHandler } from "react";
 import { startCardDrag } from "../cardDrag";
 import {
   findProject,
@@ -113,16 +114,23 @@ export function ProjectCard({ project }: { project: ProjectView }) {
         setMenuOpen(false);
       }
     }
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") setMenuOpen(false);
-    }
     document.addEventListener("mousedown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
     return () => {
       document.removeEventListener("mousedown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
     };
   }, [menuOpen]);
+
+  // Plan 033 defect 1: this used to be a `document` keydown listener, but member cards live
+  // inside an open folder's band, which also owns Esc (ProjectGrid.tsx). A document listener
+  // can't stop that React handler from also firing, so dismissing this menu closed the whole
+  // folder too. Scoping to a React handler on the tree that contains both the trigger and the
+  // menu, plus stopPropagation, keeps Esc here from ever reaching the band.
+  const onMenuKeyDown: KeyboardEventHandler<HTMLDivElement> = (event) => {
+    if (event.key === "Escape" && menuOpen) {
+      event.stopPropagation();
+      setMenuOpen(false);
+    }
+  };
 
   // §11: a crashed card's primary button is Run (retry). While `stopping` it is a disabled
   // spinner. A `stop-failed` card keeps Stop, enabled, so the user can retry the kill (§6/§12).
@@ -170,7 +178,7 @@ export function ProjectCard({ project }: { project: ProjectView }) {
           </p>
         </div>
 
-        <div className="relative" ref={menuRef}>
+        <div className="relative" ref={menuRef} onKeyDown={onMenuKeyDown}>
           <button
             type="button"
             aria-label={
