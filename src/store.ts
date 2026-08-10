@@ -806,6 +806,6 @@ export async function ungroupFolder(folderId: string): Promise<void> {
   } finally {
     // Plan 033 defect 3: reload on BOTH paths — see renameFolder's comment above. A partial
     // ungroup must not leave the tile showing the old member count while disk already lost some.
-    await loadRegistry();
+    await refreshRegistryQuietly();
   }
 }
