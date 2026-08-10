@@ -169,3 +169,27 @@ function arm(s: Session): void {
   s.armed = true;
   setDragView({ sourceId: s.sourceId, targetId: s.targetId, armed: true });
 }
+
+/**
+ * §11 Motion: the ghost is one detached node, written imperatively outside React — compact
+ * (~180px: name plus a status dot), positioned at cursor + (10, 10). `pointer-events-none` keeps
+ * it out of `elementFromPoint`'s way. Reuses `STATUS_TONE` (§11 tokens, never raw hex) so the dot
+ * matches the card it was lifted from.
+ */
+function createGhost(sourceId: string, point: Point): HTMLDivElement | null {
+  const project = findProject(sourceId);
+  if (!project) return null;
+  const el = document.createElement("div");
+  el.className =
+    "pointer-events-none fixed left-0 top-0 z-50 flex w-[180px] items-center gap-2 " +
+    "rounded-md border border-white/10 bg-surface px-2.5 py-1.5 text-sm text-text shadow-lg";
+  el.style.transform = `translate(${point.x + 10}px, ${point.y + 10}px)`;
+  const dot = document.createElement("span");
+  dot.className = `size-1.5 shrink-0 rounded-full bg-current ${STATUS_TONE[project.status]}`;
+  const label = document.createElement("span");
+  label.className = "truncate";
+  label.textContent = project.name;
+  el.append(dot, label);
+  document.body.appendChild(el);
+  return el;
+}
