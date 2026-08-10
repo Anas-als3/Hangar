@@ -204,7 +204,13 @@ function App() {
 
   return (
     <div className="flex min-h-full flex-col bg-bg text-text">
-      <div ref={contentRef} className="flex flex-1 flex-col">
+      {/* Plan 046 step 4: the one shared wrapper for both the header row and <main>'s content —
+          already the `inert` boundary (plan 039), so capping width here instead of adding a new
+          div keeps that guard intact. Capping only the grid was rejected: it would move every
+          Run button inward while "Add project" stayed pinned to the far edge. At 1200px this is
+          a no-op (1136 < 1280); at 1920/2560px it centres the content instead of sprawling to
+          7/10 columns. */}
+      <div ref={contentRef} className="mx-auto flex w-full max-w-[80rem] flex-1 flex-col">
       <header className="flex items-center justify-between border-b border-white/5 px-8 py-5">
         <div className="flex items-center gap-3">
           {/* Plan 046 step 3: text-xl -> text-2xl (20 -> 24px). text-2xl's 32px line box is still
