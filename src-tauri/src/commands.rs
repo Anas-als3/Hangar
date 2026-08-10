@@ -483,4 +483,91 @@ mod tests {
         let is_run_inert = is_run_inert_change(&stored, &incoming);
         assert!(guard_update(is_run_inert, &stored, Status::Running).is_ok());
     }
+
+    // -----------------------------------------------------------------------------------------
+    // Plan 028 — folders: `folderId`/`folderName` join `notes` in the run-inert set, and a
+    // run-inert `update_project` call now merges rather than replaces (SPEC.md §6, 2026-08-10).
+    // -----------------------------------------------------------------------------------------
+
+    #[test]
+    fn a_folder_id_only_change_is_permitted_while_running() {
+        let stored = sample_project("/tmp/ielts");
+        let incoming = Project {
+            folder_id: Some("fld_1".into()),
+            ..stored.clone()
+        };
+        let is_run_inert = is_run_inert_change(&stored, &incoming);
+        assert!(guard_update(is_run_inert, &stored, Status::Running).is_ok());
+    }
+
+    #[test]
+    fn a_folder_name_only_change_is_permitted_while_running() {
+        let stored = sample_project("/tmp/ielts");
+        let incoming = Project {
+            folder_name: Some("Client Work".into()),
+            ..stored.clone()
+        };
+        let is_run_inert = is_run_inert_change(&stored, &incoming);
+        assert!(guard_update(is_run_inert, &stored, Status::Running).is_ok());
+    }
+
+    #[test]
+    fn notes_and_folder_id_together_are_still_run_inert() {
+        let stored = sample_project("/tmp/ielts");
+        let incoming = Project {
+            notes: Some("tried the staging flag".into()),
+            folder_id: Some("fld_1".into()),
+            ..stored.clone()
+        };
+        let is_run_inert = is_run_inert_change(&stored, &incoming);
+        assert!(guard_update(is_run_inert, &stored, Status::Running).is_ok());
+    }
+
+    #[test]
+    fn a_port_only_change_is_still_rejected_while_running() {
+        let stored = sample_project("/tmp/ielts");
+        let incoming = Project {
+            port: 3001,
+            ..stored.clone()
+        };
+        let is_run_inert = is_run_inert_change(&stored, &incoming);
+        let err = guard_update(is_run_inert, &stored, Status::Running)
+            .expect_err("a port change must still be guarded while running");
+        assert!(err.contains("stop it first"), "got {err:?}");
+    }
+
+    #[test]
+    fn folder_id_cannot_smuggle_a_port_change_past_the_guard() {
+        // Proves the run-inert exemption cannot be used as a smuggling route: pairing a
+        // run-inert field with a guarded one must still be guarded.
+        let stored = sample_project("/tmp/ielts");
+        let incoming = Project {
+            folder_id: Some("fld_1".into()),
+            port: 3001,
+            ..stored.clone()
+        };
+        let is_run_inert = is_run_inert_change(&stored, &incoming);
+        let err = guard_update(is_run_inert, &stored, Status::Running)
+            .expect_err("a folderId + port change must still be guarded while running");
+        assert!(err.contains("stop it first"), "got {err:?}");
+    }
+
+    #[test]
+    fn merging_run_inert_fields_leaves_last_run_at_as_stored() {
+        // The bug this guards against: `run.rs` persists `last_run_at` on every Run, but the
+        // frontend's copy goes stale for the whole updating->installing->starting window — a
+        // run-inert save from that stale copy must not roll it back (SPEC.md §6, plan 028).
+        let mut stored = Project {
+            last_run_at: Some("2026-08-05T10:00:00Z".into()),
+            ..sample_project("/tmp/ielts")
+        };
+        let incoming = Project {
+            last_run_at: None, // stale frontend copy
+            folder_id: Some("fld_1".into()),
+            ..stored.clone()
+        };
+        merge_run_inert_fields(&mut stored, incoming);
+        assert_eq!(stored.last_run_at.as_deref(), Some("2026-08-05T10:00:00Z"));
+        assert_eq!(stored.folder_id.as_deref(), Some("fld_1"));
+    }
 }
