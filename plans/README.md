@@ -52,7 +52,7 @@ conditions, and update your row below when done.
 | 039 | Notes Esc data loss; dialog autofocus, Enter-to-save, `inert` focus trap | — | P1 (step 1) | M | 038 | DONE (merged `b2f5989`, 2026-08-10) — residual noted: text typed during a save round trip and Esc'd within 800 ms can still be lost; needs last-saved-value comparison instead of a dirty flag |
 | 040 | `openBrowserOnReady` — stop opening a tab on every Run | — | P2 | S | SPEC §5/§9/§10 amendments | TODO |
 | 041 | Ports panel — one row per registered port, holder detail, Copy `kill` | — | P2 | M | SPEC §7/§11/§12 amendments | DONE (merged `2efe9f2`, 2026-08-10) — 134 Rust tests, was 127 |
-| 042 | "Free the port" — the one authorised signal to a foreign holder | — | P2 | M | 041, SPEC §9 step 1 amendment | TODO |
+| 042 | "Free the port" — the one authorised signal to a foreign holder | — | P2 | M | 041, SPEC §9 step 1 amendment | DONE (merged `757b850`, 2026-08-10) — 143 Rust tests, was 134; gates 2 and 3 mutation-checked |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
 
