@@ -20,7 +20,7 @@ conditions, and update your row below when done.
 | 007 | Ready-timeout owns its crash — deliver the §9 step 7 toast | — | P1 | S | — | DONE (merged `347b96d`; §15 test 7 verified live) |
 | 008 | Wire-contract tests + types.ts drift guard | — | P1 | S | — | DONE (merged `5f1db9c`) |
 | 009 | Verify entrypoint, CI (incl. Windows job), de-trapped `dev` script | — | P1 | M | — | DONE (merged `15bfa69`) |
-| 010 | Blocking I/O out from under the async state locks | — | P1 | S | — | IN PROGRESS (re-verified live at `e7ecada`; two save sites now, not one) |
+| 010 | Blocking I/O out from under the async state locks | — | P1 | S | — | DONE (merged `0c153bb`, 2026-08-10) — 4 sites; new `save_lock` wraps mutate+clone+save; fsyncs moved to `spawn_blocking` |
 | 011 | LineSplitter buffer cap | — | P1 | S | — | TODO |
 | 012 | settings.json corruption rescue + atomic_write hardening | — | P2 | S | 010 | TODO |
 | 013 | Restrictive webview CSP | — | P2 | S | — | TODO |
@@ -244,6 +244,21 @@ explicitly deferred to a human test on a Windows machine (SPEC.md §15 test 3).
 - `llvm` installed via Homebrew (M1 review) for `llvm-rc`, keg-only at `/opt/homebrew/opt/llvm/bin`.
 - Xcode Command Line Tools at `/Library/Developer/CommandLineTools`.
 - Git repo initialized; baseline commit `e74666e` contains only `SPEC.md`, `CLAUDE.md`, `.gitignore`, `plans/`.
+
+## Known residuals (recorded, not lost)
+
+- **`add_project` still fsyncs under the `projects` lock** (`commands.rs`, the
+  `save_projects` call inside the function's own guard). Same anti-pattern plan
+  010 fixed at four other sites; it belongs to plan 005's writers and was left
+  alone deliberately. `update_project` and `remove_project` share the shape.
+  Cheap to fix with the `save_lock` pattern 010 introduced — worth folding into
+  whichever plan next touches those functions.
+- **Notes typed during a save round trip and Esc'd within 800 ms can still be
+  lost** (plan 039's residual). The fix is comparing against the last-saved
+  value rather than carrying a dirty flag.
+- **Plan 031**: the folder tile's `min-h` is a hand estimate and §11's
+  scroll-into-view on relocation is unimplemented. Both need a human with the
+  app open.
 
 ## Findings considered and rejected
 
