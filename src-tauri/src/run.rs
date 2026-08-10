@@ -1082,22 +1082,35 @@ async fn crash_run(app: &AppHandle, project_id: &str, message: String) -> Contro
 
 /// SPEC.md §9 step 3: "Store the new hash only after success." Same snapshot-then-save shape as
 /// the `lastRunAt` write in `run_project` (plan 010's maintenance note: new registry writers
-/// should follow it). Plan 023: also refreshes `stack` in this same save — a successful install is
-/// exactly the moment dependencies may have changed since the project was last Added/Edited, and
-/// folding it in here (rather than a second write) follows plan 023's instruction to reuse this
-/// single save path.
+/// should follow it) — including plan 010's later fix wrapping mutate+snapshot+save in
+/// `save_lock` so the two writers can't race each other's clone to disk (see `AppState::save_lock`).
+/// Plan 023: also refreshes `stack` in this same save — a successful install is exactly the moment
+/// dependencies may have changed since the project was last Added/Edited, and folding it in here
+/// (rather than a second write) follows plan 023's instruction to reuse this single save path.
 async fn store_lockfile_hash(app: &AppHandle, project: &Project, hash: &str) {
     let state = app.state::<AppState>();
     // Blocking file I/O, done before taking the lock below — same discipline `plan_install`
     // already uses elsewhere in this file for the lockfile hash itself.
     let stack = registry::read_package_json(Path::new(&project.path)).stack;
     let persist_error = {
-        let mut projects = state.projects.lock().await;
-        if let Some(p) = projects.iter_mut().find(|p| p.id == project.id) {
-            p.last_lockfile_hash = Some(hash.to_string());
-            p.stack = Some(stack);
+        let _save_guard = state.save_lock.lock().await;
+        let snapshot = {
+            let mut projects = state.projects.lock().await;
+            if let Some(p) = projects.iter_mut().find(|p| p.id == project.id) {
+                p.last_lockfile_hash = Some(hash.to_string());
+                p.stack = Some(stack);
+            }
+            projects.clone()
+        };
+        let config_dir = state.config_dir.clone();
+        match tauri::async_runtime::spawn_blocking(move || {
+            registry::save_projects(&config_dir, &snapshot)
+        })
+        .await
+        {
+            Ok(result) => result.err(),
+            Err(join_err) => Some(format!("save task failed: {join_err}")),
         }
-        registry::save_projects(&state.config_dir, &projects).err()
     };
     if let Some(e) = persist_error {
         process::append_system(app, &project.id, format!("could not save the lockfile hash: {e}"))
