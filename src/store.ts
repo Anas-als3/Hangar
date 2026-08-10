@@ -24,6 +24,7 @@ import {
   stopProject,
   updateProject,
 } from "./api";
+import { lastRunLabel } from "./status";
 import type {
   LogLine,
   LogLinesPayload,
@@ -44,7 +45,12 @@ export type DialogState =
   | { kind: "add" }
   | { kind: "edit"; project: Project }
   | { kind: "settings" }
+  | { kind: "move-folder"; project: Project }
   | null;
+
+/** §11: the neutral toast tone for non-error confirmations (the move-to-folder toast). Defaults
+ *  to `"error"` everywhere `setToast` is already called, so those call sites stay unchanged. */
+export type ToastTone = "error" | "neutral";
 
 /** Mirrors the Rust ring buffer (SPEC.md §8) so the panel's copy can never outgrow it. */
 export const LOG_BUFFER_LIMIT = 500;
@@ -66,10 +72,16 @@ export interface HangarState {
   notesFor: string | null;
   /** Last command error — §7: errors surface as toasts. */
   toast: string | null;
+  /** §11: the current toast's styling. Defaults to `"error"` — see `ToastTone`. */
+  toastTone: ToastTone;
   /** Which dialog (add/edit/settings) is open — see `DialogState`. */
   dialog: DialogState;
   /** Ephemeral header search term (plan 017) — never persisted, filters by name only. */
   search: string;
+  /** §11 "Opening a folder": which folders are expanded. Ephemeral view state — never written to
+   *  `projects.json`, and `loadRegistry()` must never touch this field (see below), or the folder
+   *  you just opened would collapse every time a window-focus reload fires. */
+  openFolders: Set<string>;
 }
 
 let state: HangarState = {
@@ -82,8 +94,10 @@ let state: HangarState = {
   openLogsFor: null,
   notesFor: null,
   toast: null,
+  toastTone: "error",
   dialog: null,
   search: "",
+  openFolders: new Set(),
 };
 
 const listeners = new Set<() => void>();
@@ -122,13 +136,47 @@ function errorMessage(err: unknown): string {
   return String(err);
 }
 
-export function setToast(message: string | null): void {
-  setState({ toast: message });
+/**
+ * `tone` defaults to `"error"` — the styling every existing call site already gets, unchanged.
+ * The move-to-folder confirmation is the one caller that passes `"neutral"` explicitly.
+ */
+export function setToast(message: string | null, tone: ToastTone = "error"): void {
+  setState({ toast: message, toastTone: tone });
 }
 
 /** Header search box (plan 017) — ephemeral view state, never written to disk. */
 export function setSearch(value: string): void {
   setState({ search: value });
+}
+
+/**
+ * §11 "Opening a folder": toggles one folder's open/closed state. Ephemeral view state — never
+ * persisted, never reset by `loadRegistry` (that function's own `setState` calls below never
+ * mention `openFolders`, so a merge patch leaves it untouched).
+ *
+ * The `stop-failed` auto-expand-and-cannot-collapse rule is deliberately NOT enforced here: it is
+ * a derived predicate at render time (`FolderTile`/`ProjectGrid` OR this bit with "has a
+ * stop-failed member"), so toggling never gets a folder stuck — the underlying bit still flips,
+ * it is only the rendered `isOpen` that the predicate overrides.
+ */
+export function toggleFolder(folderId: string): void {
+  const next = new Set(state.openFolders);
+  if (next.has(folderId)) next.delete(folderId);
+  else next.add(folderId);
+  setState({ openFolders: next });
+}
+
+/**
+ * Unconditional close — used by the open band's own Esc handler (§11), never a raw
+ * `toggleFolder`. A band can be visible while its id is absent from `openFolders` (the
+ * stop-failed auto-expand override), and a blind toggle would then *add* the id — recording the
+ * opposite of what Esc means. Closing is idempotent: a no-op if the id isn't present.
+ */
+export function closeFolder(folderId: string): void {
+  if (!state.openFolders.has(folderId)) return;
+  const next = new Set(state.openFolders);
+  next.delete(folderId);
+  setState({ openFolders: next });
 }
 
 /** Case-insensitive substring match on name, order preserved (SPEC.md §11). */
@@ -156,6 +204,112 @@ export function visibleProjects(projects: ProjectView[], search: string): Projec
 /** Header count (SPEC.md §11): projects currently `running`. Renders nothing when zero. */
 export function runningCount(projects: ProjectView[]): number {
   return projects.filter((p) => p.status === "running").length;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Folders (SPEC.md §11 "Folders" / "Opening a folder", plan 029) — derivation only. The array in
+// `projects.json` is never rewritten by any of this; a folder's position is *derived* from where
+// its earliest member sits in `projects`.
+// ---------------------------------------------------------------------------------------------
+
+export interface ProjectGridItem {
+  kind: "project";
+  project: ProjectView;
+}
+
+export interface FolderGridItem {
+  kind: "folder";
+  id: string;
+  name: string;
+  /** Array order — the same order the dot row and the open band render members in. */
+  members: ProjectView[];
+}
+
+export type GridItem = ProjectGridItem | FolderGridItem;
+
+/**
+ * The one walk (§11): a project carrying a `folderId` is not drawn as its own tile; the first
+ * time the walk reaches any member of a folder, that folder's tile is emitted in that position,
+ * and every later member is folded into it instead of emitted again. No `sort`, no `concat` of
+ * two filtered lists — the output order is exactly `projects`' order with folder members merged
+ * into their folder's first position.
+ *
+ * Under an active search, §11 says folders dissolve: every project `visibleProjects` would show
+ * renders flat, as a plain card, in array order.
+ */
+export function gridItems(projects: ProjectView[], search: string): GridItem[] {
+  if (search.trim() !== "") {
+    return visibleProjects(projects, search).map(
+      (project): GridItem => ({ kind: "project", project }),
+    );
+  }
+  const items: GridItem[] = [];
+  const folders = new Map<string, FolderGridItem>();
+  for (const project of projects) {
+    if (!project.folderId) {
+      items.push({ kind: "project", project });
+      continue;
+    }
+    const folder = folders.get(project.folderId);
+    if (folder) {
+      folder.members.push(project);
+      continue;
+    }
+    // First sighting of this folderId is, by construction, its earliest member — §5's tiebreak
+    // for the displayed name when members ever disagree.
+    const created: FolderGridItem = {
+      kind: "folder",
+      id: project.folderId,
+      name: project.folderName ?? "",
+      members: [project],
+    };
+    folders.set(project.folderId, created);
+    items.push(created);
+  }
+  return items;
+}
+
+/** §11: the four transitional/active statuses folded into the folder tile's "in progress" bucket. */
+const IN_PROGRESS_STATUSES: ReadonlySet<Status> = new Set<Status>([
+  "updating",
+  "installing",
+  "starting",
+  "stopping",
+]);
+
+/**
+ * §11 folder aggregate line: counts, never a status. Fixed severity order — `n stop-failed`,
+ * `n crashed`, `n running`, `n in progress` — joined so truncation can only drop the harmless
+ * end, zero-count fragments omitted. When every member is `stopped`, shows the most recently run
+ * member's last-run relative time instead, matching the card's own time-slot rule.
+ */
+export function folderSummary(members: ProjectView[]): string {
+  let stopFailed = 0;
+  let crashed = 0;
+  let running = 0;
+  let inProgress = 0;
+  let allStopped = true;
+  for (const member of members) {
+    if (member.status !== "stopped") allStopped = false;
+    if (member.status === "stop-failed") stopFailed += 1;
+    else if (member.status === "crashed") crashed += 1;
+    else if (member.status === "running") running += 1;
+    else if (IN_PROGRESS_STATUSES.has(member.status)) inProgress += 1;
+  }
+  if (allStopped) {
+    const mostRecent = members.reduce<ProjectView | null>((latest, m) => {
+      if (!m.lastRunAt) return latest;
+      if (!latest?.lastRunAt) return m;
+      return Date.parse(m.lastRunAt) > Date.parse(latest.lastRunAt) ? m : latest;
+    }, null);
+    return lastRunLabel(mostRecent?.lastRunAt);
+  }
+  const fragments: string[] = [];
+  if (stopFailed > 0) fragments.push(`${stopFailed} stop-failed`);
+  if (crashed > 0) fragments.push(`${crashed} crashed`);
+  if (running > 0) fragments.push(`${running} running`);
+  if (inProgress > 0) fragments.push(`${inProgress} in progress`);
+  return fragments.join(" · ");
 }
 
 /** One initial fetch at startup. All later status changes arrive via events (§7) — never polling. */
@@ -411,6 +565,11 @@ export function openSettingsDialog(): void {
   setState({ dialog: { kind: "settings" } });
 }
 
+/** §11 "Move to folder…" — the overflow-menu item `ProjectCard` adds (plan 029). */
+export function openMoveToFolderDialog(project: Project): void {
+  setState({ dialog: { kind: "move-folder", project } });
+}
+
 export function closeDialog(): void {
   setState({ dialog: null });
 }
@@ -488,4 +647,84 @@ export async function stopIfRunningWithConfirm(project: ProjectView): Promise<bo
   await stopProjectAction(project.id);
   const after = state.projects.find((p) => p.id === project.id)?.status;
   return after === "stopped" || after === "crashed";
+}
+
+// ---------------------------------------------------------------------------------------------
+// Folders (§11 "Folders", §5 folder semantics) — moveToFolder is the required non-drag route
+// both into and out of a folder; rename/ungroup are the folder tile's own menu actions.
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * `target` is a discriminated union rather than a bare string: on the wire an existing folder id
+ * and a freshly typed folder name are both strings, so collapsing them into one `string | null`
+ * parameter would make "is this id-shaped or name-shaped" a runtime guess. `MoveToFolderDialog`
+ * already has both the id and the display name of every folder it lists, so passing both costs it
+ * nothing and saves a lookup here.
+ */
+export type FolderTarget =
+  | { kind: "existing"; folderId: string; folderName: string }
+  | { kind: "new"; name: string }
+  | { kind: "none" };
+
+/** §5: folder ids are opaque and generated, never derived from the name. `crypto.randomUUID()` is
+ *  available in WKWebView (§4/scope: no id library added for this one call site). */
+function generateFolderId(): string {
+  return crypto.randomUUID();
+}
+
+/**
+ * §11 "Move to folder…" — reads the project fresh via `findProject` at call time, never from a
+ * value captured earlier, copying `saveNotesAction`'s defence exactly: a stale snapshot taken
+ * before an `await` (e.g. from when the dialog first opened) could roll back whatever a run wrote
+ * to some other field in the meantime.
+ */
+export async function moveToFolder(projectId: string, target: FolderTarget): Promise<boolean> {
+  const project = findProject(projectId);
+  if (!project) return false;
+  const patch =
+    target.kind === "none"
+      ? { folderId: undefined, folderName: undefined }
+      : target.kind === "new"
+        ? { folderId: generateFolderId(), folderName: target.name }
+        : { folderId: target.folderId, folderName: target.folderName };
+  try {
+    await updateProject({ ...project, ...patch });
+    await loadRegistry();
+    return true;
+  } catch (err) {
+    setToast(errorMessage(err));
+    return false;
+  }
+}
+
+/**
+ * §11 folder tile menu — Rename. N `updateProject` calls, one per member (§5: `folderName` is
+ * denormalised, there is no folder record to write once). If a call partway through fails, §5
+ * already specifies the recovery: "the earliest member in array order supplies the displayed
+ * name, with the next rename repairing the rest" — no special rollback needed here.
+ */
+export async function renameFolder(folderId: string, name: string): Promise<void> {
+  const members = state.projects.filter((p) => p.folderId === folderId);
+  try {
+    for (const member of members) {
+      await updateProject({ ...member, folderName: name });
+    }
+    await loadRegistry();
+  } catch (err) {
+    setToast(errorMessage(err));
+  }
+}
+
+/** §11 folder tile menu — Ungroup. Clears both folder fields on every member; the folder record
+ *  is only ever the set of projects sharing an id, so there is nothing else to clean up (§5). */
+export async function ungroupFolder(folderId: string): Promise<void> {
+  const members = state.projects.filter((p) => p.folderId === folderId);
+  try {
+    for (const member of members) {
+      await updateProject({ ...member, folderId: undefined, folderName: undefined });
+    }
+    await loadRegistry();
+  } catch (err) {
+    setToast(errorMessage(err));
+  }
 }
