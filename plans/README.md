@@ -243,6 +243,40 @@ explicitly deferred to a human test on a Windows machine (SPEC.md §15 test 3).
   (`-force` if it reports busy) and delete the `rw.*.dmg` leftovers. Seen twice: 2026-08-09 and
   2026-08-10. Only affects the `.dmg`; the `.app` and the install are unaffected.
 
+## The CSP still needs one human look (2026-08-11)
+
+Plan 013's CSP is merged and installed. It was verified in **headless Chromium**
+against the real `dist/` under the real header — React mounted, zero
+violations, correct `#0C0D11` background, 7 fonts loaded. That is good
+evidence. It is **not** WKWebView, which is what macOS actually runs.
+
+I tried to close that gap from here and **could not**. Recording the attempts so
+nobody repeats them:
+
+| Attempt | Result |
+|---|---|
+| `screencapture` | "could not create image from display" — needs Screen Recording permission |
+| Accessibility tree via `osascript` | hangs, then empty — needs Accessibility permission |
+| App's own stdout/stderr | **0 lines total** — the app writes nothing, so a clean result is vacuous |
+| `log show` unified log | no violations found, but WKWebView console output does not appear there, so this is also vacuous |
+| WebContent RSS, shipped vs a deliberately broken `script-src 'none'` build | 59.4 MB vs 55.4 MB — **4 MB apart, inside run-to-run noise. Not decisive.** |
+| hangar CPU time, same two builds | **0:00.16 vs 0:00.16 — identical.** The instrument cannot tell the two apart at all. |
+
+The last two are the important entries: a control build with `script-src 'none'`
+— which *cannot* render — measured the same as the shipped one on both proxies.
+So those measurements say nothing about either build, and must not be quoted as
+if the shipped CSP passed something.
+
+**Residual risk is low but open.** The directives used are CSP Level 2/3
+standard and WebKit has supported them for years; the one WebKit-specific
+element, `connect-src ipc: http://ipc.localhost`, was checked against Tauri's
+own source (`scripts/core.js` builds `ipc://localhost` on macOS, with a
+`window.ipc.postMessage` fallback if the custom protocol fails).
+
+**The check that settles it takes five seconds**: open Hangar. If the cards and
+fonts render, it is fine. If the window is blank, revert `csp` to `null` in
+`src-tauri/tauri.conf.json` and rebuild.
+
 ## CI has never run. Not once. (found 2026-08-11)
 
 `gh run list` returns **60 runs, 60 failures** — every run in the repository's
