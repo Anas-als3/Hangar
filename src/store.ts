@@ -652,7 +652,7 @@ export function closeDialog(): void {
 export async function addProjectAction(input: NewProject): Promise<boolean> {
   try {
     await addProject(input);
-    await loadRegistry();
+    await refreshRegistryQuietly();
     setState({ dialog: null });
     return true;
   } catch (err) {
