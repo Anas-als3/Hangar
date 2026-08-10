@@ -80,6 +80,26 @@ export interface HangarState {
    *  outlives a card unmount, so search-filtering a card out and back cannot blank the §11
    *  phase strip. Never persisted: this is not a `Project` field. */
   phasesSeen: Record<string, string[]>;
+  /** Plan 052 — a property of the *click*, never of the project, so it must stay unmistakably
+   *  not a §6 status: it is never rendered as a status name and the status pill never consults
+   *  it. It exists only so the Run button can say "Starting…" during the window between the
+   *  click and the first real `status-changed` for that project — e.g. the §9 step 3 per-path
+   *  mutex wait, where the backend is legitimately busy but has not yet emitted anything. Set
+   *  in `startProject` before the `run_project` invoke; cleared in that call's `finally` AND by
+   *  `applyStatusChanged` on the first status for that project, whichever comes first — so it
+   *  can never outlive either the invoke or the transition it was waiting for. Never persisted,
+   *  never touched by `loadRegistry`/`refreshRegistryQuietly`, never read by anything but the
+   *  card's primary button. */
+  pendingRun: Record<string, true>;
+  /** Plan 052 (§11's crash-reason amendment) — the text for a `crashed`/`stop-failed` card's
+   *  muted reason line, keyed by project id. Sourced ONLY from the `status-changed` event's
+   *  `message` field, in `applyStatusChanged` below — never from the log buffer: `crash_run`
+   *  (Rust) sends its message to this event alone and never writes it into the ring buffer, so a
+   *  last-line-of-the-log heuristic would print an unrelated earlier warning under a red pill as
+   *  though it were the cause. Ephemeral, like `phasesSeen`: never persisted, never touched by
+   *  `loadRegistry`/`refreshRegistryQuietly`, cleared the moment the project leaves
+   *  `crashed`/`stop-failed` for any other status (a fresh run wipes the old reason). */
+  lastFailure: Record<string, string>;
   /** Which project's slide-over is open (§11), or `null`. */
   openLogsFor: string | null;
   /** Which project's notes slide-over is open (§11), or `null`. */
@@ -120,6 +140,8 @@ let state: HangarState = {
   loadError: null,
   logs: {},
   phasesSeen: {},
+  pendingRun: {},
+  lastFailure: {},
   openLogsFor: null,
   notesFor: null,
   toast: null,
@@ -440,10 +462,29 @@ function applyStatusChanged(payload: StatusChangedPayload): void {
       ? [...basePhases, payload.status]
       : basePhases;
 
+  // Plan 052: the first REAL status for this project clears its pending-click flag, whichever
+  // status it is — this is the "first real status-changed" half of the two clear conditions
+  // (the other is the invoke settling, in `startProject`'s `finally`).
+  const pendingRun = { ...state.pendingRun };
+  delete pendingRun[payload.projectId];
+
+  // Plan 052 (§11 crash-reason amendment): `lastFailure` is sourced from THIS event's `message`
+  // only — never the log buffer (see the field's own comment above for why). Set on `crashed` or
+  // `stop-failed` when a message rides along; cleared on any other status, so a fresh run wipes
+  // the old reason before the next one can arrive.
+  const lastFailure = { ...state.lastFailure };
+  if ((payload.status === "crashed" || payload.status === "stop-failed") && payload.message) {
+    lastFailure[payload.projectId] = payload.message;
+  } else if (payload.status !== "crashed" && payload.status !== "stop-failed") {
+    delete lastFailure[payload.projectId];
+  }
+
   setState({
     projects,
     logs: runIsStarting ? { ...state.logs, [payload.projectId]: [] } : state.logs,
     phasesSeen: { ...state.phasesSeen, [payload.projectId]: nextPhases },
+    pendingRun,
+    lastFailure,
   });
 
   // §7: "message carries e.g. the crash reason". A Run is fire-and-forget, so everything that goes
@@ -499,6 +540,10 @@ export function startEventListeners(): void {
 
 /** §7 `run_project`: fire-and-forget; the error is the toast for a rejected Run. */
 export async function startProject(projectId: string): Promise<void> {
+  // Plan 052: mark pending BEFORE the invoke, so the button flips the instant the click happens
+  // rather than after the first await resolves — covering exactly the pre-status-changed gap
+  // (port probe, `git rev-parse`, the §9 step 3 per-path mutex) this state exists for.
+  setState({ pendingRun: { ...state.pendingRun, [projectId]: true } });
   try {
     await runProject(projectId);
   } catch (err) {
@@ -510,6 +555,12 @@ export async function startProject(projectId: string): Promise<void> {
     // that check failing, so the card should pick up the warning state that caused it. Plan 038:
     // the quiet refresh still recomputes pathExists via getProjects, without blanking the grid.
     await refreshRegistryQuietly();
+  } finally {
+    // Plan 052: the second of the two clear conditions — "the invoke settles" — independent of
+    // whether `applyStatusChanged` already cleared it because a status arrived first.
+    const pendingRun = { ...state.pendingRun };
+    delete pendingRun[projectId];
+    setState({ pendingRun });
   }
 }
 
