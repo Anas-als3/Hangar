@@ -9,9 +9,15 @@ import { useEffect, useState } from "react";
 // Native folder picker (§10 step 1) — dialog plugin only, never tauri-plugin-shell (§4).
 import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
 import { findFreePort, readPackageJson } from "../api";
-import { addProjectAction, closeDialog, updateProjectAction, useHangarStore } from "../store";
+import {
+  addProjectAction,
+  closeDialog,
+  stopIfRunningWithConfirm,
+  updateProjectAction,
+  useHangarStore,
+} from "../store";
 import { relativeTime } from "../status";
-import type { PackageJsonInfo, ProjectStack, ProjectView } from "../types";
+import type { PackageJsonInfo, Project, ProjectStack, ProjectView } from "../types";
 // §10 step 4: the token rewrite is a separate zero-import module (node --test coverage, plan 043)
 // — never inlined here, so the framework/package-manager table stays in one place.
 import { rewritePortToken, type PortTokenForm } from "../portToken";
@@ -74,6 +80,33 @@ function extractUrlPort(url: string): number | null {
   if (!/^\d+$/.test(portStr)) return null;
   const parsed = Number(portStr);
   return parsed <= 65535 ? parsed : null;
+}
+
+/**
+ * SPEC.md §6's amended run-inert bullet, mirrored here — ONE named list, not a second
+ * hand-picked "guarded fields" list (that duplication is exactly how this bug class returns; see
+ * `commands.rs`'s `is_run_inert_change`, the canonical definition this must be kept in lockstep
+ * with). The frontend cannot call Rust's predicate directly (no §7 command for it, and none is
+ * warranted — plan 048), so `isRunInertChange` below recomputes the same structural comparison
+ * locally, just for deciding whether Save needs the confirm-and-stop first.
+ */
+const RUN_INERT_FIELDS = ["notes", "folderId", "folderName", "openBrowserOnReady"] as const;
+
+/**
+ * Structural comparison with `RUN_INERT_FIELDS` normalised out on both sides — same shape as
+ * `is_run_inert_change`, deliberately not a hand-enumerated list of fields that ARE guarded, so a
+ * field added to `Project` later is guarded by default until it is added to the list above.
+ */
+function isRunInertChange(stored: Project, incoming: Project): boolean {
+  const keys = new Set<keyof Project>([
+    ...(Object.keys(stored) as (keyof Project)[]),
+    ...(Object.keys(incoming) as (keyof Project)[]),
+  ]);
+  for (const key of keys) {
+    if ((RUN_INERT_FIELDS as readonly string[]).includes(key)) continue;
+    if (JSON.stringify(stored[key]) !== JSON.stringify(incoming[key])) return false;
+  }
+  return true;
 }
 
 /** SPEC.md §5: non-blocking warning text, mirroring `url_port_mismatch_warning` in `registry.rs`. */
@@ -250,6 +283,22 @@ export function AddEditDialog() {
       stack,
       openBrowserOnReady,
     };
+    if (editing) {
+      const nextProject: Project = { ...editing, ...payload };
+      // §6/§10 step 7 (plan 048): the confirm-and-stop moved here from dialog-open — it now runs
+      // only when the pending change reaches beyond the run-inert set (`isRunInertChange` above),
+      // instead of guarding every open of the dialog. `projects` (not `editing`, a snapshot taken
+      // when the dialog opened) is looked up for the live status, same as `ProjectCard`'s guarded
+      // actions.
+      if (!isRunInertChange(editing, nextProject)) {
+        const live = projects.find((p) => p.id === editing.id);
+        const okToProceed = live ? await stopIfRunningWithConfirm(live) : true;
+        if (!okToProceed) {
+          setSaving(false);
+          return;
+        }
+      }
+    }
     const ok = editing
       ? await updateProjectAction({
           ...editing,
