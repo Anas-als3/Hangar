@@ -628,4 +628,47 @@ mod tests {
         assert_eq!(stored.last_run_at.as_deref(), Some("2026-08-05T10:00:00Z"));
         assert_eq!(stored.folder_id.as_deref(), Some("fld_1"));
     }
+
+    // -----------------------------------------------------------------------------------------
+    // Plan 032 — the run-inert exemption was unreachable during the very window it exists for:
+    // the app-owned fields (`lastRunAt`, `lastLockfileHash`) and `stack.detectedAt` go stale in
+    // the frontend's payload for the whole updating/installing/starting window, so a genuinely
+    // run-inert save (a note, a folder move) was misclassified as guarded (SPEC.md §6, 2026-08-10).
+    // -----------------------------------------------------------------------------------------
+
+    #[test]
+    fn a_stale_last_run_at_does_not_defeat_a_folder_move_while_starting() {
+        // The headline bug: stored has today's lastRunAt (a Run just stamped it); the caller's
+        // payload still carries yesterday's, because status-changed never sends it. Without step
+        // 1's normalisation this fails: is_run_inert_change would see lastRunAt differ and
+        // guard_update would reject with "stop it first".
+        let stored = Project {
+            last_run_at: Some("2026-08-10T09:00:00Z".into()),
+            ..sample_project("/tmp/ielts")
+        };
+        let incoming = Project {
+            folder_id: Some("fld_1".into()),
+            last_run_at: Some("2026-08-05T09:00:00Z".into()), // stale frontend copy
+            ..stored.clone()
+        };
+        let is_run_inert = is_run_inert_change(&stored, &incoming);
+        assert!(is_run_inert, "a folder move paired with a stale lastRunAt must be run-inert");
+        assert!(guard_update(is_run_inert, &stored, Status::Starting).is_ok());
+    }
+
+    #[test]
+    fn a_stale_last_lockfile_hash_does_not_defeat_a_notes_save_while_installing() {
+        let stored = Project {
+            last_lockfile_hash: Some("freshhash".into()),
+            ..sample_project("/tmp/ielts")
+        };
+        let incoming = Project {
+            notes: Some("tried the staging flag".into()),
+            last_lockfile_hash: Some("stalehash".into()), // stale frontend copy
+            ..stored.clone()
+        };
+        let is_run_inert = is_run_inert_change(&stored, &incoming);
+        assert!(is_run_inert, "a notes save paired with a stale lastLockfileHash must be run-inert");
+        assert!(guard_update(is_run_inert, &stored, Status::Installing).is_ok());
+    }
 }
