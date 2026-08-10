@@ -165,6 +165,27 @@ open_in_editor(id: string): void
 open_in_browser(id: string): void
 get_settings(): { editorCommand: string }
 set_settings(s: { editorCommand: string }): void
+
+// Added 2026-08-10 for the §11 Ports panel. Additions to this frozen list are permitted;
+// renames and reshapes are not. §9 step 1's read-only owner lookup already existed but was
+// reachable only from inside a refused Run's error string, with no vehicle for asking it
+// outside that moment.
+get_port_status(): PortStatus[]                      // one entry per registered project, snapshot at call time
+free_port(projectId: string, pid: number): void      // §9 step 1 conditions apply; rejects with a message otherwise
+
+interface PortStatus {
+  projectId: string, port: number, busy: boolean,
+  listenerCount: number,                             // > 1 → Hangar names nobody and offers nothing
+  holder?: PortHolder,                               // only when listenerCount === 1 and the lookup parsed
+  checkedAt: string                                  // ISO
+}
+interface PortHolder {
+  name: string, pid: number,
+  command?: string,                                  // Unix (`ps -o command=`); undefined on Windows
+  startedAt?: string,                                // Unix (`ps -o lstart=`); undefined on Windows
+  parentExited?: boolean,                            // Unix (`ps -o ppid=` === 1)
+  sameUser?: boolean                                 // false → `free_port` is never offered
+}
 ```
 
 **Events** (frontend registers both listeners **once at app startup** into a global store — never inside the log-panel component):
@@ -219,7 +240,38 @@ Every child process Hangar ever spawns (dev command, `git rev-parse`, `git pull`
 ## 9. Run sequence (exact order)
 
 0. Guard: status must be `stopped` or `crashed` (else reject); re-check `pathExists` (false → warning state, do not run). Clear the project's log buffer.
-1. Pre-check: try TCP connect to **both** `127.0.0.1:port` and `[::1]:port`. If **either** accepts → do not spawn; run a read-only owner lookup (2 s timeout) — macOS/Linux: `lsof -nP -iTCP:<port> -sTCP:LISTEN`; Windows: `netstat -ano | findstr :<port>` then `tasklist /FI "PID eq <pid>"` — and toast: "Port 3000 is in use by node (PID 4321) — is this project running elsewhere?" If the lookup fails or returns nothing, fall back to the generic message. Strictly read-only: no kill-that-process button in v0.
+1. Pre-check: try TCP connect to **both** `127.0.0.1:port` and `[::1]:port`. If **either** accepts → do not spawn; run a read-only owner lookup (2 s timeout) — macOS/Linux: `lsof -nP -iTCP:<port> -sTCP:LISTEN`; Windows: `netstat -ano | findstr :<port>` then `tasklist /FI "PID eq <pid>"` — and toast: "Port 3000 is in use by node (PID 4321) — is this project running elsewhere?" If the lookup fails or returns nothing, fall back to the generic message.
+
+  **The lookup itself stays strictly read-only.** Until 2026-08-10 this step also said "no
+  kill-that-process button in v0", and the reason was recorded three times in the code
+  (`run.rs`, `process.rs`) and in plan 004: *the port's owner is very often the user's own
+  terminal, and killing what Hangar did not spawn is exactly what §8 is careful never to
+  claim.* That reasoning is still correct and the boundary it protects still stands — §8's
+  guarantee covers only the trees Hangar spawned, and one authorised signal to one named
+  process is not process ownership.
+
+  **Amended 2026-08-10, after two foreign-process collisions in one day, each of which the
+  pre-check caught correctly and then left the user to resolve in a terminal.** The §11 Ports
+  panel may offer exactly one action against a foreign holder, **Free the port**, and only when
+  every one of these holds:
+
+  - the lookup named **exactly one** listening PID on that port;
+  - that process runs as **the current user** (never root, never another account);
+  - it is **not a project Hangar is currently managing** — those route to Stop, because §8 is
+    the only path that may touch our own trees;
+  - its **full command line was read**. If it could not be, the action is not offered at all: a
+    truncated process name is not something a person can authorise a kill from.
+
+  It signals **one PID: never a process group, never a tree, never a negative pid**. It requires
+  a confirm naming the **port** and showing that process's full command line, PID, start time
+  and whether its parent has exited. The PID, its start time and its ownership of the port are
+  **re-verified inside the same call that sends the signal** — PIDs are reused, and any mismatch
+  aborts without signalling. The first signal is **SIGTERM**; escalation to SIGKILL is a
+  separate, separately confirmed action and is never automatic. Hangar re-probes afterwards and
+  reports honestly, including "still held", never widens the blast radius on its own, and never
+  chains a Run onto the confirm. **On Windows the action is unavailable** until command-line and
+  start-time reads are verified on real hardware: `taskkill /PID <pid> /F` without a start-time
+  guard is a weaker operation than this rule authorises.
 2. If `updateOnRun` and the folder is a git repo (`git rev-parse --is-inside-work-tree`; git not found → `system` log "git not found — skipping update", skip to 3):
    - status `updating` → `git -C <path> pull --ff-only` with env `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=echo`, `GIT_SSH_COMMAND="ssh -oBatchMode=yes"`, `GCM_INTERACTIVE=never` — auth must fail fast, never prompt. 10 s timeout; on timeout kill the git **tree** (same kill path — git spawns ssh/credential-helper children). On any failure/offline: write warning to log, **continue anyway**. If a later pull fails mentioning `index.lock`, surface a log hint naming the file; never delete it automatically.
 3. Install decision — hash the lockfile (`package-lock.json` | `pnpm-lock.yaml` | `yarn.lock`, first found; SHA-256). Run the matching install (`npm install` / `pnpm install` / `yarn`) when **any** of: (a) `lastLockfileHash` unset, (b) hash ≠ stored hash, (c) `<path>/node_modules` does not exist. No lockfile at all → skip hashing and installing; `system` line "no lockfile found — skipping install".
@@ -250,13 +302,14 @@ Steam-library energy, but its own identity — a launch bay for code. Dark, dens
 - **Signature element:** when Run is clicked, a slim **phase strip** appears along the card's bottom edge — labeled segments `Pull → Install → Start → Ready` that light up in the accent colour as each real phase completes (mapping: updating / installing / starting / running). Phases skipped this run (not a git repo, no install needed) render dimmed, not lit. This is the one memorable element; it encodes the actual sequence, not decoration. Keep everything else quiet.
 - **Folders** (added 2026-08-10): a folder is a second kind of grid tile, not a card. It occupies one cell of the same track and shows exactly four things: the folder name (Space Grotesk, same size and weight as a project name, preceded by a `›`/`⌄` disclosure glyph, truncated with a `title`); a member count; a row of one small dot per member **in array order**, coloured by that member's live status (pulsing in the accent for transitional statuses, drawn as a hollow ring — while keeping its status colour — when that member's folder is missing, capped at eight then `+n`); and an aggregate line. The aggregate line is **counts, never a status**: the fragments `n stop-failed`, `n crashed`, `n running`, `n in progress`, joined by `·` in that fixed order so truncation can only drop the harmless end; when every member is `stopped` it shows the most recently run member's last-run relative time instead, matching the card's time-slot rule. A folder tile has **no status pill, no port, no stack badge, no libraries line, no phase strip and no Run/Stop button** — §6's status vocabulary belongs to projects, and a folder has no state machine. Folders are marked by **shape, not colour**: a brighter hairline border, two faint stacked edges above the top edge, the disclosure glyph, and the absence of a Run button. No new palette entry, no icon set, no emoji. A folder's own menu is exactly **Rename · Ungroup**; the word "Remove" is reserved for the destructive project action and must not appear on a folder. Rename edits the name in place (Enter commits, Esc cancels, blur commits, an empty commit reverts) — no dialog. Ungroup dissolves the folder and keeps every project. A folder whose last member leaves simply ceases to exist; a folder is never auto-dissolved at one member, because that would be a write the user did not ask for.
 - **Opening a folder** (added 2026-08-10): inline, in the grid — never a slide-over, never a modal. Opening a tile expands a full-width band (`grid-column: 1 / -1`) immediately after it, holding the member cards in a nested grid on the same track with **no horizontal padding**, so a card is identical inside a folder and outside it. Overlays are for per-project detail (logs, notes); a folder is a region of the grid, and dimming the grid behind a backdrop would hide exactly the live status this app exists to show. **Any number of folders may be open at once**, and folders always start closed on launch: open/closed is ephemeral view state, never written to `projects.json` and never reset by a registry reload. **A folder auto-expands and cannot be collapsed while any member is `stop-failed`** — that is the one status whose required action, the retry Stop button, exists only on the card. The band leaves a hole in the folder's row: accepted, because filling it would reorder the grid.
-- **Logs:** slide-over panel, mono font, autoscroll with pause-on-scroll-up, **Copy button** (copies the entire retained buffer with stream prefixes — `navigator.clipboard.writeText` with an `execCommand('copy')` fallback; brief "Copied" confirmation), Clear button, stderr lines tinted, `system` lines muted. **Esc closes the slide-over.** Esc also closes an open folder, but only while focus is inside that folder's band, so it can never fire alongside the card menu's own Esc or the search box's clear-on-Escape (added 2026-08-10). These are the only keyboard shortcuts in v0.
+- **Logs:** slide-over panel, mono font, autoscroll with pause-on-scroll-up, **Copy button** (copies the entire retained buffer with stream prefixes — `navigator.clipboard.writeText` with an `execCommand('copy')` fallback; brief "Copied" confirmation), Clear button, stderr lines tinted, `system` lines muted. **Esc closes the slide-over.** Esc also closes an open folder, but only while focus is inside that folder's band, so it can never fire alongside the card menu's own Esc or the search box's clear-on-Escape (added 2026-08-10). Esc closes the ports slide-over on the same terms, and the folder band must yield to it exactly as it already yields to the log and notes panels — one keypress may never fire two unrelated state changes. These are the only keyboard shortcuts in v0.
 - **Motion:** restrained and functional — motion exists to explain a state change, never to decorate. Allowed:
   - the phase-strip fill (the signature element — it stays the most expressive motion in the app, and nothing else may compete with it);
   - a subtle card hover lift;
   - enter/exit transitions on the surfaces that appear over the grid: the Add/Edit dialog, the Settings dialog, the log slide-over (which §11 already calls a *slide*-over), and toasts — fade and/or a short translate, ≤200 ms, ease-out;
   - colour/opacity transitions on status pills and phase segments when a status actually changes, ≤200 ms;
   - card enter/exit when a project is added or removed;
+  - the ports slide-over's enter/exit, on the same terms as the log slide-over (added 2026-08-10);
   - drag-to-group feedback and folder expansion (added 2026-08-10): the dragged card drops to ~40 % opacity and a valid drop target (a card or a folder tile) shows a 2 px accent ring — **applied instantly, no transition, opacity and colour only**, no scale, no lift, no spring. The ghost that follows the pointer is direct manipulation, not animation: one detached node written imperatively outside React, one style write per pointer event, no rAF loop and no library. Under `prefers-reduced-motion` the dwell delay is unchanged and only the animated dwell ring is dropped, so the visual can never lead the timer. Expanding or collapsing a folder is instant — there is no height animation — but the member cards mounting into an opened band do play the existing card-enter fade: a card appearing is a card appearing.
 
   Everything else stays still. Still banned: gradients, glassmorphism, confetti, parallax, scroll-linked effects, looping/idle animation (the `stopping` spinner and the accent pulse on transitional statuses are the only loops), and any motion that delays interaction — a control must be usable on the frame it appears.
@@ -266,13 +319,14 @@ Steam-library energy, but its own identity — a launch bay for code. Dark, dens
   `prefers-reduced-motion` must disable all of the above — the existing global rule in `src/index.css` already does this; keep it working.
 - Empty state: "No projects yet. Add your first one." + Add button — this **is** the first-run experience (§5). Errors always say what happened and what to do next.
 - **Notes:** a slide-over like the log panel, opened from the overflow menu — one free-text area per project, autosaved, Esc closes. It is a scratchpad the app never reads: nothing parses it, nothing acts on it, and it has no effect on running a project. (Added 2026-08-09.)
+- **Ports** (added 2026-08-10): a slide-over like the log panel, opened from a quiet **Ports** button in the header. One row per registered project, in `projects.json` array order — never sorted by port or state, for the same reason the grid is never re-sorted. A row shows the pinned port (mono), the project name, and one of four states: **free**; the project's own §6 status, in its own colour and vocabulary, when Hangar is managing it — the only state whose row carries **Stop**, the same call the card's button makes, which never reads the displayed PID; **in use, not managed by Hangar**, whose actions are copying a `kill` command to the clipboard and — subject to §9 step 1's conditions — freeing the port; or **in use, owner unknown**, when the read-only lookup returns nothing, which says exactly that and offers no action. Whenever the port is busy and exactly one listener is identified, the row also shows that process's name, PID, start time, full command line, and a note when its parent has exited; when more than one process is listening it names none of them. It is a **snapshot, not a monitor**: it reads once on open and again only on Refresh, it never polls, and the header states when the snapshot was taken. It lists no port that is not a registered project's — a list of every listening socket would be the network inspector §3 bans. It registers, discovers or proposes nothing (§3), and opens no second OS window (§3's window-close-is-quit contract, on which §8's no-orphans logic depends).
 - Settings: a small gear → one field, "Editor command" (default `code`). Nothing else.
 
 ## 12. Edge cases (handle all)
 
 | Case | Behavior |
 |---|---|
-| Port busy before spawn | Refuse to start; name the owning process and PID when the read-only lookup succeeds (§9.1); generic message otherwise |
+| Port busy before spawn | Refuse to start; name the owning process and PID when the read-only lookup succeeds (§9.1) and point at the Ports panel; generic message otherwise |
 | Hangar launched from Dock/Finder on macOS with nvm-managed npm | Run still finds npm via the §8 startup env resolution; if a tool is missing anyway, the log line shows the PATH searched |
 | `npm` (or the command's binary) not on PATH | `crashed` + log line naming the missing tool |
 | `git` not on PATH with `updateOnRun` | Log warning "git not found — skipping update", skip pull, **still start** (a missing optional tool must not fail the run) |
