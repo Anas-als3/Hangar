@@ -58,6 +58,19 @@ pub struct Project {
     /// added before this field existed, or one whose folder has no `package.json` at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stack: Option<ProjectStack>,
+    /// SPEC.md §5 (folders, 2026-08-10): the folder this project is filed under. Opaque and
+    /// generated — NEVER derived from the name, so two folders may share a name exactly as on
+    /// iOS. A folder is exactly the set of projects carrying this id: it has no record of its
+    /// own, so it cannot dangle, cannot be empty, and `remove_project` needs no cleanup. Run-inert:
+    /// nothing in §8's kill paths or §9's run sequence reads it (§6). NOT the project's directory
+    /// on disk — that is `path`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder_id: Option<String>,
+    /// SPEC.md §5: the folder's display name, denormalised onto every member so no second file
+    /// and no new §7 command is needed. A rename is N writes; if members ever disagree (a rename
+    /// interrupted mid-way) the earliest member in array order supplies the displayed name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder_name: Option<String>,
 }
 
 /// SPEC.md §5 `stack` / §7 `read_package_json`'s `stack` field: detected from `package.json`
@@ -104,6 +117,12 @@ pub struct NewProject {
     /// straight through, never recomputed here (plan 023).
     #[serde(default)]
     pub stack: Option<ProjectStack>,
+    /// SPEC.md §5 (folders, 2026-08-10): mirrors `Project::folder_id`.
+    #[serde(default)]
+    pub folder_id: Option<String>,
+    /// SPEC.md §5 (folders, 2026-08-10): mirrors `Project::folder_name`.
+    #[serde(default)]
+    pub folder_name: Option<String>,
 }
 
 /// SPEC.md §5 `id: string // nanoid`. No id-generation crate is added for this one call site
