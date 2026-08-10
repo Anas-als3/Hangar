@@ -76,6 +76,34 @@ export interface LogLine {
   line: string;
 }
 
+/**
+ * §7 `get_port_status` — SPEC.md §11 Ports panel snapshot (added 2026-08-10). One entry per
+ * registered project; a lookup that fails or times out is never an error — it comes back as
+ * `busy: true, listenerCount: 0, holder: undefined` (the "owner unknown" row).
+ */
+export interface PortStatus {
+  projectId: string;
+  port: number;
+  busy: boolean;
+  /** > 1 → Hangar names nobody and offers nothing. */
+  listenerCount: number;
+  /** Only present when `listenerCount === 1` and the lookup parsed. */
+  holder?: PortHolder;
+  /** ISO — shared by every row from one `get_port_status` call. */
+  checkedAt: string;
+}
+
+/** §7 `PortHolder`. `command`/`startedAt`/`parentExited` are Unix only; undefined on Windows. */
+export interface PortHolder {
+  name: string;
+  pid: number;
+  command?: string;
+  startedAt?: string;
+  parentExited?: boolean;
+  /** `false` → the (plan 042) free-port action must never be offered. */
+  sameUser?: boolean;
+}
+
 /** §7 event payload — emitted on every transition. */
 export interface StatusChangedPayload {
   projectId: string;
