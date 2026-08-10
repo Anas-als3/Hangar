@@ -110,6 +110,10 @@ pub async fn add_project(
         // SPEC.md §5/§7 (plan 023): the Add dialog's `read_package_json` call already detected
         // this — carried straight through the wire, never recomputed here.
         stack: input.stack,
+        // SPEC.md §5 (folders, 2026-08-10): a new project may already be filed into a folder
+        // from the Add dialog — carried straight through, same as `notes`/`stack`.
+        folder_id: input.folder_id,
+        folder_name: input.folder_name,
     };
 
     projects.push(project.clone());
@@ -335,6 +339,8 @@ mod tests {
             last_run_at: None,
             notes: None,
             stack: None,
+            folder_id: None,
+            folder_name: None,
         }
     }
 

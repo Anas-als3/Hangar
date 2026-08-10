@@ -203,6 +203,8 @@ fn seed_projects() -> Vec<Project> {
         last_run_at: None,
         notes: None,
         stack: None,
+        folder_id: None,
+        folder_name: None,
     }]
 }
 
@@ -635,6 +637,10 @@ mod tests {
                 libraries: vec!["React".into(), "Tailwind".into()],
                 detected_at: "2026-08-05T10:00:00Z".into(),
             }),
+            // Same non-empty-on-purpose reasoning as `notes`/`stack` above, for `folderId` and
+            // `folderName` — `None` would let the drift guard pass without ever checking them.
+            folder_id: Some("fld_1".into()),
+            folder_name: Some("Client Work".into()),
         }
     }
 
@@ -760,6 +766,7 @@ mod tests {
                 r#""lastLockfileHash":"deadbeef","lastRunAt":"2026-08-05T10:00:00Z","#,
                 r#""notes":"Remember to try the staging flag next time.","#,
                 r#""stack":{"framework":"Next","libraries":["React","Tailwind"],"detectedAt":"2026-08-05T10:00:00Z"},"#,
+                r#""folderId":"fld_1","folderName":"Client Work","#,
                 r#""status":"running","pathExists":true}"#
             )
         );
