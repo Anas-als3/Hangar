@@ -514,6 +514,31 @@ pub async fn get_port_status(state: State<'_, AppState>) -> Result<Vec<PortStatu
         .collect())
 }
 
+/// SPEC.md §7 `find_free_port` (added 2026-08-10, plan 043) — §10 step 4's "Choose for me". Walks
+/// upward from `from` for at most 20 candidates, skipping any port in `exclude` (the ports other
+/// registered projects pin — passed in by the caller, which already holds the project list, so no
+/// registry read is needed here) and any port that currently accepts a TCP connection
+/// (`process::port_accepts`, dual-stack per §12). Returns `None`, never `from`, when the walk is
+/// exhausted: a caption claiming a port is free when the walk never proved it would be exactly the
+/// silent magic §10 step 4 forbids.
+#[tauri::command]
+pub async fn find_free_port(from: u16, exclude: Vec<u16>) -> Result<Option<u16>, String> {
+    const MAX_CANDIDATES: usize = 20;
+    let mut candidates = Vec::with_capacity(MAX_CANDIDATES);
+    let mut next = Some(from);
+    while candidates.len() < MAX_CANDIDATES {
+        let Some(port) = next else { break };
+        candidates.push(port);
+        next = port.checked_add(1);
+    }
+    for candidate in candidates {
+        if !exclude.contains(&candidate) && !process::port_accepts(candidate).await {
+            return Ok(Some(candidate));
+        }
+    }
+    Ok(None)
+}
+
 /// SPEC.md §9 step 1 (amended 2026-08-10) / §7 `free_port` (plan 042) — the one command allowed to
 /// signal a process Hangar did not spawn. Gated by `free_port_gate`, checked against TWO fresh
 /// probes (never the panel's possibly-stale snapshot): one to establish the claim, one more
