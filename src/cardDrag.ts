@@ -250,3 +250,63 @@ function suppressNextClick(): void {
     { capture: true, once: true },
   );
 }
+
+/**
+ * §11 "Move to folder…" — `moveToFolder` is the only write path; this gesture reuses it verbatim,
+ * never a second one. Default new-folder name is "New Folder": no mid-gesture prompt (§11 puts
+ * rename on the tile itself, and a modal mid-drag is worse than a boring default). Announces the
+ * result with the neutral toast tone — the accessibility story for a mouse-only gesture.
+ */
+async function commitDrop(
+  sourceId: string,
+  targetId: string,
+  targetKind: TargetKind,
+  targetEl: HTMLElement | null,
+): Promise<void> {
+  const sourceProject = findProject(sourceId);
+  if (!sourceProject) return;
+
+  if (targetKind === "folder") {
+    const folderName = targetEl?.getAttribute("data-hangar-tile-name") ?? "";
+    const ok = await moveToFolder(sourceId, { kind: "existing", folderId: targetId, folderName });
+    if (ok) setToast(`Moved ${sourceProject.name} to ${folderName || "the folder"}`, "neutral");
+    return;
+  }
+
+  const targetProject = findProject(targetId);
+  if (!targetProject) return;
+
+  // A plain card that is already a folder member (rendered inside an open band) joins its
+  // existing folder rather than minting a redundant one — judgment call: the plan names only
+  // "folder tile" and "plain card"; without this, a third drag onto that member's own card would
+  // silently regroup it out of its folder instead of joining it.
+  if (targetProject.folderId) {
+    const folderName = targetProject.folderName ?? "";
+    const ok = await moveToFolder(sourceId, {
+      kind: "existing",
+      folderId: targetProject.folderId,
+      folderName,
+    });
+    if (ok) setToast(`Moved ${sourceProject.name} to ${folderName || "the folder"}`, "neutral");
+    return;
+  }
+
+  const created = await moveToFolder(targetId, { kind: "new", name: "New Folder" });
+  if (!created) return;
+  // The generated folder id lives only inside `moveToFolder` — read it back via `findProject` now
+  // that `loadRegistry()` (awaited inside that call) has refreshed the store, rather than adding a
+  // second write path that returns it directly.
+  const updatedTarget = findProject(targetId);
+  const folderId = updatedTarget?.folderId;
+  if (!folderId) return;
+  const folderName = updatedTarget?.folderName ?? "New Folder";
+  const joined = await moveToFolder(sourceId, { kind: "existing", folderId, folderName });
+  if (joined) {
+    setToast(
+      `Grouped ${sourceProject.name} and ${targetProject.name} into "${folderName}"`,
+      "neutral",
+    );
+  }
+  // §5: a partial failure here (joined === false) leaves a valid one-member folder. `moveToFolder`
+  // already toasted the error on that path — nothing left to repair.
+}
