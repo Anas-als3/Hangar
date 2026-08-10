@@ -668,7 +668,7 @@ export async function addProjectAction(input: NewProject): Promise<boolean> {
 export async function updateProjectAction(project: Project): Promise<boolean> {
   try {
     await updateProject(project);
-    await loadRegistry();
+    await refreshRegistryQuietly();
     setState({ dialog: null });
     return true;
   } catch (err) {
