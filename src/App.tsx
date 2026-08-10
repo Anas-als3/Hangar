@@ -16,6 +16,7 @@ import NotesPanel from "./components/NotesPanel";
 import PortsPanel from "./components/PortsPanel";
 import ProjectGrid from "./components/ProjectGrid";
 import SettingsDialog from "./components/SettingsDialog";
+import { lastSessionCluster } from "./session";
 import {
   loadRegistry,
   openAddDialog,
@@ -25,11 +26,14 @@ import {
   refreshRegistryQuietly,
   runningCount,
   setSearch,
+  startProject,
   setToast,
   useHangarStore,
   visibleProjects,
 } from "./store";
 import type { ToastTone } from "./store";
+import { relativeTime } from "./status";
+import type { ProjectView } from "./types";
 
 function CorruptRegistryBanner({
   backupPath,
@@ -148,6 +152,52 @@ function SearchInput({ value }: { value: string }) {
       }}
       className="rounded-md border border-white/10 bg-bg px-3 py-2 text-sm text-text outline-none focus:border-accent"
     />
+  );
+}
+
+/**
+ * §11 "Resume last session" (plan 051). The caller only mounts this when nothing is non-`stopped`
+ * and the search box is empty; this component itself covers the third condition — cluster
+ * non-empty — by rendering nothing when `lastSessionCluster` finds no group.
+ *
+ * Starting is N sequential `startProject` calls, `for…of` with `await`, never `Promise.all`:
+ * §9's per-path mutex serialises same-repo starts anyway, and sequential keeps a second failure
+ * from overwriting the single toast slot.
+ */
+function ResumeLine({ projects }: { projects: ProjectView[] }) {
+  const clusterIds = lastSessionCluster(projects);
+  if (clusterIds.length === 0) return null;
+  const clusterProjects = projects.filter((p) => clusterIds.includes(p.id));
+  const latestMs = clusterProjects.reduce((max, p) => {
+    const at = p.lastRunAt ? Date.parse(p.lastRunAt) : NaN;
+    return !Number.isNaN(at) && at > max ? at : max;
+  }, 0);
+  const names = clusterProjects.map((p) => p.name);
+  const shown = names.slice(0, 3).join(" · ");
+  const overflow = names.length > 3 ? ` · +${names.length - 3}` : "";
+  const label =
+    names.length === 1 ? "Start" : names.length === 2 ? "Start both" : `Start all ${names.length}`;
+
+  const handleStart = async () => {
+    for (const id of clusterIds) {
+      await startProject(id);
+    }
+  };
+
+  return (
+    <div className="mb-4 flex items-center justify-between rounded-md border border-white/10 bg-white/[0.02] px-4 py-2.5 text-sm">
+      <p className="min-w-0 truncate text-muted">
+        Last session, {relativeTime(new Date(latestMs).toISOString())} · {shown}
+        {overflow}
+      </p>
+      <button
+        type="button"
+        onClick={() => void handleStart()}
+        className="ml-4 shrink-0 rounded-md border border-white/10 px-3 py-1 text-xs text-text transition-colors hover:bg-white/5"
+      >
+        {label}
+      </button>
+    </div>
   );
 }
 
@@ -274,6 +324,12 @@ function App() {
           >
             Could not load the project registry: {loadError}
           </div>
+        )}
+
+        {/* §11 "Resume last session" (plan 051): the third condition — cluster non-empty — is
+            covered inside ResumeLine itself, which renders nothing when there is no group. */}
+        {projects.every((p) => p.status === "stopped") && search.trim() === "" && (
+          <ResumeLine projects={projects} />
         )}
 
         {loading ? (
