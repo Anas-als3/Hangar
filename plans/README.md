@@ -22,8 +22,8 @@ conditions, and update your row below when done.
 | 009 | Verify entrypoint, CI (incl. Windows job), de-trapped `dev` script | — | P1 | M | — | DONE (merged `15bfa69`) |
 | 010 | Blocking I/O out from under the async state locks | — | P1 | S | — | DONE (merged `0c153bb`, 2026-08-10) — 4 sites; new `save_lock` wraps mutate+clone+save; fsyncs moved to `spawn_blocking` |
 | 011 | LineSplitter buffer cap | — | P1 | S | — | DONE (merged `07e734b`, 2026-08-11) — 165 tests, was 162 |
-| 012 | settings.json corruption rescue + atomic_write hardening | — | P2 | S | 010 | TODO |
-| 013 | Restrictive webview CSP | — | P2 | S | — | TODO |
+| 012 | settings.json corruption rescue + atomic_write hardening | — | P2 | S | 010 | DONE (merged 2026-08-11) — 168 tests, was 165 |
+| 013 | Restrictive webview CSP | — | P2 | S | — | DONE (merged 2026-08-11) — real-engine render check pending |
 | 014 | Un-brick stop-failed on foreign port owners | — | P2 | M | 007 | DONE (merged `28490dd`, 2026-08-11) — 154 tests, was 147 |
 | 015 | Gate the Unix-only orphan test; Windows gate sees test code | — | P1 | S | 009 | DONE (merged) |
 | 016 | SPEC §11 motion amendment (proposal — maintainer ratifies) | — | P2 | S | — | DONE (ratified and applied to SPEC.md, 2026-08-09) |
@@ -68,6 +68,7 @@ conditions, and update your row below when done.
 | 055 | GitHub read + reply — slice 3 | — | P2 | M | 054 | TODO |
 | 056 | Integration ideas register — ranked, with evidence and counter-arguments | — | — | — | — | REGISTER (not a build plan) |
 | 057 | Preflight "Doctor" panel — env-key drift, node version, install-needed | — | P1 | M | 056 | TODO |
+| 058 | Restore the Windows cross-check (feature-gate the TLS stack) | — | P1 | S-M | — | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
 
