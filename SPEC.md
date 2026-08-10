@@ -174,6 +174,7 @@ set_settings(s: { editorCommand: string }): void
 // outside that moment.
 get_port_status(): PortStatus[]                      // one entry per registered project, snapshot at call time
 free_port(projectId: string, pid: number): void      // §9 step 1 conditions apply; rejects with a message otherwise
+find_free_port(from: number, exclude: number[]): number | null  // Add/Edit dialog only — §10 step 4's "Choose for me"
 
 interface PortStatus {
   projectId: string, port: number, busy: boolean,
