@@ -33,7 +33,7 @@ import {
 } from "./store";
 import type { ToastTone } from "./store";
 import { relativeTime } from "./status";
-import type { ProjectView } from "./types";
+import type { ProjectView, Status } from "./types";
 
 function CorruptRegistryBanner({
   backupPath,
@@ -91,17 +91,25 @@ function EmptyState() {
  * there is no id, or the id no longer resolves (project removed meanwhile). Only then does the
  * message get a "<name> — " prefix and a Show logs button; a dangling id must never render a
  * stale name.
+ *
+ * Plan 047: `run_project` returns a plain `Result<(), String>` (§7 is frozen), so the frontend
+ * cannot tell a port refusal from any other failure kind by parsing `message` — that would be a
+ * regex tied to `run.rs`'s wording. Instead the Ports button is shown whenever `projectId`
+ * resolves and that project's status is `stopped`/`crashed`, i.e. the Run did not take. Honest
+ * for every failed Run, not just a collision — same rule as the "dangling id" guard above.
  */
 function Toast({
   message,
   tone = "error",
   projectId,
   projectName,
+  projectStatus,
 }: {
   message: string;
   tone?: ToastTone;
   projectId?: string;
   projectName?: string;
+  projectStatus?: Status;
 }) {
   return (
     <div
@@ -124,6 +132,18 @@ function Toast({
           className="shrink-0 text-xs text-muted underline-offset-2 transition-colors hover:text-text hover:underline"
         >
           Show logs
+        </button>
+      )}
+      {projectId && (projectStatus === "stopped" || projectStatus === "crashed") && (
+        <button
+          type="button"
+          onClick={() => {
+            void openPorts();
+            setToast(null);
+          }}
+          className="shrink-0 text-xs text-muted underline-offset-2 transition-colors hover:text-text hover:underline"
+        >
+          Ports
         </button>
       )}
       <button
@@ -216,7 +236,8 @@ function App() {
     dialog,
     portsOpen,
   } = useHangarStore();
-  const toastProjectName = projects.find((p) => p.id === toastProjectId)?.name;
+  const toastProject = projects.find((p) => p.id === toastProjectId);
+  const toastProjectName = toastProject?.name;
 
   const contentRef = useRef<HTMLDivElement | null>(null);
   // §11's aria-modal on each overlay is a promise the DOM doesn't keep by itself (plan 039) —
@@ -356,6 +377,7 @@ function App() {
           tone={toastTone}
           projectId={toastProjectId ?? undefined}
           projectName={toastProjectName}
+          projectStatus={toastProject?.status}
         />
       )}
     </div>
