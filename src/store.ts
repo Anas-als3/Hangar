@@ -607,7 +607,7 @@ export async function saveNotesAction(projectId: string, notes: string): Promise
   if (!project) return;
   try {
     await updateProject({ ...project, notes: notes === "" ? undefined : notes });
-    await loadRegistry();
+    await refreshRegistryQuietly();
   } catch (err) {
     setToast(errorMessage(err));
   }
