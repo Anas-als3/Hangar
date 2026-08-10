@@ -16,6 +16,9 @@ use tokio::sync::Mutex;
 use serde::Serialize;
 
 use crate::env_resolve::{DevEnvCell, EnvMap};
+// SPEC.md §18 / plan 053: `GithubState` is intentionally NOT part of `AppState` below — see its
+// own doc comment in `github/mod.rs`.
+use crate::github::{self, error::GithubError, GithubState};
 use crate::process::{self, LogLine, RuntimeMap};
 use crate::registry::{self, Project, ProjectView, RegistryError, Settings, Status};
 
@@ -796,6 +799,227 @@ fn free_port_gate(
     }
 
     Ok(holder.pid)
+}
+
+// -------------------------------------------------------------------------------------------
+// SPEC.md §18 / plan 053 — GitHub credential slice 1. Three additions to the frozen §7 list.
+// -------------------------------------------------------------------------------------------
+
+/// The wire shape for `get_github_status`/`set_github_token`. One struct covering every state
+/// rather than a `Result`-shaped `Err`, because SPEC.md §18/§11 require offline and rate-limited
+/// to be `Ok` values the Inbox panel renders in place — never a §7 toast.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubStatus {
+    pub state: GithubConnectionState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scopes: Option<Vec<String>>,
+    /// Human-readable, secret-free detail for every non-`connected` state. Never built from a
+    /// `GithubError`'s `Debug` — see `status_from_error` below, the one place this is written.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reset_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_after_sec: Option<u64>,
+    /// Whether a token was already stored before this status was computed — lets the panel say
+    /// "Reconnect" (a token that used to work stopped working) instead of "Connect".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub had_stored_token: Option<bool>,
+}
+
+/// SPEC.md §18's six ratified failure states, plus `Connected`/`Disconnected` — ratified here so
+/// slice 2 does not invent them. `KeychainDenied` is distinct from `Disconnected` on purpose
+/// (SPEC.md §18: "a denied keychain must never render as 'no token'").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum GithubConnectionState {
+    Disconnected,
+    KeychainDenied,
+    Connected,
+    Invalid,
+    InsufficientScope,
+    RateLimited,
+    SecondaryRateLimited,
+    Offline,
+}
+
+fn empty_status(state: GithubConnectionState) -> GithubStatus {
+    GithubStatus {
+        state,
+        username: None,
+        scopes: None,
+        detail: None,
+        reset_at: None,
+        retry_after_sec: None,
+        had_stored_token: None,
+    }
+}
+
+impl GithubStatus {
+    fn disconnected() -> Self {
+        GithubStatus { had_stored_token: Some(false), ..empty_status(GithubConnectionState::Disconnected) }
+    }
+
+    /// SPEC.md §18: never "no token" — a distinct state with its own explanatory `detail`.
+    fn keychain_denied() -> Self {
+        GithubStatus {
+            detail: Some(
+                "Hangar could not access your keychain. Check System Settings → Privacy & \
+                 Security, allow Hangar, then try again."
+                    .to_string(),
+            ),
+            ..empty_status(GithubConnectionState::KeychainDenied)
+        }
+    }
+
+    fn connected(username: String, scopes: Vec<String>) -> Self {
+        GithubStatus {
+            username: Some(username),
+            scopes: Some(scopes),
+            had_stored_token: Some(true),
+            ..empty_status(GithubConnectionState::Connected)
+        }
+    }
+}
+
+/// SPEC.md §18's reviewable invariant: NOT `impl From<GithubError> for String` (nor for
+/// `GithubStatus`) — a plain, explicitly-named function called at exactly the two places in this
+/// file a `GithubError` is ever turned into user-facing text, so a reviewer sees every
+/// conversion. Every branch is secret-free by construction: `GithubError`'s own fields are status
+/// codes and timestamps, never request/response bodies (see its own guard test).
+fn status_from_error(err: GithubError, had_stored_token: bool) -> GithubStatus {
+    let (state, detail, reset_at, retry_after_sec) = match err {
+        GithubError::Offline => (
+            GithubConnectionState::Offline,
+            "Hangar could not reach GitHub. Check your connection.".to_string(),
+            None,
+            None,
+        ),
+        GithubError::Unauthorized => (
+            GithubConnectionState::Invalid,
+            if had_stored_token {
+                "This token no longer works — GitHub rejected it. It may have been revoked or \
+                 expired."
+                    .to_string()
+            } else {
+                "GitHub did not accept this token. Check that you copied it correctly.".to_string()
+            },
+            None,
+            None,
+        ),
+        GithubError::InsufficientScope => (
+            GithubConnectionState::InsufficientScope,
+            "This token doesn't have the scopes Hangar needs — notifications and repo (or \
+             public_repo)."
+                .to_string(),
+            None,
+            None,
+        ),
+        GithubError::RateLimited { reset_at } => (
+            GithubConnectionState::RateLimited,
+            "GitHub has rate-limited this token.".to_string(),
+            Some(reset_at),
+            None,
+        ),
+        GithubError::SecondaryRateLimited { retry_after_sec } => (
+            GithubConnectionState::SecondaryRateLimited,
+            "GitHub asked Hangar to slow down.".to_string(),
+            None,
+            Some(retry_after_sec),
+        ),
+        GithubError::Unexpected { status } => (
+            GithubConnectionState::Offline,
+            format!("GitHub returned an unexpected response (status {status})."),
+            None,
+            None,
+        ),
+    };
+    GithubStatus {
+        detail: Some(detail),
+        reset_at,
+        retry_after_sec,
+        had_stored_token: Some(had_stored_token),
+        ..empty_status(state)
+    }
+}
+
+/// SPEC.md §18 / plan 053 `get_github_status` — the ONE read the Inbox panel calls to render its
+/// own state in place (§11: "none of them is a toast, and none is an error"). Reads the keychain
+/// at most once per session (`SessionCache::resolved`); re-validates over the network on every
+/// call once a secret is cached, since connectivity/expiry/rate-limits are time-varying in a way
+/// "is there a keychain entry" is not. Never touches `AppState` — its own managed cell only.
+#[tauri::command]
+pub async fn get_github_status(github: State<'_, GithubState>) -> Result<GithubStatus, String> {
+    let secret = {
+        let mut session = github.session.lock().await;
+        if !session.resolved {
+            match github::keychain::read() {
+                Ok(found) => session.secret = found,
+                Err(_) => session.keychain_denied = true,
+            }
+            session.resolved = true;
+        }
+        if session.keychain_denied {
+            return Ok(GithubStatus::keychain_denied());
+        }
+        session.secret.clone()
+    };
+    let Some(secret) = secret else {
+        return Ok(GithubStatus::disconnected());
+    };
+    match github::client::validate(&secret).await {
+        Ok(user) => Ok(GithubStatus::connected(user.login, user.scopes)),
+        Err(e) => Ok(status_from_error(e, true)),
+    }
+}
+
+/// SPEC.md §18 / plan 053 `set_github_token`. Validates BEFORE storing ("Validation happens
+/// before storage: GET /user proves auth") — a bad token is never written to the keychain.
+#[tauri::command]
+pub async fn set_github_token(
+    token: String,
+    github: State<'_, GithubState>,
+) -> Result<GithubStatus, String> {
+    let had_stored_token = github.session.lock().await.secret.is_some();
+    if token.trim().is_empty() {
+        return Ok(status_from_error(GithubError::Unauthorized, had_stored_token));
+    }
+
+    let secret = github::secret::Secret::new(token);
+    let user = match github::client::validate(&secret).await {
+        Ok(user) => user,
+        Err(e) => return Ok(status_from_error(e, had_stored_token)),
+    };
+
+    match github::keychain::store(&secret) {
+        Ok(()) => {
+            let mut session = github.session.lock().await;
+            session.resolved = true;
+            session.keychain_denied = false;
+            session.secret = Some(secret);
+            Ok(GithubStatus::connected(user.login, user.scopes))
+        }
+        // SPEC.md §18: a keychain that refuses the write must not be reported as a bad token.
+        Err(_) => Ok(GithubStatus::keychain_denied()),
+    }
+}
+
+/// SPEC.md §18 / plan 053 `remove_github_token`. "Removing it must be one obvious action, and
+/// must leave no residue" — clears BOTH the keychain entry and this session's cache, so a stale
+/// in-memory secret can never survive a Disconnect click.
+#[tauri::command]
+pub async fn remove_github_token(github: State<'_, GithubState>) -> Result<(), String> {
+    github::keychain::delete().map_err(|_| {
+        "Hangar could not remove the saved token — the keychain refused the request.".to_string()
+    })?;
+    let mut session = github.session.lock().await;
+    session.resolved = true;
+    session.keychain_denied = false;
+    session.secret = None;
+    Ok(())
 }
 
 #[cfg(test)]
