@@ -262,6 +262,12 @@ subagent report.
    "Port 3000 is in use by node (PID 4321)" — exists only in a single
    overwritable toast slot and is unrecoverable once dismissed or replaced.
    Contradicts §11's "Errors always say what happened and what to do next". S.
+   **RESOLVED by merged plan 022** (confirmed 2026-08-10 by re-reading the
+   code, not by a report): `run.rs:683`, `:708` and `:725` each
+   `append_system` the same message before their `return Err`. Only the
+   no-such-project path (`run.rs:675`) still returns silently, and that one is
+   defensible — there is no project whose log it could be appended to.
+   Annotated so a future audit does not re-plan a fixed finding.
 2. **Search hides running projects.** `filterProjects` (store.ts) matches name
    only and `App.tsx` feeds the filtered list straight to the grid, so a running
    project whose name does not match unmounts — resetting its PhaseStrip `seen`
