@@ -76,6 +76,7 @@ fn main() {
             commands::read_package_json,
             commands::get_port_status,
             commands::free_port,
+            commands::find_free_port,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

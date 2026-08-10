@@ -133,3 +133,13 @@ export function getPortStatus(): Promise<PortStatus[]> {
 export function freePort(projectId: string, pid: number): Promise<void> {
   return invoke<void>("free_port", { projectId, pid });
 }
+
+/**
+ * §7 `find_free_port` (added 2026-08-10, plan 043) — §10 step 4's "Choose for me". Walks upward
+ * from `from`, skipping `exclude` (other registered projects' pinned ports) and anything currently
+ * accepting a connection. `null`, never `from`, when the walk is exhausted — this alone does not
+ * touch the command field; §10 step 4 requires the caller to rewrite the port token too.
+ */
+export function findFreePort(from: number, exclude: number[]): Promise<number | null> {
+  return invoke<number | null>("find_free_port", { from, exclude });
+}
