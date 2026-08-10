@@ -45,3 +45,35 @@ jobs:
             }
             console.log("Version check passed: " + pkg + " (tag " + tag + ")");
           '
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build release bundle
+        run: npm run build:app
+
+      # Uses the `gh` CLI, preinstalled on GitHub-hosted runners -- chosen
+      # over a third-party release Action (e.g. softprops/action-gh-release)
+      # so this workflow adds no Action beyond what ci.yml already uses.
+      - name: Create Release and attach .dmg
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            src-tauri/target/release/bundle/dmg/*.dmg \
+            --title "${{ github.ref_name }}" \
+            --notes "Unsigned macOS (arm64) build, not signed with an Apple Developer certificate. macOS Gatekeeper will say \"Hangar is damaged and can't be opened\" on first launch -- this is expected, not a bug. Fix: right-click the app -> Open -> Open (once)."
