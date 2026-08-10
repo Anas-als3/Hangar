@@ -15,7 +15,7 @@ use tokio::sync::Mutex;
 
 use serde::Serialize;
 
-use crate::env_resolve::DevEnvCell;
+use crate::env_resolve::{DevEnvCell, EnvMap};
 use crate::process::{self, LogLine, RuntimeMap};
 use crate::registry::{self, Project, ProjectView, RegistryError, Settings, Status};
 
@@ -557,6 +557,28 @@ fn build_port_status(
         holder,
         checked_at: checked_at.to_string(),
     }
+}
+
+/// One-project version of `get_port_status`'s two-pass probe — the same building blocks
+/// (`port_accepts`, `port_listeners`, `ps_enrich`, `build_port_status`), scoped to a single port.
+/// `free_port` (below) calls this TWICE: once to establish what it is about to act on, and once
+/// more "immediately before signalling" (SPEC.md §9 step 1) — the second call is what gives gate 5
+/// something real to re-verify against, instead of trusting a single read.
+async fn probe_one_port(project_id: &str, port: u16, env: &EnvMap, checked_at: &str) -> PortStatus {
+    let busy = process::port_accepts(port).await;
+    let listeners = if busy { process::port_listeners(port, env).await } else { Vec::new() };
+    let solo_pids: Vec<u32> =
+        (listeners.len() == 1).then(|| listeners[0].pid).into_iter().collect();
+    let ps_rows = process::ps_enrich(&solo_pids, env).await;
+    build_port_status(
+        project_id.to_string(),
+        port,
+        busy,
+        listeners,
+        &ps_rows,
+        current_username().as_deref(),
+        checked_at,
+    )
 }
 
 /// SPEC.md §9 step 1 (amended 2026-08-10, plan 042) — the gate predicate behind `free_port`. Pure:
