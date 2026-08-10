@@ -732,9 +732,13 @@ export async function renameFolder(folderId: string, name: string): Promise<void
     for (const member of members) {
       await updateProject({ ...member, folderName: name });
     }
-    await loadRegistry();
   } catch (err) {
     setToast(errorMessage(err));
+  } finally {
+    // Plan 033 defect 3: reload on BOTH paths. A mid-sequence rejection must never leave the
+    // grid showing the pre-rename name while disk holds a partial write — no retry/rollback
+    // needed (§5's next-rename-repairs-it recovery already covers that), just an accurate view.
+    await loadRegistry();
   }
 }
 
@@ -746,8 +750,11 @@ export async function ungroupFolder(folderId: string): Promise<void> {
     for (const member of members) {
       await updateProject({ ...member, folderId: undefined, folderName: undefined });
     }
-    await loadRegistry();
   } catch (err) {
     setToast(errorMessage(err));
+  } finally {
+    // Plan 033 defect 3: reload on BOTH paths — see renameFolder's comment above. A partial
+    // ungroup must not leave the tile showing the old member count while disk already lost some.
+    await loadRegistry();
   }
 }

@@ -22,7 +22,12 @@ function FolderDots({ members }: { members: ProjectView[] }) {
   const shown = members.slice(0, DOT_CAP);
   const overflow = members.length - shown.length;
   return (
-    <div className="pointer-events-none relative z-10 flex items-center gap-1">
+    // Plan 033 defect 2: no `relative z-10` here. This div is a direct child of the tile's
+    // `<article>`, a sibling of `<header>` (which holds the `⋯` menu). Giving every sibling the
+    // same z-10 makes them paint in DOM order — header first, so the menu painted underneath
+    // this dot row. `pointer-events-none` already routes clicks through to the stretched
+    // open/close button beneath; z-10 is not needed for that and must not come back here.
+    <div className="pointer-events-none flex items-center gap-1">
       <div aria-hidden="true" className="flex items-center gap-1">
         {shown.map((m) => (
           <span
@@ -223,14 +228,18 @@ export function FolderTile({
         </div>
       </header>
 
-      {/* Display-only — pointer-events-none so clicks fall through to the stretched button. */}
-      <p className="pointer-events-none relative z-10 text-xs text-muted">
+      {/* Display-only — pointer-events-none so clicks fall through to the stretched button.
+          Plan 033 defect 2: the header is the ONLY child of <article> that may carry `z-10` — it
+          contains the `⋯` menu, which needs its own stacking context to paint above these
+          siblings. Adding `z-10` back here would recreate that context on a display-only sibling
+          and make the menu paint beneath it again (four same-level contexts paint in DOM order). */}
+      <p className="pointer-events-none text-xs text-muted">
         {members.length} project{members.length === 1 ? "" : "s"}
       </p>
 
       <FolderDots members={members} />
 
-      <p className="pointer-events-none relative z-10 mt-auto text-xs text-muted">
+      <p className="pointer-events-none mt-auto text-xs text-muted">
         {folderSummary(members)}
       </p>
     </article>

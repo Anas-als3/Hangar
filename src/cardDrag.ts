@@ -239,16 +239,27 @@ function teardown(): void {
 }
 
 /** Suppresses the trailing synthetic `click` a drag's `pointerup` produces — otherwise dropping a
- *  card also fires whatever it landed on (a folder's open/close button, Run, ...). */
+ *  card also fires whatever it landed on (a folder's open/close button, Run, ...).
+ *
+ *  Plan 033 defect 4: `cancelSession()` calls this too, and two of its callers — `onWindowBlur`
+ *  and `onKeyDown` (Escape) — end the drag while the pointer button is still down, so no trailing
+ *  click may ever arrive. `once: true` alone would leave the listener armed forever, ready to eat
+ *  the user's next real click after they return. A genuine trailing click is always dispatched in
+ *  the same task as `pointerup`, so scheduling removal for the next task (`setTimeout(remove, 0)`)
+ *  never races it out — it only closes the window an abandoned drag would otherwise leave open.
+ *  Both removal paths share one named `remove` so a click-then-timeout (or vice versa) is a no-op. */
 function suppressNextClick(): void {
-  window.addEventListener(
-    "click",
-    (event) => {
-      event.stopPropagation();
-      event.preventDefault();
-    },
-    { capture: true, once: true },
-  );
+  function onClick(event: MouseEvent): void {
+    remove();
+    event.stopPropagation();
+    event.preventDefault();
+  }
+  function remove(): void {
+    window.removeEventListener("click", onClick, { capture: true });
+    clearTimeout(timer);
+  }
+  window.addEventListener("click", onClick, { capture: true, once: true });
+  const timer = setTimeout(remove, 0);
 }
 
 /**
