@@ -6,7 +6,9 @@
 
 A desktop app that works like a **Steam library for local dev projects**. A grid of project cards. Click **Run** on a card → the app pulls updates, installs dependencies if needed, starts the dev server, waits until it responds, and opens it in the user's default browser. Click **Stop** → the entire process tree is killed cleanly. Switching between projects becomes two clicks instead of IDE → terminal → `npm run dev` → Ctrl+C → repeat.
 
-Hangar **orchestrates**. It never replaces the IDE, the terminal, the browser, or git. The browser tab IS the user's normal browser (Chrome/Edge) — there is **no embedded browser** in this app.
+Hangar **orchestrates**. It never replaces the IDE, the terminal, or git. The browser tab IS the user's normal browser (Chrome/Edge) — there is **no embedded browser** in this app.
+
+Amended 2026-08-10: Hangar **surfaces** a repository's GitHub activity and lets you reply to it (§18). It does not replace github.com — it has no repository browser, no diff viewer, no PR review UI, no merge button, and no destructive action of any kind. The test for anything proposed under §18 is: *does it tell me something I would otherwise have missed, or is it a worse version of a page GitHub already serves?* Build the first; link to the second.
 
 ## 2. The one user flow (everything serves this)
 
@@ -35,7 +37,8 @@ Hangar **orchestrates**. It never replaces the IDE, the terminal, the browser, o
 - ❌ Plugin system / SDK
 - ❌ Docker, Docker Compose, Spring Boot, Python detection (v0 is Node-ecosystem only; the manual command field makes anything else *possible* but we build no special support)
 - ❌ Auto-discovery / drive scanning
-- ❌ Deployment, cloud, accounts, telemetry, database (no SQLite — JSON files only)
+- ❌ Deployment, telemetry, database (no SQLite — JSON files only)
+- ⚠️ **Cloud and accounts: banned except for the GitHub integration named in §18** (amended 2026-08-10). This entry read "cloud, accounts" without qualification until the maintainer ruled, with the costs on the table, that Hangar should carry a GitHub inbox. The ban's reasons still hold everywhere else: an app that asks for credentials is one a developer evaluates for trust rather than simply uses, and every network call is a way for a local tool to become slow, flaky or offline-broken. §18 therefore permits **exactly one** provider, **one** credential, and **no** other network access of any kind. Anything beyond it is still ❌.
 - ❌ System tray / background mode (window close = quit; §8's no-orphans logic depends on this contract)
 - ❌ Silent port auto-detection from log output (pin + hint only, see §12)
 
@@ -433,3 +436,74 @@ If a Tauri/plugin API doesn't match this spec's snippet, trust the compiler and 
 docs, keep the spec's INTENT, and note the deviation in a code comment.
 UI must follow §11 exactly — tokens, fonts, phase strip. No generic defaults.
 ```
+
+## 18. GitHub integration (added 2026-08-10)
+
+Ratified by the maintainer after being shown the cost: this is the one place §3's cloud/accounts
+ban is lifted, and it is lifted **only** here. Hangar becomes an app that has a login step. Every
+rule below exists to stop that changing what Hangar is for.
+
+### The line
+
+Hangar **surfaces** activity and lets you reply to it. It is not a GitHub client. There is no
+repository browser, no file tree, no diff viewer, no PR review UI, no merge, close, label, assign,
+force-push or any other destructive or state-changing operation beyond **posting a comment**. When
+something needs more than a comment, Hangar opens the real page in the real browser — the same
+opener path §9 step 6 already uses.
+
+The test for any proposal here: *does it tell me something I would otherwise have missed, or is it
+a worse version of a page GitHub already serves?* Build the first; link to the second.
+
+### The launcher must not depend on it
+
+**Hangar without a token, and Hangar with no network, must be exactly the app it is today.** Run,
+Stop, logs, ports, folders, the phase strip — none of them may acquire a network dependency, block
+on one, or slow down because one is pending. A GitHub failure is never a Run failure. If this rule
+and a feature conflict, the feature loses.
+
+Concretely: no GitHub call may run on the §9 run sequence's path, hold any lock §8 or §9 uses, or
+appear in the startup path before the grid renders.
+
+### The credential
+
+- **One** credential: a GitHub personal access token, supplied by the user.
+- It is a **secret**. It is never written to `projects.json`, never logged, never included in a
+  toast, an error string, a `system` log line, or a panic message, and never sent anywhere except
+  `api.github.com` over TLS.
+- It is stored via the **OS keychain**, not a JSON file. If the keychain is unavailable, the
+  feature is unavailable — it does not silently fall back to disk.
+- Removing it must be one obvious action, and must leave no residue.
+- The token's scopes are the user's choice; Hangar states which it needs and requests no more.
+
+### Network behaviour
+
+- **Never polls in the background.** §3 still bans background mode. Fetch on: the inbox being
+  opened, an explicit Refresh, and at most once on window focus with a sane minimum interval.
+- **Rate limits are shown, never swallowed.** When GitHub throttles, the UI says so and says when
+  it resets.
+- **Offline is a first-class state**, not an error banner. The inbox says it is offline and shows
+  the last snapshot with its timestamp — the same staleness-is-visible rule §5 applies to
+  `stack.detectedAt`.
+- Every request has a timeout. A hung request may never wedge the UI.
+
+### Storage
+
+- Cached GitHub data is a **cache**, not a database: a single JSON file, atomic writes like every
+  other file in §4, safe to delete at any moment, and never the source of truth for anything.
+- It holds no secret and no PII beyond what the API returned for the repositories the user linked.
+- `projects.json` gains at most a repository identifier per project. Nothing else.
+
+### Scope of the first version
+
+- An **inbox** of notifications for linked repositories, with unread state.
+- Reading an issue or PR thread.
+- **Posting a comment.** Nothing else writes.
+- Opening the corresponding page on github.com.
+
+Everything else — reviews, merges, labels, assignments, releases, Actions, code — is out, and stays
+out unless this section is amended again.
+
+### What this section does not license
+
+It is not a precedent for a second provider, a second credential, telemetry of any kind, an
+embedded browser, or any other §3 entry. Those remain ❌ exactly as written.
