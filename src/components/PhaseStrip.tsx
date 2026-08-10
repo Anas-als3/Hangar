@@ -3,7 +3,7 @@
  * phase completes. Skipped phases (not a git repo, no install needed) render dimmed, distinct
  * from both lit and not-yet-reached (pending). Built by plan 006 (M6).
  */
-import { useEffect, useRef, useState } from "react";
+import { useHangarStore } from "../store";
 import type { ProjectView, Status } from "../types";
 
 type PhaseKey = "updating" | "installing" | "starting" | "running";
@@ -27,39 +27,12 @@ const VISIBLE: ReadonlySet<Status> = new Set<Status>([
   "stop-failed",
 ]);
 
-function isPhaseKey(status: Status): status is PhaseKey {
-  return (
-    status === "updating" ||
-    status === "installing" ||
-    status === "starting" ||
-    status === "running"
-  );
-}
-
 export function PhaseStrip({ project }: { project: ProjectView }) {
-  // "Seen" accumulates the real phases observed via status-changed this run, so a phase that
-  // never fired (skipped) can be told apart from one that simply hasn't happened yet.
-  const [seen, setSeen] = useState<ReadonlySet<PhaseKey>>(() =>
-    isPhaseKey(project.status) ? new Set([project.status]) : new Set(),
-  );
-  const prevStatus = useRef<Status>(project.status);
-
-  useEffect(() => {
-    const previous = prevStatus.current;
-    if (previous === project.status) return;
-    prevStatus.current = project.status;
-    // A fresh Run (leaving stopped/crashed) resets the strip — mirrors store.ts's own
-    // definition of "a run is starting" so the two stay in lockstep.
-    const freshRun =
-      (previous === "stopped" || previous === "crashed") &&
-      project.status !== "stopped" &&
-      project.status !== "crashed";
-    setSeen((current) => {
-      const base = freshRun ? new Set<PhaseKey>() : current;
-      if (!isPhaseKey(project.status)) return base;
-      return new Set(base).add(project.status);
-    });
-  }, [project.status]);
+  // "Seen" is the phases actually observed via status-changed this run (store.ts's
+  // `phasesSeen`, plan 027) — sourced from the store, not component state, so a
+  // search-triggered unmount/remount of this card cannot blank the strip.
+  const { phasesSeen } = useHangarStore();
+  const seen = new Set<string>(phasesSeen[project.id] ?? []);
 
   if (!VISIBLE.has(project.status)) return null;
 
