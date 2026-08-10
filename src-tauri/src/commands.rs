@@ -17,7 +17,8 @@ use serde::Serialize;
 
 use crate::env_resolve::{DevEnvCell, EnvMap};
 // SPEC.md §18 / plan 053: `GithubState` is intentionally NOT part of `AppState` below — see its
-// own doc comment in `github/mod.rs`.
+// own doc comment in `github/mod.rs`. Plan 058: behind the default-ON `github` feature.
+#[cfg(feature = "github")]
 use crate::github::{self, error::GithubError, GithubState};
 use crate::preflight;
 use crate::process::{self, LogLine, RuntimeMap};
@@ -846,11 +847,16 @@ fn free_port_gate(
 
 // -------------------------------------------------------------------------------------------
 // SPEC.md §18 / plan 053 — GitHub credential slice 1. Three additions to the frozen §7 list.
+//
+// Plan 058: everything to the end of this section sits behind the default-ON `github` feature.
+// The `#[cfg]`s are on individual items rather than a wrapping `mod`, because a module would move
+// these paths (`commands::github::get_github_status`) and §7 forbids reshaping the API.
 // -------------------------------------------------------------------------------------------
 
 /// The wire shape for `get_github_status`/`set_github_token`. One struct covering every state
 /// rather than a `Result`-shaped `Err`, because SPEC.md §18/§11 require offline and rate-limited
 /// to be `Ok` values the Inbox panel renders in place — never a §7 toast.
+#[cfg(feature = "github")]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GithubStatus {
@@ -876,6 +882,7 @@ pub struct GithubStatus {
 /// SPEC.md §18's six ratified failure states, plus `Connected`/`Disconnected` — ratified here so
 /// slice 2 does not invent them. `KeychainDenied` is distinct from `Disconnected` on purpose
 /// (SPEC.md §18: "a denied keychain must never render as 'no token'").
+#[cfg(feature = "github")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum GithubConnectionState {
@@ -889,6 +896,7 @@ pub enum GithubConnectionState {
     Offline,
 }
 
+#[cfg(feature = "github")]
 fn empty_status(state: GithubConnectionState) -> GithubStatus {
     GithubStatus {
         state,
@@ -901,6 +909,7 @@ fn empty_status(state: GithubConnectionState) -> GithubStatus {
     }
 }
 
+#[cfg(feature = "github")]
 impl GithubStatus {
     fn disconnected() -> Self {
         GithubStatus { had_stored_token: Some(false), ..empty_status(GithubConnectionState::Disconnected) }
@@ -933,6 +942,7 @@ impl GithubStatus {
 /// file a `GithubError` is ever turned into user-facing text, so a reviewer sees every
 /// conversion. Every branch is secret-free by construction: `GithubError`'s own fields are status
 /// codes and timestamps, never request/response bodies (see its own guard test).
+#[cfg(feature = "github")]
 fn status_from_error(err: GithubError, had_stored_token: bool) -> GithubStatus {
     let (state, detail, reset_at, retry_after_sec) = match err {
         GithubError::Offline => (
@@ -994,6 +1004,7 @@ fn status_from_error(err: GithubError, had_stored_token: bool) -> GithubStatus {
 /// at most once per session (`SessionCache::resolved`); re-validates over the network on every
 /// call once a secret is cached, since connectivity/expiry/rate-limits are time-varying in a way
 /// "is there a keychain entry" is not. Never touches `AppState` — its own managed cell only.
+#[cfg(feature = "github")]
 #[tauri::command]
 pub async fn get_github_status(github: State<'_, GithubState>) -> Result<GithubStatus, String> {
     let secret = {
@@ -1021,6 +1032,7 @@ pub async fn get_github_status(github: State<'_, GithubState>) -> Result<GithubS
 
 /// SPEC.md §18 / plan 053 `set_github_token`. Validates BEFORE storing ("Validation happens
 /// before storage: GET /user proves auth") — a bad token is never written to the keychain.
+#[cfg(feature = "github")]
 #[tauri::command]
 pub async fn set_github_token(
     token: String,
@@ -1053,6 +1065,7 @@ pub async fn set_github_token(
 /// SPEC.md §18 / plan 053 `remove_github_token`. "Removing it must be one obvious action, and
 /// must leave no residue" — clears BOTH the keychain entry and this session's cache, so a stale
 /// in-memory secret can never survive a Disconnect click.
+#[cfg(feature = "github")]
 #[tauri::command]
 pub async fn remove_github_token(github: State<'_, GithubState>) -> Result<(), String> {
     github::keychain::delete().map_err(|_| {

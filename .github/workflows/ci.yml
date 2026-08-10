@@ -35,6 +35,50 @@ jobs:
       - name: Run verify (cargo check, cargo test, tsc, frontend build)
         run: npm run verify
 
+      # Plan 058. This COMPILES SPEC.md §8's #[cfg(windows)] code — Job Objects,
+      # raw_arg, CREATE_NO_WINDOW — for the Windows target. It does not RUN any
+      # of it: nothing here proves TerminateJobObject kills anything. Only the
+      # `windows` job below executes that code, on a real Windows machine.
+      #
+      # It also deliberately omits the TLS stack: --no-default-features drops the
+      # `github` feature, and with it reqwest -> rustls -> aws-lc-sys, whose C
+      # build script needs windows.h and cannot build on macOS. The GitHub slice
+      # is therefore NOT covered by this step — `npm run verify` above covers it
+      # on the host, and the `windows` job covers it on Windows.
+      #
+      # It belongs on macOS because the `windows` job builds everything natively
+      # and does not need a cross-check. The value here is speed: seconds on this
+      # job versus waiting for a separate runner.
+      #
+      # Guard against a silent regression: if a crate with a C build script ever
+      # lands in the default-off path, this reverts to failing inside a
+      # dependency having verified nothing about Hangar. The grep below is what
+      # catches that — cargo must actually reach and compile our crate.
+      - name: Windows cross-check (compile only, no TLS stack)
+        run: |
+          set -eo pipefail
+          # tauri-winres shells out to a Windows resource compiler during
+          # tauri-build's build script. Without one it panics with
+          # NotAttempted("llvm-rc") BEFORE any of src-tauri/src/ is typechecked,
+          # so the gate would report failure having verified nothing. Homebrew
+          # keeps llvm keg-only, hence the explicit PATH.
+          LLVM_BIN="$(brew --prefix llvm 2>/dev/null || echo /opt/homebrew/opt/llvm)/bin"
+          export PATH="$LLVM_BIN:$PATH"
+          rustup target add x86_64-pc-windows-msvc
+          cargo check --manifest-path src-tauri/Cargo.toml \
+            --target x86_64-pc-windows-msvc --no-default-features --all-targets \
+            2>&1 | tee "$RUNNER_TEMP/cross-check.log"
+          # "Compiling hangar" is what cargo prints when our crate's build script
+          # is (re)built; on an incremental run where only the check unit is stale
+          # it prints "Checking hangar" instead. Either proves the same thing —
+          # cargo reached Hangar's own sources — which is the whole point. Neither
+          # means it died inside a dependency's build script, and the run verified
+          # nothing about §8 no matter what cargo's exit code said.
+          if ! grep -Eq "(Compiling|Checking) hangar" "$RUNNER_TEMP/cross-check.log"; then
+            echo "::error::Windows cross-check never reached Hangar's own code — it died in a dependency. See plan 058."
+            exit 1
+          fi
+
   acceptance:
     name: acceptance (macOS, serial)
     runs-on: macos-latest

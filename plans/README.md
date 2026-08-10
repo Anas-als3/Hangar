@@ -68,7 +68,7 @@ conditions, and update your row below when done.
 | 055 | GitHub read + reply — slice 3 | — | P2 | M | 054 | TODO |
 | 056 | Integration ideas register — ranked, with evidence and counter-arguments | — | — | — | — | REGISTER (not a build plan) |
 | 057 | Preflight "Doctor" panel — env-key drift, node version, install-needed | — | P1 | M | 056 | DONE (uncommitted, 2026-08-11) — 181 tests, was 168; serialization guard mutation-tested; **`engines.node` NOT checked — STOP condition fired, see below** |
-| 058 | Restore the Windows cross-check (feature-gate the TLS stack) | — | P1 | S-M | — | TODO |
+| 058 | Restore the Windows cross-check (feature-gate the TLS stack) | — | P1 | S-M | — | DONE (uncommitted, 2026-08-11) — `Compiling hangar` = 1, §8's Windows code compiles clean; test count unchanged at 181/3; **compiles ≠ runs, CI billing is still the real fix** |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
 
@@ -177,7 +177,7 @@ the `#[cfg(windows)]` unit tests.
 | Purpose | npm script (canonical) | Raw command (CI-less contexts) | Expected |
 |---|---|---|---|
 | Rust (host) | `npm run check:rust` | `cargo check --manifest-path src-tauri/Cargo.toml` | exit 0, no errors |
-| Rust (Windows paths) | — (no script; local-only, see note) | `PATH="/opt/homebrew/opt/llvm/bin:$PATH" cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc --all-targets` | exit 0 — **see note** |
+| Rust (Windows paths) | — (no script; also a CI step on the macOS `host` job as of plan 058) | `PATH="/opt/homebrew/opt/llvm/bin:$PATH" cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc --no-default-features --all-targets` | exit 0 **and** `grep -cE "(Compiling\|Checking) hangar"` = 1 — **see note** |
 | Rust unit tests | `npm run test:rust` | `cargo test --manifest-path src-tauri/Cargo.toml` | all pass |
 | TypeScript | `npm run typecheck` | `npx tsc --noEmit` | exit 0, no errors |
 | Frontend build | `npm run build` | `npm run build` | exit 0 |
@@ -214,6 +214,32 @@ temporarily inserting a deliberate type error inside a `#[cfg(windows)]` fn in
 101, and passed again once removed. Plan 003's executor can therefore trust this gate to
 catch type errors in the Job Object / `raw_arg` / `CREATE_NO_WINDOW` blocks. It still
 cannot *link* or *run* them — see the paragraph below.
+
+**`--no-default-features` is required (added by plan 058, 2026-08-11).** Since `reqwest`
+entered `Cargo.toml` with §18 slice 1, `reqwest -> rustls -> aws-lc-sys`'s C build script
+needs `windows.h` and cannot build on macOS, so the gate died in a dependency **before**
+reaching Hangar — exit 101 having verified nothing. Plan 058 put the GitHub module behind a
+**default-ON** `github` Cargo feature (`src-tauri/Cargo.toml`'s `[features]`), so
+`--no-default-features` drops `reqwest`/`keyring` and the check reaches `src-tauri/src/`
+again. Nothing about the shipped app changes: `default = ["github"]`, so every build,
+`cargo test` run and bundle still contains all three GitHub commands, and `cargo test`'s
+count was identical before and after (181 passed / 3 ignored).
+
+Because "exit 0" is not proof — a dependency build-script failure is also loud but
+worthless — the gate's real assertion is that cargo **reached our crate**:
+
+```sh
+PATH="/opt/homebrew/opt/llvm/bin:$PATH" \
+  cargo check --manifest-path src-tauri/Cargo.toml \
+  --target x86_64-pc-windows-msvc --no-default-features --all-targets \
+  2>&1 | grep -cE "(Compiling|Checking) hangar"     # must be 1, not 0
+```
+
+(`Compiling` when the build script is rebuilt, `Checking` on an incremental run — both mean
+it got to Hangar's sources.) The trade-off is explicit: this configuration does **not**
+typecheck the GitHub slice for Windows. `npm run verify` covers that slice on the host, and
+CI's `windows` job covers it natively. The failure mode to watch for is another crate with a
+C build script landing in the default-on set — the grep is what catches that.
 
 **`--all-targets` is required (added by plan 015).** Plain `cargo check --target
 x86_64-pc-windows-msvc` only typechecks the library, not test code — it is blind to
@@ -338,6 +364,19 @@ a C toolchain targeting Windows.
 
 So with CI dead, **§8's Windows code currently has no verification of any kind.**
 See plan 058.
+
+**Resolved by plan 058 (2026-08-11), for compilation only.** The GitHub module now sits
+behind a default-ON `github` Cargo feature, and the cross-check runs with
+`--no-default-features`, which drops `reqwest` and gets past `aws-lc-sys`. Measured on this
+machine: exit 0, `grep -c "Compiling hangar"` = 1, and §8's `#[cfg(windows)]` code — Job
+Objects, `raw_arg`, `CREATE_NO_WINDOW`, the `taskkill` fallback — **compiles clean**, with
+no errors that had been hiding since the gate broke. The same command is now a step on CI's
+macOS `host` job.
+
+That restores a *compile* gate and nothing more. It does not run `TerminateJobObject`, and
+it deliberately excludes the TLS stack. **The CI billing condition above is still the real
+fix** — only the `windows-latest` job executes this code, and only a human on Windows
+hardware settles SPEC.md §15 test 3.
 
 ## Environment facts (verified 2026-08-05, do not re-derive)
 

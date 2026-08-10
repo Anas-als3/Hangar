@@ -3,6 +3,10 @@
 
 mod commands;
 mod env_resolve;
+// Plan 058: default-ON (see `Cargo.toml`'s `[features]`), so the shipped app is unchanged. Only
+// the `--no-default-features` Windows cross-check drops it, to get past `aws-lc-sys`'s C build
+// script and back to compiling SPEC.md §8's `#[cfg(windows)]` code.
+#[cfg(feature = "github")]
 mod github;
 mod preflight;
 mod process;
@@ -45,6 +49,7 @@ fn main() {
             // no GitHub call may hold a lock `AppState.projects`/`.runtime`/`.dev_env` uses.
             // Nothing here reads the keychain or the network; that happens lazily, once per
             // session, on the first `#[tauri::command]` call a webview action makes.
+            #[cfg(feature = "github")]
             app.manage(github::GithubState::new());
 
             // SPEC.md §8: resolve the login-shell environment ONCE at startup, in the background so
@@ -88,8 +93,20 @@ fn main() {
             // rename/reshape. Lazy: only the panel calls it, on open and on Refresh.
             commands::get_preflight,
             // SPEC.md §18 / plan 053 — additions to the frozen §7 list, never a rename/reshape.
+            //
+            // Plan 058: `#[cfg]` here is NOT a §7 violation. §7 freezes the SHAPE of the API —
+            // names, arguments, payloads — and CLAUDE.md explicitly permits implementing subsets;
+            // a build configuration that omits a command is a subset, exactly as M1 was. What §7
+            // forbids is a command under a different name or a different shape, and none of that
+            // happens here. `default = ["github"]`, so the shipped binary ALWAYS has all three;
+            // only the Windows compile-check build omits them, and it never runs a webview.
+            // (`tauri::generate_handler!` parses outer attributes per command and applies them to
+            // the generated match arm — see tauri-macros' `CommandDef`.)
+            #[cfg(feature = "github")]
             commands::get_github_status,
+            #[cfg(feature = "github")]
             commands::set_github_token,
+            #[cfg(feature = "github")]
             commands::remove_github_token,
         ])
         .build(tauri::generate_context!())
