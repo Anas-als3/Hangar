@@ -80,6 +80,17 @@ export interface HangarState {
    *  outlives a card unmount, so search-filtering a card out and back cannot blank the §11
    *  phase strip. Never persisted: this is not a `Project` field. */
   phasesSeen: Record<string, string[]>;
+  /** Plan 052 — a property of the *click*, never of the project, so it must stay unmistakably
+   *  not a §6 status: it is never rendered as a status name and the status pill never consults
+   *  it. It exists only so the Run button can say "Starting…" during the window between the
+   *  click and the first real `status-changed` for that project — e.g. the §9 step 3 per-path
+   *  mutex wait, where the backend is legitimately busy but has not yet emitted anything. Set
+   *  in `startProject` before the `run_project` invoke; cleared in that call's `finally` AND by
+   *  `applyStatusChanged` on the first status for that project, whichever comes first — so it
+   *  can never outlive either the invoke or the transition it was waiting for. Never persisted,
+   *  never touched by `loadRegistry`/`refreshRegistryQuietly`, never read by anything but the
+   *  card's primary button. */
+  pendingRun: Record<string, true>;
   /** Which project's slide-over is open (§11), or `null`. */
   openLogsFor: string | null;
   /** Which project's notes slide-over is open (§11), or `null`. */
