@@ -13,6 +13,7 @@
  * search-filtered) list is non-empty.
  */
 import { Fragment } from "react";
+import { stackInventory } from "../session";
 import { closeFolder, gridItems, openAddDialog, useHangarStore } from "../store";
 import type { ProjectView } from "../types";
 import FolderTile from "./FolderTile";
@@ -31,6 +32,36 @@ function AddTile() {
       </span>
       <span className="text-sm">Add project</span>
     </button>
+  );
+}
+
+/**
+ * §11 "Workspace strip" (plan 051): the library-wide inventory, rendered after the trailing `+`
+ * tile so it never occupies a grid cell — see this file's header note and the plan's STOP
+ * condition. Only the caller decides whether to mount this (search-active hides it); the
+ * registry-empty case never reaches here at all, since App.tsx swaps in the empty state instead.
+ * Shows counts and the detected stack only — never a status, port or anything that changes while
+ * a project runs (§11: the cards own all of that).
+ */
+function WorkspaceStrip({ projects }: { projects: ProjectView[] }) {
+  const repoCount = new Set(projects.map((p) => p.path)).size;
+  const inventory = stackInventory(projects);
+  const shown = inventory.slice(0, 12);
+  const overflow = inventory.length > 12 ? inventory.length - 12 : 0;
+  return (
+    <div className="col-span-full mt-2 border-t border-white/10 pt-3 text-sm">
+      <p className="font-display text-xs uppercase tracking-wide text-muted">Workspace</p>
+      <p className="mt-1 text-muted">
+        {projects.length} project{projects.length === 1 ? "" : "s"} · {repoCount} repo
+        {repoCount === 1 ? "" : "s"}
+      </p>
+      {shown.length > 0 && (
+        <p className="mt-1 text-muted">
+          {shown.map((s) => (s.count > 1 ? `${s.name} ×${s.count}` : s.name)).join(" · ")}
+          {overflow > 0 ? ` · +${overflow}` : ""}
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -102,6 +133,10 @@ export function ProjectGrid({
         );
       })}
       <AddTile />
+      {/* Plan 051: after AddTile, inside the grid, col-span-full — the position that costs no
+          cell at any project count. Hidden under search: a library-wide inventory next to a
+          filtered grid would be a lie. */}
+      {search.trim() === "" && <WorkspaceStrip projects={projects} />}
     </div>
   );
 }

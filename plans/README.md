@@ -61,6 +61,7 @@ conditions, and update your row below when done.
 | 048 | Edit must not kill the server — move confirm-and-stop from dialog-open to Save | — | P2 | S-M | SPEC §6 amendment | TODO |
 | 049 | Run button that admits it was clicked (pre-status window on a shared path) | — | P3 | S | — | TODO |
 | 050 | Crash reason on the card (§11 A2, amended 2026-08-10) | — | P2 | S | — | TODO |
+| 051 | Resume last session, and a workspace strip | — | P2 | M | SPEC §11 amendments (`bcc8233`) | DONE (frontend; reviewer to run `npm run build`, `cargo check`, bundle) |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
 
