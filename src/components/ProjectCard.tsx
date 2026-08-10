@@ -203,10 +203,11 @@ export function ProjectCard({ project }: { project: ProjectView }) {
       className={`hangar-fade-in relative flex select-none flex-col gap-2 rounded-lg border border-white/5 bg-surface p-3 transition-transform duration-150 [-webkit-user-drag:none] hover:-translate-y-0.5 ${
         isArmedTarget ? "ring-2 ring-accent" : ""
       } ${isDragSource ? "opacity-40" : ""} ${
-        // Plan 037 step 3.4: `hover:-translate-y-0.5` above makes this card its own stacking
-        // context, so a `z-10` child stays sealed inside it unless the card itself is lifted
-        // above later-DOM-order siblings while the panel is open.
-        stackOpen ? "z-20" : ""
+        // Plan 037 step 3.4 / plan 046 step 1: `hover:-translate-y-0.5` above makes this card its
+        // own stacking context, so a `z-10` child stays sealed inside it unless the card itself is
+        // lifted above later-DOM-order siblings while an overlay is open — the `⋯` menu (seven
+        // items, ~234px, taller than a stopped card) included, not just the stack reveal panel.
+        stackOpen || menuOpen ? "z-20" : ""
       }`}
     >
       <header className="flex items-start justify-between gap-3">
