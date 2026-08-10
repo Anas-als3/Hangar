@@ -56,6 +56,11 @@ conditions, and update your row below when done.
 | 043 | "Choose for me" — pick a free port and write the matching port token into the command | — | P3 | M | SPEC §7/§10 amendments | DONE (merged `db12a65`, 2026-08-10) — 11 `node --test` cases on the token rewrite |
 | 044 | Tagged release workflow producing a downloadable `.dmg` (plan 024 tier 1) | — | P3 | S | 021 | DONE (merged `d8cb5ed`, 2026-08-10) |
 | 045 | `openBrowserOnReady` — stop opening a tab on every Run (supersedes the 040 row) | — | P2 | S | SPEC §5/§9/§10 amendments, 043 | DONE (merged `87f09e5`, 2026-08-10) |
+| 046 | Presence pass — fixed card silhouette, menu z-index, dark first frame, width cap, bigger title | — | P2 | M | SPEC §11 amendments | DONE (merged, 2026-08-10) |
+| 047 | Ports button on the port-collision toast (closes the §12 requirement added by 041) | — | P2 | XS | 041 | TODO |
+| 048 | Edit must not kill the server — move confirm-and-stop from dialog-open to Save | — | P2 | S-M | SPEC §6 amendment | TODO |
+| 049 | Run button that admits it was clicked (pre-status window on a shared path) | — | P3 | S | — | TODO |
+| 050 | Crash reason on the card (§11 A2, amended 2026-08-10) | — | P2 | S | — | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
 
