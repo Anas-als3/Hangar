@@ -247,6 +247,12 @@ explicitly deferred to a human test on a Windows machine (SPEC.md §15 test 3).
 - `llvm` installed via Homebrew (M1 review) for `llvm-rc`, keg-only at `/opt/homebrew/opt/llvm/bin`.
 - Xcode Command Line Tools at `/Library/Developer/CommandLineTools`.
 - Git repo initialized; baseline commit `e74666e` contains only `SPEC.md`, `CLAUDE.md`, `.gitignore`, `plans/`.
+- **Release bundle size after §18 slice 1** (`f9b3fba`, measured on `main`, not in a worktree):
+  binary 17.2 MB, dmg 6.2 MB, `.app` 17 MB. Plan 053 asked for before/after; the executor
+  could only run `cargo test`, so it reported the debug test-harness proxy (8.2M -> 9.5M).
+  That proxy is not a release figure and should not be quoted as one. 17.2 MB is the real
+  post-`reqwest`+`keyring` number; the pre-GitHub release binary was never measured, so the
+  release-mode delta is unknown rather than small.
 - **Plan 053 keychain experiment: NOT run — reported plainly rather than fabricated.** The
   executor is a headless background agent confined to a git worktree, with (a) no GUI
   automation tool to click the "Hangar wants to use your confidential information" system
