@@ -160,13 +160,32 @@ fn is_run_inert_change(stored: &Project, incoming: &Project) -> bool {
 /// right after testing it (SPEC.md §11), and folders would be useless if filing one away required
 /// stopping it first.
 ///
+/// Takes `is_run_inert` as a precomputed bool rather than calling `is_run_inert_change` itself:
+/// `update_project` (SPEC.md §6's merge-not-replace bullet, plan 028) needs the same boolean again
+/// afterward to decide whether to merge or replace the stored record, and the predicate must run
+/// exactly once so the guard decision and the write decision can never disagree.
+///
 /// Pulled out of `update_project` as plain data in, `Result` out — no `State`/`AppHandle` — so
 /// the decision itself is unit-testable without standing up a Tauri app in the test harness.
-fn guard_update(stored: &Project, incoming: &Project, status: Status) -> Result<(), String> {
-    if is_run_inert_change(stored, incoming) {
+fn guard_update(is_run_inert: bool, stored: &Project, status: Status) -> Result<(), String> {
+    if is_run_inert {
         return Ok(());
     }
     crate::run::guard_mutation(status, &stored.name)
+}
+
+/// SPEC.md §6 (added 2026-08-10): "a run-inert update writes only the run-inert fields into the
+/// stored record — it must never replace the whole record from the caller's payload." `run.rs`
+/// persists `last_run_at` and a freshly detected `stack` on every Run, and the frontend's copy of
+/// both goes stale for the whole `updating`→`installing`→`starting` window (the `status-changed`
+/// event carries only `status`), so a whole-record write here would silently roll them back.
+/// Merges only `notes`/`folder_id`/`folder_name` from `incoming` into `stored`; every other field
+/// is left exactly as stored. Plain data in, no return, no `State`/`AppHandle` — unit-testable
+/// without a Tauri app, same reasoning as `guard_update`.
+fn merge_run_inert_fields(stored: &mut Project, incoming: Project) {
+    stored.notes = incoming.notes;
+    stored.folder_id = incoming.folder_id;
+    stored.folder_name = incoming.folder_name;
 }
 
 #[tauri::command]
@@ -186,7 +205,9 @@ pub async fn update_project(
         .get(&project.id)
         .map(|r| r.status)
         .unwrap_or(Status::Stopped);
-    guard_update(&projects[index], &project, status)?;
+    // Computed once, reused below to decide the write shape — never call this a second time.
+    let is_run_inert = is_run_inert_change(&projects[index], &project);
+    guard_update(is_run_inert, &projects[index], status)?;
 
     if let Some(owner) = registry::port_conflict(&projects, project.port, Some(&project.id)) {
         return Err(format!(
@@ -195,10 +216,16 @@ pub async fn update_project(
         ));
     }
 
-    projects[index] = project.clone();
+    if is_run_inert {
+        merge_run_inert_fields(&mut projects[index], project);
+    } else {
+        projects[index] = project;
+    }
     registry::save_projects(&state.config_dir, &projects)?;
 
-    Ok(to_view(&project, &runtime))
+    // Built from the stored record, not the caller's payload: after a merge the two can differ
+    // (`lastRunAt`/`stack`), and the view must reflect what was actually written (SPEC.md §6).
+    Ok(to_view(&projects[index], &runtime))
 }
 
 /// SPEC.md §7 `remove_project`: "rejected with a message if status ∉ {stopped, crashed}". Same
@@ -394,7 +421,8 @@ mod tests {
             notes: Some("tried the staging flag".into()),
             ..stored.clone()
         };
-        assert!(guard_update(&stored, &incoming, Status::Running).is_ok());
+        let is_run_inert = is_run_inert_change(&stored, &incoming);
+        assert!(guard_update(is_run_inert, &stored, Status::Running).is_ok());
     }
 
     #[test]
@@ -404,7 +432,8 @@ mod tests {
             port: 3001,
             ..stored.clone()
         };
-        let err = guard_update(&stored, &incoming, Status::Running)
+        let is_run_inert = is_run_inert_change(&stored, &incoming);
+        let err = guard_update(is_run_inert, &stored, Status::Running)
             .expect_err("a port change must still be guarded while running");
         assert!(err.contains("stop it first"), "got {err:?}");
     }
@@ -420,8 +449,14 @@ mod tests {
             port: 3001,
             ..stored.clone()
         };
-        assert!(guard_update(&stored, &notes_only, Status::Stopped).is_ok());
-        assert!(guard_update(&stored, &port_changed, Status::Stopped).is_ok());
+        assert!(
+            guard_update(is_run_inert_change(&stored, &notes_only), &stored, Status::Stopped)
+                .is_ok()
+        );
+        assert!(
+            guard_update(is_run_inert_change(&stored, &port_changed), &stored, Status::Stopped)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -437,13 +472,15 @@ mod tests {
             notes: None,
             ..stored.clone()
         };
-        assert!(guard_update(&stored, &incoming, Status::Running).is_ok());
+        let is_run_inert = is_run_inert_change(&stored, &incoming);
+        assert!(guard_update(is_run_inert, &stored, Status::Running).is_ok());
     }
 
     #[test]
     fn an_identical_project_is_a_no_op_permitted_while_running() {
         let stored = sample_project("/tmp/ielts");
         let incoming = stored.clone();
-        assert!(guard_update(&stored, &incoming, Status::Running).is_ok());
+        let is_run_inert = is_run_inert_change(&stored, &incoming);
+        assert!(guard_update(is_run_inert, &stored, Status::Running).is_ok());
     }
 }
