@@ -179,7 +179,15 @@ export function ProjectCard({ project }: { project: ProjectView }) {
     ACTIVE_STATUSES.has(project.status) || project.status === "stop-failed";
   const stopping = project.status === "stopping";
   const stopFailed = project.status === "stop-failed";
-  const runDisabled = !project.pathExists;
+  // Plan 052: `pendingRun` is a property of the CLICK, never of the project — it must never
+  // render a §6 status name, and the status pill just below is untouched by it (still reads
+  // whatever `project.status` says, e.g. "Stopped"). It only ever reaches this one button, only
+  // while the button is in its Run shape (`stopped`/`crashed`), so it can never appear on top of
+  // the Stop/Stopping/retry branch below. See `pendingRun`'s definition in store.ts for the full
+  // reasoning and the two conditions that clear it.
+  const { pendingRun, drag } = useHangarStore();
+  const isPendingRun = Boolean(pendingRun[project.id]);
+  const runDisabled = !project.pathExists || isPendingRun;
   // §4/§5: notes are a free-text scratchpad, never parsed — this only checks for presence.
   const hasNotes = Boolean(project.notes && project.notes.trim() !== "");
   const isRunning = project.status === "running";
@@ -191,7 +199,6 @@ export function ProjectCard({ project }: { project: ProjectView }) {
   // Plan 030 drag-to-group (§11 Motion): both effects are opacity/colour only, applied instantly
   // — no transition class on either, so neither can be caught mid-fade by the base transform
   // transition already on this root.
-  const { drag } = useHangarStore();
   const isDragSource = drag.sourceId === project.id;
   const isArmedTarget = drag.targetId === project.id && drag.armed;
 
@@ -417,11 +424,20 @@ export function ProjectCard({ project }: { project: ProjectView }) {
           <button
             type="button"
             disabled={runDisabled}
-            title={runDisabled ? "The project folder no longer exists" : undefined}
+            title={!project.pathExists ? "The project folder no longer exists" : undefined}
             onClick={() => void startProject(project.id)}
-            className="rounded-md bg-accent px-5 py-2 text-sm font-semibold text-bg transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+            // Plan 052: copies the `stopping` branch's spinner markup exactly. The status pill
+            // above this footer is not part of this branch and is not re-rendered by it — only
+            // this button's own label and disabled state move.
+            className="inline-flex items-center gap-2 rounded-md bg-accent px-5 py-2 text-sm font-semibold text-bg transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
           >
-            Run
+            {isPendingRun && (
+              <span
+                aria-hidden="true"
+                className="hangar-spin size-3.5 rounded-full border-2 border-current border-t-transparent"
+              />
+            )}
+            {isPendingRun ? "Starting…" : "Run"}
           </button>
         )}
         <span className="truncate font-mono text-xs text-muted" title={project.command}>
