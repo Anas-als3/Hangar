@@ -204,12 +204,16 @@ pub async fn add_project(
     Ok(to_view(&project, &runtime))
 }
 
-/// SPEC.md §6 mutation guard vs. the run-inert field set (plan 028 revision): `guard_mutation`
-/// exists because mutating a *running* project can break the run itself — a changed `port` breaks
-/// Stop's port verification, a changed `path`/`command` breaks the kill path. §6's amended bullet
-/// names the run-inert set as exactly `notes`, `folderId` and `folderName`: none of them is read
-/// by §8's spawn/kill paths or §9's run sequence, so a change confined to them provably cannot
-/// affect a running project — it is exempt from the guard.
+/// SPEC.md §6 mutation guard vs. the run-inert field set (plan 028 revision, plan 048 extension):
+/// `guard_mutation` exists because mutating a *running* project can break the run itself — a
+/// changed `port` breaks Stop's port verification, a changed `path`/`command` breaks the kill
+/// path. §6's amended bullet names the run-inert set as exactly `notes`, `folderId`, `folderName`
+/// and `openBrowserOnReady`: the first three are never read by §8's spawn/kill paths or §9's run
+/// sequence at all, so a change confined to them provably cannot affect a running project.
+/// `openBrowserOnReady` is different — `run.rs`'s ready hand-off (§9 step 6) does read it — but
+/// only from the `Project` snapshot captured by value at §9 step 0, before the run began, so a
+/// mid-run write is structurally unobservable by the run in progress; it can only affect the
+/// *next* Run. Both reasons land the same place: exempt from the guard.
 ///
 /// Deliberately not a hand-enumerated field list: normalising the run-inert set out of both sides
 /// and comparing the rest with the derived `PartialEq` means any other field — including ones a
@@ -235,6 +239,14 @@ fn is_run_inert_change(stored: &Project, incoming: &Project) -> bool {
     incoming.folder_id = None;
     stored.folder_name = None;
     incoming.folder_name = None;
+    // Plan 048: `openBrowserOnReady` joins the run-inert set unconditionally, like the three
+    // above — never a value-dependent comparison. This is also what resolves the `Some(true)` vs
+    // `None` asymmetry (AddEditDialog seeds the checkbox `?? true`, so it sends `Some(true)` for
+    // every stored `None`): normalised out here, that difference can no longer make a change
+    // guarded on its own. See `merging_run_inert_fields_leaves_last_run_at_as_stored`'s sibling
+    // test below for the pin.
+    stored.open_browser_on_ready = None;
+    incoming.open_browser_on_ready = None;
     stored.last_run_at = None;
     incoming.last_run_at = None;
     stored.last_lockfile_hash = None;
@@ -301,13 +313,15 @@ fn guard_update(is_run_inert: bool, stored: &Project, status: Status) -> Result<
 /// persists `last_run_at` and a freshly detected `stack` on every Run, and the frontend's copy of
 /// both goes stale for the whole `updating`→`installing`→`starting` window (the `status-changed`
 /// event carries only `status`), so a whole-record write here would silently roll them back.
-/// Merges only `notes`/`folder_id`/`folder_name` from `incoming` into `stored`; every other field
-/// is left exactly as stored. Plain data in, no return, no `State`/`AppHandle` — unit-testable
-/// without a Tauri app, same reasoning as `guard_update`.
+/// Merges only `notes`/`folder_id`/`folder_name`/`open_browser_on_ready` (plan 048) from
+/// `incoming` into `stored`; every other field is left exactly as stored. Plain data in, no
+/// return, no `State`/`AppHandle` — unit-testable without a Tauri app, same reasoning as
+/// `guard_update`.
 fn merge_run_inert_fields(stored: &mut Project, incoming: Project) {
     stored.notes = incoming.notes;
     stored.folder_id = incoming.folder_id;
     stored.folder_name = incoming.folder_name;
+    stored.open_browser_on_ready = incoming.open_browser_on_ready;
 }
 
 /// SPEC.md §6's app-owned bullet (added 2026-08-10): "Both fields are preserved from the stored
@@ -1000,6 +1014,74 @@ mod tests {
         merge_run_inert_fields(&mut stored, incoming);
         assert_eq!(stored.last_run_at.as_deref(), Some("2026-08-05T10:00:00Z"));
         assert_eq!(stored.folder_id.as_deref(), Some("fld_1"));
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Plan 048 — `openBrowserOnReady` joins the run-inert set: `run.rs`'s ready hand-off reads it
+    // only from the pre-run `Project` snapshot (§9 step 0), so a mid-run write is structurally
+    // unobservable by the run in progress (SPEC.md §6, 2026-08-10).
+    // -----------------------------------------------------------------------------------------
+
+    #[test]
+    fn an_open_browser_on_ready_only_change_is_permitted_while_running() {
+        let stored = sample_project("/tmp/ielts");
+        let incoming = Project {
+            open_browser_on_ready: Some(false),
+            ..stored.clone()
+        };
+        let is_run_inert = is_run_inert_change(&stored, &incoming);
+        assert!(guard_update(is_run_inert, &stored, Status::Running).is_ok());
+    }
+
+    #[test]
+    fn open_browser_on_ready_cannot_smuggle_a_port_change_past_the_guard() {
+        let stored = sample_project("/tmp/ielts");
+        let incoming = Project {
+            open_browser_on_ready: Some(false),
+            port: 3001,
+            ..stored.clone()
+        };
+        let is_run_inert = is_run_inert_change(&stored, &incoming);
+        let err = guard_update(is_run_inert, &stored, Status::Running)
+            .expect_err("an openBrowserOnReady + port change must still be guarded while running");
+        assert!(err.contains("stop it first"), "got {err:?}");
+    }
+
+    #[test]
+    fn merging_open_browser_on_ready_leaves_last_run_at_and_stack_as_stored() {
+        let mut stored = Project {
+            last_run_at: Some("2026-08-05T10:00:00Z".into()),
+            stack: Some(sample_stack("2026-08-05T10:00:00Z")),
+            ..sample_project("/tmp/ielts")
+        };
+        let incoming = Project {
+            last_run_at: None, // stale frontend copy
+            stack: None,
+            open_browser_on_ready: Some(false),
+            ..stored.clone()
+        };
+        merge_run_inert_fields(&mut stored, incoming);
+        assert_eq!(stored.last_run_at.as_deref(), Some("2026-08-05T10:00:00Z"));
+        assert_eq!(stored.stack.as_ref().unwrap().detected_at, "2026-08-05T10:00:00Z");
+        assert_eq!(stored.open_browser_on_ready, Some(false));
+    }
+
+    #[test]
+    fn some_true_vs_none_does_not_by_itself_make_a_change_guarded() {
+        // The asymmetry plan 048 fixes: AddEditDialog seeds the checkbox `?? true`, so it sends
+        // `Some(true)` for every stored `None` — before this field joined the run-inert set, that
+        // alone made every save from the dialog guarded.
+        let stored = Project {
+            open_browser_on_ready: None,
+            ..sample_project("/tmp/ielts")
+        };
+        let incoming = Project {
+            open_browser_on_ready: Some(true),
+            ..stored.clone()
+        };
+        let is_run_inert = is_run_inert_change(&stored, &incoming);
+        assert!(is_run_inert, "None vs Some(true) alone must not be a guarded change");
+        assert!(guard_update(is_run_inert, &stored, Status::Running).is_ok());
     }
 
     // -----------------------------------------------------------------------------------------
