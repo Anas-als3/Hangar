@@ -136,6 +136,17 @@ pub async fn add_project(
 /// and comparing the rest with the derived `PartialEq` means any other field — including ones a
 /// future plan adds — is covered by the guard automatically, with nothing to remember to update
 /// here.
+///
+/// Also normalises out the **app-owned** set (SPEC.md §6's app-owned bullet, added 2026-08-10):
+/// `last_run_at` and `last_lockfile_hash`. The backend writes both without telling the frontend
+/// (`run.rs`'s per-Run save persists `last_run_at`; the install phase persists
+/// `last_lockfile_hash`), and `status-changed` carries only `status`, so the caller's payload is
+/// stale in these two fields for the entire updating/installing/starting window — exactly when a
+/// run-inert save (a note, a folder move) is most likely to happen. Leaving them in the comparison
+/// made the run-inert exemption unreachable during that window. This does not widen what a caller
+/// can change: `update_project` (see `merge_run_inert_fields` and step 3 below) preserves both
+/// fields from the stored record on every write, guarded or not, so a caller's value for them is
+/// never actually written regardless of what this comparison decides.
 fn is_run_inert_change(stored: &Project, incoming: &Project) -> bool {
     let mut stored = stored.clone();
     let mut incoming = incoming.clone();
@@ -145,7 +156,39 @@ fn is_run_inert_change(stored: &Project, incoming: &Project) -> bool {
     incoming.folder_id = None;
     stored.folder_name = None;
     incoming.folder_name = None;
+    stored.last_run_at = None;
+    incoming.last_run_at = None;
+    stored.last_lockfile_hash = None;
+    incoming.last_lockfile_hash = None;
+    // `stack` stays writable (see `stack_is_unchanged_ignoring_timestamp`'s doc comment) — it is
+    // only normalised out here, field by field, when the helper says the difference is nothing
+    // but a re-stamped `detected_at`. A genuine stack change is left in place so it still guards.
+    if stack_is_unchanged_ignoring_timestamp(&stored.stack, &incoming.stack) {
+        stored.stack = None;
+        incoming.stack = None;
+    }
     stored == incoming
+}
+
+/// SPEC.md §6 (added 2026-08-10): `stack` must stay writable from the payload — the Edit dialog
+/// re-detects it on every open (plan 025) — so unlike `lastRunAt`/`lastLockfileHash` it cannot
+/// join the app-owned set. But `registry.rs`'s `detect_stack` re-stamps `detected_at` on every Run
+/// (registry.rs:559) just as it does on Edit, so a stale frontend payload differs from stored in
+/// `stack.detectedAt` alone during the same window `lastRunAt` goes stale — the same failure, one
+/// field over. `stack` counts as unchanged for the run-inert comparison when the incoming value is
+/// `None`, or when it differs from stored only in `detected_at`; a caller that genuinely changed
+/// the detected framework or libraries is still a guarded change.
+fn stack_is_unchanged_ignoring_timestamp(
+    stored: &Option<registry::ProjectStack>,
+    incoming: &Option<registry::ProjectStack>,
+) -> bool {
+    match (stored, incoming) {
+        (_, None) => true,
+        (None, Some(_)) => false,
+        (Some(stored), Some(incoming)) => {
+            stored.framework == incoming.framework && stored.libraries == incoming.libraries
+        }
+    }
 }
 
 /// SPEC.md §7 `update_project` / §6 / §10 step 7: "Remove/Edit while status ∉ {stopped, crashed}
@@ -188,6 +231,19 @@ fn merge_run_inert_fields(stored: &mut Project, incoming: Project) {
     stored.folder_name = incoming.folder_name;
 }
 
+/// SPEC.md §6's app-owned bullet (added 2026-08-10): "Both fields are preserved from the stored
+/// record on every write, guarded or not." The merge branch above already satisfies this — it
+/// never touches `last_run_at`/`last_lockfile_hash` at all. This is the replace branch's half: a
+/// guarded (non-run-inert) `update_project` call still carries the caller's stale copy of both
+/// app-owned fields, and a bare `projects[index] = project` would silently roll them back. Plain
+/// data in, data out — unit-testable without a Tauri app, same reasoning as `guard_update`.
+fn replace_preserving_app_owned_fields(stored: &Project, incoming: Project) -> Project {
+    let mut replaced = incoming;
+    replaced.last_run_at = stored.last_run_at.clone();
+    replaced.last_lockfile_hash = stored.last_lockfile_hash.clone();
+    replaced
+}
+
 #[tauri::command]
 pub async fn update_project(
     project: Project,
@@ -219,7 +275,9 @@ pub async fn update_project(
     if is_run_inert {
         merge_run_inert_fields(&mut projects[index], project);
     } else {
-        projects[index] = project;
+        // SPEC.md §6's app-owned bullet: a guarded replace must not roll back `lastRunAt`/
+        // `lastLockfileHash` to whatever stale copy the caller's payload carried.
+        projects[index] = replace_preserving_app_owned_fields(&projects[index], project);
     }
     registry::save_projects(&state.config_dir, &projects)?;
 
@@ -569,5 +627,133 @@ mod tests {
         merge_run_inert_fields(&mut stored, incoming);
         assert_eq!(stored.last_run_at.as_deref(), Some("2026-08-05T10:00:00Z"));
         assert_eq!(stored.folder_id.as_deref(), Some("fld_1"));
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Plan 032 — the run-inert exemption was unreachable during the very window it exists for:
+    // the app-owned fields (`lastRunAt`, `lastLockfileHash`) and `stack.detectedAt` go stale in
+    // the frontend's payload for the whole updating/installing/starting window, so a genuinely
+    // run-inert save (a note, a folder move) was misclassified as guarded (SPEC.md §6, 2026-08-10).
+    // -----------------------------------------------------------------------------------------
+
+    #[test]
+    fn a_stale_last_run_at_does_not_defeat_a_folder_move_while_starting() {
+        // The headline bug: stored has today's lastRunAt (a Run just stamped it); the caller's
+        // payload still carries yesterday's, because status-changed never sends it. Without step
+        // 1's normalisation this fails: is_run_inert_change would see lastRunAt differ and
+        // guard_update would reject with "stop it first".
+        let stored = Project {
+            last_run_at: Some("2026-08-10T09:00:00Z".into()),
+            ..sample_project("/tmp/ielts")
+        };
+        let incoming = Project {
+            folder_id: Some("fld_1".into()),
+            last_run_at: Some("2026-08-05T09:00:00Z".into()), // stale frontend copy
+            ..stored.clone()
+        };
+        let is_run_inert = is_run_inert_change(&stored, &incoming);
+        assert!(is_run_inert, "a folder move paired with a stale lastRunAt must be run-inert");
+        assert!(guard_update(is_run_inert, &stored, Status::Starting).is_ok());
+    }
+
+    #[test]
+    fn a_stale_last_lockfile_hash_does_not_defeat_a_notes_save_while_installing() {
+        let stored = Project {
+            last_lockfile_hash: Some("freshhash".into()),
+            ..sample_project("/tmp/ielts")
+        };
+        let incoming = Project {
+            notes: Some("tried the staging flag".into()),
+            last_lockfile_hash: Some("stalehash".into()), // stale frontend copy
+            ..stored.clone()
+        };
+        let is_run_inert = is_run_inert_change(&stored, &incoming);
+        assert!(is_run_inert, "a notes save paired with a stale lastLockfileHash must be run-inert");
+        assert!(guard_update(is_run_inert, &stored, Status::Installing).is_ok());
+    }
+
+    fn sample_stack(detected_at: &str) -> registry::ProjectStack {
+        registry::ProjectStack {
+            framework: Some("Next".into()),
+            libraries: vec!["React".into(), "Tailwind".into()],
+            detected_at: detected_at.into(),
+        }
+    }
+
+    #[test]
+    fn a_stack_differing_only_in_detected_at_does_not_defeat_a_folder_move() {
+        // registry.rs:559 re-stamps `detected_at` on every Run, same staleness as `lastRunAt`.
+        let stored = Project {
+            stack: Some(sample_stack("2026-08-10T09:00:00Z")),
+            ..sample_project("/tmp/ielts")
+        };
+        let incoming = Project {
+            folder_id: Some("fld_1".into()),
+            stack: Some(sample_stack("2026-08-05T09:00:00Z")), // stale frontend copy
+            ..stored.clone()
+        };
+        let is_run_inert = is_run_inert_change(&stored, &incoming);
+        assert!(is_run_inert, "a stack differing only in detectedAt must be run-inert");
+        assert!(guard_update(is_run_inert, &stored, Status::Starting).is_ok());
+    }
+
+    #[test]
+    fn a_stack_differing_in_framework_is_still_guarded_while_running() {
+        let stored = Project {
+            stack: Some(sample_stack("2026-08-10T09:00:00Z")),
+            ..sample_project("/tmp/ielts")
+        };
+        let mut changed_stack = sample_stack("2026-08-10T09:00:00Z");
+        changed_stack.framework = Some("Remix".into());
+        let incoming = Project {
+            stack: Some(changed_stack),
+            ..stored.clone()
+        };
+        let is_run_inert = is_run_inert_change(&stored, &incoming);
+        let err = guard_update(is_run_inert, &stored, Status::Running)
+            .expect_err("a genuine framework change must still be guarded while running");
+        assert!(err.contains("stop it first"), "got {err:?}");
+    }
+
+    #[test]
+    fn a_stale_last_run_at_cannot_smuggle_a_port_change_past_the_guard() {
+        // The normalisation must not become a smuggling route: pairing a stale app-owned field
+        // with a genuinely guarded change must still be guarded.
+        let stored = Project {
+            last_run_at: Some("2026-08-10T09:00:00Z".into()),
+            ..sample_project("/tmp/ielts")
+        };
+        let incoming = Project {
+            port: 3001,
+            last_run_at: Some("2026-08-05T09:00:00Z".into()), // stale frontend copy
+            ..stored.clone()
+        };
+        let is_run_inert = is_run_inert_change(&stored, &incoming);
+        let err = guard_update(is_run_inert, &stored, Status::Starting)
+            .expect_err("a port change must still be guarded even paired with a stale lastRunAt");
+        assert!(err.contains("stop it first"), "got {err:?}");
+    }
+
+    #[test]
+    fn the_replace_branch_preserves_app_owned_fields_from_stored() {
+        // A guarded (non-run-inert) edit — e.g. renaming the project — still carries the
+        // caller's stale copy of both app-owned fields. Before step 3 the replace branch wrote
+        // the payload's `None`s straight over the stored values, mislabelling the card's "last
+        // run" time and forcing a spurious reinstall on the next Run.
+        let stored = Project {
+            last_run_at: Some("2026-08-10T09:00:00Z".into()),
+            last_lockfile_hash: Some("freshhash".into()),
+            ..sample_project("/tmp/ielts")
+        };
+        let incoming = Project {
+            name: "IELTS Coach (renamed)".into(),
+            last_run_at: None,
+            last_lockfile_hash: None,
+            ..stored.clone()
+        };
+        let replaced = replace_preserving_app_owned_fields(&stored, incoming);
+        assert_eq!(replaced.name, "IELTS Coach (renamed)");
+        assert_eq!(replaced.last_run_at.as_deref(), Some("2026-08-10T09:00:00Z"));
+        assert_eq!(replaced.last_lockfile_hash.as_deref(), Some("freshhash"));
     }
 }
