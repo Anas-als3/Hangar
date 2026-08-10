@@ -247,6 +247,21 @@ explicitly deferred to a human test on a Windows machine (SPEC.md §15 test 3).
 - `llvm` installed via Homebrew (M1 review) for `llvm-rc`, keg-only at `/opt/homebrew/opt/llvm/bin`.
 - Xcode Command Line Tools at `/Library/Developer/CommandLineTools`.
 - Git repo initialized; baseline commit `e74666e` contains only `SPEC.md`, `CLAUDE.md`, `.gitignore`, `plans/`.
+- **Plan 053 keychain experiment: NOT run — reported plainly rather than fabricated.** The
+  executor is a headless background agent confined to a git worktree, with (a) no GUI
+  automation tool to click the "Hangar wants to use your confidential information" system
+  panel §18 predicts, (b) an explicit "never touch anything outside the worktree" boundary
+  that rules out driving `/Applications/Hangar.app` (a real, separately-installed bundle
+  found on this machine but outside the worktree), and (c) survival rules restricting
+  verification to `cargo check`/`cargo test`/`npm run typecheck` — no `build`/`build:app`/
+  `install:app`, so no fresh signed bundle could be produced to test against even inside the
+  worktree. Per the plan's own fallback ("if you cannot run the experiment ... design for
+  both outcomes — do not fabricate a result"): `keychain.rs` maps `keyring::Error::NoEntry`
+  to *absent* and every other `keyring::Error` variant (`PlatformFailure`, `NoStorageAccess`,
+  `Ambiguous`, `TooLong`, `Invalid`, `BadEncoding`, …) to *denied*, so whichever way the real
+  ad-hoc-signature/CDHash behaviour the plan describes actually resolves, "denied" can never
+  render as "no token" in the UI. A human with the built app should still run the real
+  store/quit/relaunch/rebuild/`tauri dev` sequence the plan describes and correct this entry.
 
 ## Known residuals (recorded, not lost)
 
