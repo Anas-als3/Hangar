@@ -91,6 +91,39 @@ npm run test:acceptance
 Runs the SPEC.md §15 process tests. The script already bakes in
 `--test-threads=1`, which these tests require.
 
+### Windows cross-check
+
+```
+PATH="/opt/homebrew/opt/llvm/bin:$PATH" \
+  cargo check --manifest-path src-tauri/Cargo.toml \
+  --target x86_64-pc-windows-msvc --no-default-features --all-targets
+```
+
+Compiles SPEC.md §8's `#[cfg(windows)]` code — Job Objects, `raw_arg`,
+`CREATE_NO_WINDOW` — which a normal `cargo check` on macOS never looks at.
+CI runs the same command on the macOS `host` job.
+
+Both flags are load-bearing:
+
+- `--no-default-features` turns off the `github` Cargo feature, dropping
+  `reqwest` → `rustls` → `aws-lc-sys`, whose C build script needs `windows.h`
+  and cannot build on macOS. Without it the check dies in that build script
+  having verified nothing about Hangar. The GitHub slice is covered by
+  `npm run verify` and by CI's `windows` job instead.
+- `llvm-rc` on `PATH` (see Prerequisites) — otherwise `tauri-winres` panics
+  with `NotAttempted("llvm-rc")` before any of `src-tauri/src/` is typechecked,
+  which looks like an unrelated bug.
+
+Sanity check that it actually got to our code, not just that it exited 0:
+
+```
+... 2>&1 | grep -cE "(Compiling|Checking) hangar"   # must be 1
+```
+
+**This proves the Windows code compiles. It does not run it.** Nothing on a Mac
+can execute `TerminateJobObject`; only CI's `windows` job does that, and the
+real orphan test still needs a human on Windows hardware (SPEC.md §15 test 3).
+
 ## Where your data lives
 
 `~/Library/Application Support/com.hangar.app/` holds `projects.json` and

@@ -13,6 +13,22 @@ edition = "2021"
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+# Plan 058 — the ONLY reason this feature exists. It is default-ON, so every shipped build,
+# `cargo check`, `cargo test` and bundle contains the GitHub slice exactly as before; nothing about
+# the app changes. What it buys is `--no-default-features`, which drops `reqwest` and therefore
+# `rustls -> aws-lc-sys`, whose C build script needs `windows.h` and so cannot build on macOS. That
+# build script is what broke `cargo check --target x86_64-pc-windows-msvc`, and with it the ONLY
+# verification SPEC.md §8's `#[cfg(windows)]` Job Object code has on this machine. Turning the
+# feature off is how the cross-check reaches Hangar's own sources again:
+#
+#   PATH="/opt/homebrew/opt/llvm/bin:$PATH" cargo check --manifest-path src-tauri/Cargo.toml \
+#     --target x86_64-pc-windows-msvc --no-default-features --all-targets
+#
+# It proves the Windows code COMPILES. It does not run it — only CI's `windows` job does that.
+[features]
+default = ["github"]
+github = ["dep:reqwest", "dep:keyring"]
+
 [dependencies]
 tauri = { version = "2", features = [] }
 # Exactly the three plugins SPEC.md §4 allows. The shell, fs and store plugins are forbidden.
@@ -35,14 +51,16 @@ sha2 = "0.10"
 # access token — must live in the OS keychain with NO disk fallback (§18); std has no keychain
 # access at all. Explicit backends per platform (not the crate's own defaults, which omit macOS)
 # so "keychain unavailable" is a compile-time fact, never a silent runtime guess.
-keyring = { version = "4", features = ["apple-native-keyring-store", "windows-native-keyring-store"] }
+# `optional` only because of the `github` feature above — the justification is unchanged.
+keyring = { version = "4", optional = true, features = ["apple-native-keyring-store", "windows-native-keyring-store"] }
 # Justification (SPEC.md §18 / plan 053): §18 permits exactly one network call site — the GitHub
 # API over TLS. `default-features = false` + `rustls`/`json` keeps this to rustls (never OpenSSL,
 # never native-tls) and JSON bodies only — no cookies, multipart, blocking client or HTTP/3.
 # DEVIATION: SPEC.md's own snippet names the historic `rustls-tls` feature; reqwest 0.13 renamed it
 # to `rustls` upstream. Kept the spec's INTENT (rustls, never OpenSSL) per CLAUDE.md's "trust the
 # compiler and current docs" rule — verified with `cargo tree`: no `openssl*` crate appears anywhere.
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
+# `optional` only because of the `github` feature above — the justification is unchanged.
+reqwest = { version = "0.13", optional = true, default-features = false, features = ["rustls", "json"] }
 
 [target.'cfg(unix)'.dependencies]
 # Justification (SPEC.md §4 dependency rule): SPEC.md §8's Unix kill is `kill(-pgid, SIGTERM/SIGKILL)`

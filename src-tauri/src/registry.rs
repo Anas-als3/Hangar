@@ -1221,6 +1221,11 @@ mod tests {
         // SPEC.md §18 / plan 053: every `Option` `Some` — a `None` field is invisible to
         // `assert_keys_in` (`skip_serializing_if` omits the key), and an all-`None` sample would
         // let this guard pass while never checking `GithubStatus` at all.
+        // Plan 058: `GithubStatus` only exists in the default (`github`) build, so this sample —
+        // and only this sample — is conditional. `cargo test` runs with default features, so the
+        // guard still covers it on every real test run; the `--no-default-features` build exists
+        // solely to compile-check the Windows target.
+        #[cfg(feature = "github")]
         let github_status = crate::commands::GithubStatus {
             state: crate::commands::GithubConnectionState::RateLimited,
             username: Some("octocat".into()),
@@ -1248,7 +1253,8 @@ mod tests {
             checked_at: "2026-08-11T09:00:00Z".into(),
         };
 
-        let samples: Vec<serde_json::Value> = vec![
+        #[cfg_attr(not(feature = "github"), allow(unused_mut))]
+        let mut samples: Vec<serde_json::Value> = vec![
             serde_json::to_value(&project_view).unwrap(),
             serde_json::to_value(&status_changed).unwrap(),
             serde_json::to_value(&log_lines).unwrap(),
@@ -1256,9 +1262,12 @@ mod tests {
             serde_json::to_value(&registry_error).unwrap(),
             serde_json::to_value(&package_json_info).unwrap(),
             serde_json::to_value(&port_status).unwrap(),
-            serde_json::to_value(&github_status).unwrap(),
             serde_json::to_value(&preflight_report).unwrap(),
         ];
+        // Plan 058 — see the `github_status` sample above. Order is irrelevant: every sample is
+        // asserted independently.
+        #[cfg(feature = "github")]
+        samples.push(serde_json::to_value(&github_status).unwrap());
         for sample in &samples {
             assert_keys_in(sample, types_ts);
         }
@@ -1284,6 +1293,10 @@ mod tests {
         }
 
         // SPEC.md §18 / plan 053: same reasoning, for `GithubConnectionState`'s kebab-case union.
+        // Plan 058: conditional for the same reason as the `GithubStatus` sample above — the enum
+        // itself only exists in the default (`github`) build, which is the only build ever tested
+        // or shipped.
+        #[cfg(feature = "github")]
         for state in [
             crate::commands::GithubConnectionState::Disconnected,
             crate::commands::GithubConnectionState::KeychainDenied,
