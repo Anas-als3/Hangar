@@ -44,6 +44,7 @@ function OpenBand({
   folderId: string;
   members: ProjectView[];
 }) {
+  const { openLogsFor, notesFor, dialog } = useHangarStore();
   return (
     <section
       id={`folder-band-${folderId}`}
@@ -52,7 +53,13 @@ function OpenBand({
         // §11/hard limit: Esc closes the band via the band's OWN onKeyDown, never a `document`
         // listener — a document listener would collide with ProjectCard's own menu Esc and the
         // search box's clear-on-Escape. Only fires while focus is inside this band.
-        if (e.key === "Escape") closeFolder(folderId);
+        //
+        // Plan 033 defect 1: the log panel, notes panel and dialogs (LogPanel.tsx, NotesPanel.tsx,
+        // App.tsx's dialog host) are also Esc owners, each closing itself from its own `document`
+        // listener that this band can't see or stop. A member card can be inside the band while
+        // one of those is open, so the band must yield instead of also firing closeFolder — one
+        // keypress must never trigger two unrelated state changes.
+        if (e.key === "Escape" && !openLogsFor && !notesFor && !dialog) closeFolder(folderId);
       }}
     >
       {members.map((project) => (
