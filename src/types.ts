@@ -136,3 +136,32 @@ export interface RegistryError {
   backupPath: string | null;
   error: string;
 }
+
+/**
+ * SPEC.md §18 / plan 053 — `get_github_status`/`set_github_token`'s wire shape. Mirrors
+ * `commands::GithubStatus`/`GithubConnectionState`. `KeychainDenied` is distinct from
+ * `Disconnected` on purpose: "a denied keychain must never render as 'no token'" (§18).
+ */
+export type GithubConnectionState =
+  | "disconnected"
+  | "keychain-denied"
+  | "connected"
+  | "invalid"
+  | "insufficient-scope"
+  | "rate-limited"
+  | "secondary-rate-limited"
+  | "offline";
+
+export interface GithubStatus {
+  state: GithubConnectionState;
+  username?: string;
+  scopes?: string[];
+  /** Human-readable, secret-free explanation for every non-`connected` state. */
+  detail?: string;
+  /** ISO — present only for `rate-limited`. */
+  resetAt?: string;
+  /** Present only for `secondary-rate-limited`. */
+  retryAfterSec?: number;
+  /** Lets the panel say "Reconnect" instead of "Connect" once a token existed and stopped working. */
+  hadStoredToken?: boolean;
+}
