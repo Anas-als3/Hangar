@@ -1225,6 +1225,46 @@ pub enum StopVerdict {
     StopFailed,
 }
 
+/// SPEC.md §8 step 5, extended (plan 014). **Deviation from §8's letter, documented per CLAUDE.md's
+/// rule for exactly this situation:** §8 says any listener on the pinned port after a kill is a
+/// failed stop. Its INTENT, stated two paragraphs above in the killing section, is narrower — the
+/// port check exists to catch OUR OWN survivors, leaked children that never listen. Once
+/// `death_confirmed` is true the killed group/job is provably empty (Unix: `kill(-pgid, 0)` returned
+/// `ESRCH`; Windows: the job's process count is 0), so a listener that is demonstrably not that
+/// group cannot be one of our survivors — it satisfies §8's intent even though it fails §8's literal
+/// text. `listeners` must come from [`port_listeners`] (every distinct pid), never [`port_owner`]
+/// (first row only) — a second, unlisted listener must not be waved through as free.
+///
+/// Two cases get NO benefit of the doubt, per this plan's hard limit that guessing optimistic is
+/// exactly the failure §8 exists to prevent: a listener whose pid equals `killed_pid` (SPEC.md §16
+/// forbids trusting a bare pid match as identity once a pid may have been recycled, so this is
+/// treated as *unverifiable*, not as proof it is still ours, but either way it is not attributable
+/// as foreign); and an empty `listeners` when the port is busy (the lookup found nothing parseable —
+/// unattributable is not evidence of success).
+pub fn settle_after_kill(
+    death_confirmed: bool,
+    port_still_answers: bool,
+    killed_pid: Option<u32>,
+    listeners: &[PortListener],
+) -> StopVerdict {
+    if stop_is_verified(death_confirmed, port_still_answers) {
+        return StopVerdict::Stopped { foreign_owner: None };
+    }
+    if !death_confirmed {
+        // Not even asked: with processes still alive, attribution built on the port answer would be
+        // the same false proxy §8 forbids for the port check itself.
+        return StopVerdict::StopFailed;
+    }
+    // death_confirmed && port_still_answers: attempt attribution before giving up.
+    if listeners.iter().any(|l| Some(l.pid) == killed_pid) {
+        return StopVerdict::StopFailed;
+    }
+    match listeners.first() {
+        Some(owner) => StopVerdict::Stopped { foreign_owner: Some(owner.clone()) },
+        None => StopVerdict::StopFailed,
+    }
+}
+
 // `TerminateJobObject` is not exposed by `win32job` 2.x (it has create / assign / query only), and
 // SPEC.md §8 names it as *the* Windows kill. Declared here rather than adding a whole `windows`
 // crate dependency for one call — `kernel32` is already linked by std.
