@@ -827,15 +827,31 @@ pub async fn run_project(app: &AppHandle, project_id: &str) -> Result<(), String
     // this existing per-Run save, rather than adding a second write to the registry below, is
     // what plan 025 requires. Blocking file I/O, done before taking the lock, matching
     // `store_lockfile_hash`.
+    //
+    // Plan 010 (§4): `save_lock` wraps mutate+snapshot+save as ONE critical section, not just the
+    // save — see the comment on `AppState::save_lock`. `projects` itself is held only long enough
+    // to mutate and clone; `save_projects`'s fsync runs after that guard is dropped, never before.
     let stack = registry::read_package_json(Path::new(&project.path)).stack;
     let started_at = iso8601_utc(SystemTime::now());
     let persist_error = {
-        let mut projects = state.projects.lock().await;
-        if let Some(p) = projects.iter_mut().find(|p| p.id == project.id) {
-            p.last_run_at = Some(started_at);
-            p.stack = Some(stack);
+        let _save_guard = state.save_lock.lock().await;
+        let snapshot = {
+            let mut projects = state.projects.lock().await;
+            if let Some(p) = projects.iter_mut().find(|p| p.id == project.id) {
+                p.last_run_at = Some(started_at);
+                p.stack = Some(stack);
+            }
+            projects.clone()
+        };
+        let config_dir = state.config_dir.clone();
+        match tauri::async_runtime::spawn_blocking(move || {
+            registry::save_projects(&config_dir, &snapshot)
+        })
+        .await
+        {
+            Ok(result) => result.err(),
+            Err(join_err) => Some(format!("save task failed: {join_err}")),
         }
-        registry::save_projects(&state.config_dir, &projects).err()
     };
     if let Some(e) = persist_error {
         process::append_system(app, &project.id, format!("could not save lastRunAt: {e}")).await;
