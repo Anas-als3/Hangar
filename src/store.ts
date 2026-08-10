@@ -131,6 +131,7 @@ let state: HangarState = {
   loadError: null,
   logs: {},
   phasesSeen: {},
+  pendingRun: {},
   openLogsFor: null,
   notesFor: null,
   toast: null,
