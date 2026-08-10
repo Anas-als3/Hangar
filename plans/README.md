@@ -60,8 +60,9 @@ conditions, and update your row below when done.
 | 047 | Ports button on the port-collision toast (closes the §12 requirement added by 041) | — | P2 | XS | 041 | TODO |
 | 048 | Edit must not kill the server — move confirm-and-stop from dialog-open to Save | — | P2 | S-M | SPEC §6 amendment | TODO |
 | 049 | Run button that admits it was clicked (pre-status window on a shared path) | — | P3 | S | — | TODO |
-| 050 | Crash reason on the card (§11 A2, amended 2026-08-10) | — | P2 | S | — | TODO |
-| 051 | Resume last session, and a workspace strip | — | P2 | M | SPEC §11 amendments (`bcc8233`) | DONE (frontend; reviewer to run `npm run build`, `cargo check`, bundle) |
+| 050 | Crash reason on the card | — | P2 | S | — | SUPERSEDED by 052 (folded in as Part B) |
+| 051 | Resume last session + workspace strip | — | P2 | M | SPEC §11 amendments | DONE (merged `97fe575`, 2026-08-10) — 8 `node --test` cases |
+| 052 | Card feedback: pending-Run state + crash reason | — | P2 | S | SPEC §11 amendment | IN PROGRESS |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
 
