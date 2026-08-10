@@ -339,6 +339,22 @@ export function ProjectCard({ project }: { project: ProjectView }) {
         )}
       </div>
 
+      {/* §11's crash-reason amendment (added 2026-08-10, plan 052): a SIBLING of the status row
+          above, never a fourth item inside that row's flex container — a fourth item there is
+          what makes a 14 rem card wrap. Muted text only, no new colour: the red pill above
+          already carries the severity. Sourced from `lastFailure` (§ store.ts), which is filled
+          only from the `status-changed` event's `message`, never the log buffer. */}
+      {showFailureLine && (
+        <button
+          type="button"
+          onClick={() => void openLogs(project.id)}
+          title={failureReason}
+          className="block w-full truncate text-left text-xs text-muted transition-colors hover:text-text"
+        >
+          {failureReason}
+        </button>
+      )}
+
       {/* §11 libraries line (added 2026-08-10, `+N` reveal added 2026-08-10 — plan 037): capped,
           display-only text, with the one permitted exception ("the count is the one exception to
           'never controls'"): `+N` is a button revealing the full detected stack in a read-only
