@@ -98,6 +98,28 @@ tiebreak holds, and re-issuing either action is idempotent for members already
 written. The defect is that the user is shown a stale grid at the moment they
 most need an accurate one.
 
+## Defect 4 — an abandoned drag can swallow the user's next click
+
+`src/cardDrag.ts`'s `suppressNextClick()` installs a `{capture: true, once: true}`
+window `click` listener whenever a drag moved. That is correct when a click
+actually follows `pointerup` — the point is to stop a dropped card from also
+firing whatever it landed on.
+
+But `cancelSession()` calls it too, and two of its callers end the drag while
+the pointer button is **still down**: `onWindowBlur` and `onKeyDown` (Escape).
+On blur in particular, no click may ever arrive.
+
+**Failure scenario.** The user starts dragging a card, then Cmd-Tabs away.
+`blur` → `cancelSession` → the suppressor is installed and never consumed. The
+user returns to Hangar and clicks **Run**. The suppressor eats it. The second
+click works, so this reads as "the app randomly ignored me once".
+
+Fix: make the suppressor self-expire. Install it as it is now, and also schedule
+its removal on the next task tick (`setTimeout(..., 0)`) — a real trailing click
+is dispatched in the same task as `pointerup`, so it will always be caught
+first, and an abandoned one cannot outlive the gesture. Keep a single named
+teardown so the listener can only be removed once.
+
 ## Commands you will need
 
 | Purpose | Command | Expected on success |
@@ -117,11 +139,13 @@ commit after each.
 - `src/components/ProjectGrid.tsx` — the band's Esc guard only
 - `src/components/FolderTile.tsx` — stacking classes only
 - `src/store.ts` — `renameFolder` / `ungroupFolder` reload placement only
+- `src/cardDrag.ts` — `suppressNextClick()` only (defect 4)
 
 **Out of scope** (do NOT touch):
 - Anything under `src-tauri/`, and `src/types.ts`.
-- The drag subsystem (`src/cardDrag.ts`, `src/dragGeometry.ts`) — plan 030 owns
-  it and it is already merged. Do not refactor it.
+- `src/dragGeometry.ts` and every part of `src/cardDrag.ts` other than
+  `suppressNextClick()`. Plan 030 owns the gesture; defect 4 is a two-line
+  lifetime fix, not a refactor.
 - `MoveToFolderDialog.tsx`, `LogPanel.tsx`, `NotesPanel.tsx`, `App.tsx`. Defect
   1's fix must handle them **without editing them** — see step 2.
 - `gridItems`, `folderSummary`, `moveToFolder`, `visibleProjects`.
@@ -198,7 +222,20 @@ is the stale view.
 
 **Verify**: `npm run typecheck` → exit 0; `npm run build` → exit 0.
 
-### Step 5: Self-check
+### Step 5: Make the click suppressor self-expire
+
+In `src/cardDrag.ts`, give `suppressNextClick()` a lifetime. Install the same
+`{capture: true, once: true}` listener, and also `setTimeout(remove, 0)` so an
+abandoned drag cannot leave it armed. A genuine trailing click is dispatched in
+the same task as `pointerup`, so it is always caught before the timeout runs.
+
+Route both paths through one named remover so double-removal is a no-op. Add a
+comment naming the blur/Escape case, because the naive reading is that
+`once: true` is already sufficient.
+
+**Verify**: `npm run typecheck` → exit 0; `npm run build` → exit 0.
+
+### Step 6: Self-check
 
 Report each:
 
@@ -208,7 +245,8 @@ Report each:
   nothing else among the `<article>`'s direct children.
 - `grep -n "loadRegistry" src/store.ts` → the calls in `renameFolder` and
   `ungroupFolder` are reachable on the failure path.
-- `git status --short` → only the four in-scope files.
+- `grep -n "setTimeout" src/cardDrag.ts` → the suppressor's expiry is present.
+- `git status --short` → only the five in-scope files.
 
 **Verify**: `npm run typecheck` → exit 0; `npm run build` → exit 0.
 
@@ -235,7 +273,8 @@ maintainer:
 - [ ] `OpenBand` ignores Esc while a log panel, notes panel or dialog is open
 - [ ] Only the `<header>` among `FolderTile`'s direct children carries `z-10`
 - [ ] `renameFolder` and `ungroupFolder` reload on the failure path
-- [ ] Nothing under `src-tauri/`, no drag file, no dialog file modified
+- [ ] `suppressNextClick` cannot outlive the gesture that installed it
+- [ ] Nothing under `src-tauri/`, no `dragGeometry.ts`, no dialog file modified
 - [ ] `plans/README.md` status row for 033 updated
 
 ## STOP conditions
