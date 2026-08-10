@@ -160,7 +160,35 @@ fn is_run_inert_change(stored: &Project, incoming: &Project) -> bool {
     incoming.last_run_at = None;
     stored.last_lockfile_hash = None;
     incoming.last_lockfile_hash = None;
+    // `stack` stays writable (see `stack_is_unchanged_ignoring_timestamp`'s doc comment) — it is
+    // only normalised out here, field by field, when the helper says the difference is nothing
+    // but a re-stamped `detected_at`. A genuine stack change is left in place so it still guards.
+    if stack_is_unchanged_ignoring_timestamp(&stored.stack, &incoming.stack) {
+        stored.stack = None;
+        incoming.stack = None;
+    }
     stored == incoming
+}
+
+/// SPEC.md §6 (added 2026-08-10): `stack` must stay writable from the payload — the Edit dialog
+/// re-detects it on every open (plan 025) — so unlike `lastRunAt`/`lastLockfileHash` it cannot
+/// join the app-owned set. But `registry.rs`'s `detect_stack` re-stamps `detected_at` on every Run
+/// (registry.rs:559) just as it does on Edit, so a stale frontend payload differs from stored in
+/// `stack.detectedAt` alone during the same window `lastRunAt` goes stale — the same failure, one
+/// field over. `stack` counts as unchanged for the run-inert comparison when the incoming value is
+/// `None`, or when it differs from stored only in `detected_at`; a caller that genuinely changed
+/// the detected framework or libraries is still a guarded change.
+fn stack_is_unchanged_ignoring_timestamp(
+    stored: &Option<registry::ProjectStack>,
+    incoming: &Option<registry::ProjectStack>,
+) -> bool {
+    match (stored, incoming) {
+        (_, None) => true,
+        (None, Some(_)) => false,
+        (Some(stored), Some(incoming)) => {
+            stored.framework == incoming.framework && stored.libraries == incoming.libraries
+        }
+    }
 }
 
 /// SPEC.md §7 `update_project` / §6 / §10 step 7: "Remove/Edit while status ∉ {stopped, crashed}
