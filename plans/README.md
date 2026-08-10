@@ -21,7 +21,7 @@ conditions, and update your row below when done.
 | 008 | Wire-contract tests + types.ts drift guard | — | P1 | S | — | DONE (merged `5f1db9c`) |
 | 009 | Verify entrypoint, CI (incl. Windows job), de-trapped `dev` script | — | P1 | M | — | DONE (merged `15bfa69`) |
 | 010 | Blocking I/O out from under the async state locks | — | P1 | S | — | DONE (merged `0c153bb`, 2026-08-10) — 4 sites; new `save_lock` wraps mutate+clone+save; fsyncs moved to `spawn_blocking` |
-| 011 | LineSplitter buffer cap | — | P1 | S | — | TODO |
+| 011 | LineSplitter buffer cap | — | P1 | S | — | DONE (merged `07e734b`, 2026-08-11) — 165 tests, was 162 |
 | 012 | settings.json corruption rescue + atomic_write hardening | — | P2 | S | 010 | TODO |
 | 013 | Restrictive webview CSP | — | P2 | S | — | TODO |
 | 014 | Un-brick stop-failed on foreign port owners | — | P2 | M | 007 | DONE (merged `28490dd`, 2026-08-11) — 154 tests, was 147 |
