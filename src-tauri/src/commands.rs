@@ -15,7 +15,7 @@ use tokio::sync::Mutex;
 
 use serde::Serialize;
 
-use crate::env_resolve::DevEnvCell;
+use crate::env_resolve::{DevEnvCell, EnvMap};
 use crate::process::{self, LogLine, RuntimeMap};
 use crate::registry::{self, Project, ProjectView, RegistryError, Settings, Status};
 
@@ -514,6 +514,45 @@ pub async fn get_port_status(state: State<'_, AppState>) -> Result<Vec<PortStatu
         .collect())
 }
 
+/// SPEC.md §9 step 1 (amended 2026-08-10) / §7 `free_port` (plan 042) — the one command allowed to
+/// signal a process Hangar did not spawn. Gated by `free_port_gate`, checked against TWO fresh
+/// probes (never the panel's possibly-stale snapshot): one to establish the claim, one more
+/// "immediately before signalling" that must agree with the first. Any disagreement — including
+/// the pid the caller clicked no longer matching either probe — aborts without signalling.
+#[tauri::command]
+pub async fn free_port(
+    project_id: String,
+    pid: u32,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<(), String> {
+    // Lock discipline identical to `get_port_status`: snapshot, drop, THEN probe.
+    let port = {
+        let projects = state.projects.lock().await;
+        projects
+            .iter()
+            .find(|p| p.id == project_id)
+            .map(|p| p.port)
+            .ok_or_else(|| format!("no project with id {project_id}"))?
+    };
+    let project_status = {
+        let runtime = state.runtime.lock().await;
+        runtime.get(&project_id).map(|r| r.status).unwrap_or(Status::Stopped)
+    };
+    let env = state.dev_env.get().await.vars.clone();
+    let checked_at = crate::run::iso8601_utc(SystemTime::now());
+
+    let claim = probe_one_port(&project_id, port, &env, &checked_at).await;
+    let claim_started_at = claim.holder.as_ref().and_then(|h| h.started_at.as_deref()).unwrap_or("");
+    free_port_gate(&claim, project_status, claim_started_at)?;
+    if claim.holder.as_ref().map(|h| h.pid) != Some(pid) {
+        return Err(format!("port {port}'s owner changed since it was shown — refusing to signal it."));
+    }
+    let claimed_started_at = claim.holder.and_then(|h| h.started_at).unwrap_or_default();
+
+    free_port_finish(&app, &project_id, port, pid, project_status, &env, &checked_at, &claimed_started_at).await
+}
+
 /// The identity used for `PortHolder.sameUser`: std has no portable "who am I" call, so this
 /// reads the same env var a login shell would set — `USER` on Unix, `USERNAME` on Windows. `None`
 /// (never a guess) when neither is set.
@@ -557,6 +596,119 @@ fn build_port_status(
         holder,
         checked_at: checked_at.to_string(),
     }
+}
+
+/// One-project version of `get_port_status`'s two-pass probe — the same building blocks
+/// (`port_accepts`, `port_listeners`, `ps_enrich`, `build_port_status`), scoped to a single port.
+/// `free_port` (below) calls this TWICE: once to establish what it is about to act on, and once
+/// more "immediately before signalling" (SPEC.md §9 step 1) — the second call is what gives gate 5
+/// something real to re-verify against, instead of trusting a single read.
+async fn probe_one_port(project_id: &str, port: u16, env: &EnvMap, checked_at: &str) -> PortStatus {
+    let busy = process::port_accepts(port).await;
+    let listeners = if busy { process::port_listeners(port, env).await } else { Vec::new() };
+    let solo_pids: Vec<u32> =
+        (listeners.len() == 1).then(|| listeners[0].pid).into_iter().collect();
+    let ps_rows = process::ps_enrich(&solo_pids, env).await;
+    build_port_status(
+        project_id.to_string(),
+        port,
+        busy,
+        listeners,
+        &ps_rows,
+        current_username().as_deref(),
+        checked_at,
+    )
+}
+
+/// `free_port`'s second half: gate 5, re-verified "immediately before signalling" (SPEC.md §9
+/// step 1) — probes again and requires it to agree with the claim its caller already checked, then
+/// signals, re-probes to report honestly (including "still held" — §8's honesty rule, never a
+/// claimed success that was not verified), and appends a `system` log line recording the outcome.
+#[allow(clippy::too_many_arguments)]
+async fn free_port_finish(
+    app: &AppHandle,
+    project_id: &str,
+    port: u16,
+    pid: u32,
+    project_status: Status,
+    env: &EnvMap,
+    checked_at: &str,
+    claimed_started_at: &str,
+) -> Result<(), String> {
+    let recheck = probe_one_port(project_id, port, env, checked_at).await;
+    let verified_pid = free_port_gate(&recheck, project_status, claimed_started_at)?;
+    if verified_pid != pid {
+        return Err(format!("port {port}'s owner changed since it was shown — refusing to signal it."));
+    }
+
+    process::signal_one_process(pid).map_err(|e| format!("could not signal PID {pid}: {e}"))?;
+
+    let still_busy = process::port_accepts(port).await;
+    let holder_desc = recheck
+        .holder
+        .as_ref()
+        .map(|h| format!("{} (PID {})", h.name, h.pid))
+        .unwrap_or_else(|| format!("PID {pid}"));
+    let outcome = if still_busy {
+        format!("Sent SIGTERM to {holder_desc} on port {port} — it is still held.")
+    } else {
+        format!("Sent SIGTERM to {holder_desc} on port {port} — it is now free.")
+    };
+    process::append_system(app, project_id, outcome).await;
+
+    Ok(())
+}
+
+/// SPEC.md §9 step 1 (amended 2026-08-10, plan 042) — the gate predicate behind `free_port`. Pure:
+/// no `State`, no `AppHandle`, no I/O, same shape as `guard_update` above and for the same reason —
+/// a security boundary that needs an `AppHandle` to test is one nobody tests. `port` must be a
+/// FRESH probe (never the panel's stale snapshot); `claimed_started_at` is what the caller asserts
+/// was already shown for this holder, so gate 5's start-time re-check has something to compare
+/// against. Returns the verified pid on success.
+fn free_port_gate(
+    port: &PortStatus,
+    project_status: Status,
+    claimed_started_at: &str,
+) -> Result<u32, String> {
+    // Gate 1: exactly one listening PID — a dual-stack pair on 127.0.0.1/[::1] is legal and names
+    // nobody; the panel says so instead of guessing.
+    if port.listener_count != 1 {
+        return Err(format!(
+            "{} processes are listening on this port — Hangar will not guess which one.",
+            port.listener_count
+        ));
+    }
+    let Some(holder) = port.holder.as_ref() else {
+        return Err("the listening process could not be identified.".to_string());
+    };
+
+    // Gate 2: never root, never another account. `None` (unknown) is refused too — an unknown
+    // owner is not a permission.
+    if holder.same_user != Some(true) {
+        return Err("that process's owner could not be confirmed as you — refusing.".to_string());
+    }
+
+    // Gate 3: a project Hangar is managing routes to Stop — §8 is the only path allowed to touch
+    // our own trees.
+    if !matches!(project_status, Status::Stopped | Status::Crashed) {
+        return Err("this port belongs to a project Hangar is managing — use Stop instead.".to_string());
+    }
+
+    // Gate 4: a truncated process name is not something a person can authorise a kill from.
+    if holder.command.is_none() {
+        return Err("the full command line could not be read — refusing to offer this.".to_string());
+    }
+
+    // Gate 5 (start-time half): re-verified against what the caller claims was already shown.
+    // PIDs are reused; a mismatch here means the identity behind this pid changed underneath us.
+    let Some(started_at) = holder.started_at.as_deref() else {
+        return Err("the process start time could not be read — refusing to offer this.".to_string());
+    };
+    if started_at != claimed_started_at {
+        return Err("the process changed since it was shown — refusing to signal it.".to_string());
+    }
+
+    Ok(holder.pid)
 }
 
 #[cfg(test)]
@@ -902,5 +1054,102 @@ mod tests {
         assert_eq!(replaced.name, "IELTS Coach (renamed)");
         assert_eq!(replaced.last_run_at.as_deref(), Some("2026-08-10T09:00:00Z"));
         assert_eq!(replaced.last_lockfile_hash.as_deref(), Some("freshhash"));
+    }
+
+    // -------------------------------------------------------------------------------------
+    // Plan 042: `free_port_gate` — every one of §9 step 1's gates, plus the mutation check
+    // reported by the executor for gate 3.
+    // -------------------------------------------------------------------------------------
+
+    const CLAIMED_START: &str = "Mon Aug 10 13:53:48 2026";
+
+    fn full_holder() -> PortHolder {
+        PortHolder {
+            name: "node".into(),
+            pid: 4321,
+            command: Some("node server.js".into()),
+            started_at: Some(CLAIMED_START.into()),
+            parent_exited: Some(false),
+            same_user: Some(true),
+        }
+    }
+
+    fn port_with(listener_count: usize, holder: Option<PortHolder>) -> PortStatus {
+        PortStatus {
+            project_id: "abc123".into(),
+            port: 5173,
+            busy: true,
+            listener_count,
+            holder,
+            checked_at: "2026-08-10T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn gate1_refuses_two_listeners() {
+        let port = port_with(2, None);
+        let err = free_port_gate(&port, Status::Stopped, CLAIMED_START).unwrap_err();
+        assert!(err.contains("2 processes"), "got {err:?}");
+    }
+
+    #[test]
+    fn gate2_refuses_a_different_user() {
+        let holder = PortHolder { same_user: Some(false), ..full_holder() };
+        let port = port_with(1, Some(holder));
+        let err = free_port_gate(&port, Status::Stopped, CLAIMED_START).unwrap_err();
+        assert!(err.contains("owner"), "got {err:?}");
+    }
+
+    #[test]
+    fn gate2_refuses_an_unknown_owner() {
+        let holder = PortHolder { same_user: None, ..full_holder() };
+        let port = port_with(1, Some(holder));
+        let err = free_port_gate(&port, Status::Stopped, CLAIMED_START).unwrap_err();
+        assert!(err.contains("owner"), "got {err:?}");
+    }
+
+    #[test]
+    fn gate3_refuses_a_running_project() {
+        let port = port_with(1, Some(full_holder()));
+        let err = free_port_gate(&port, Status::Running, CLAIMED_START).unwrap_err();
+        assert!(err.contains("Stop"), "got {err:?}");
+    }
+
+    #[test]
+    fn gate3_refuses_every_in_flight_status() {
+        for status in [Status::Starting, Status::Installing, Status::Updating, Status::Stopping] {
+            let port = port_with(1, Some(full_holder()));
+            let err = free_port_gate(&port, status, CLAIMED_START).unwrap_err();
+            assert!(err.contains("Stop"), "status {status:?} got {err:?}");
+        }
+    }
+
+    #[test]
+    fn gate4_refuses_a_missing_command_line() {
+        let holder = PortHolder { command: None, ..full_holder() };
+        let port = port_with(1, Some(holder));
+        let err = free_port_gate(&port, Status::Stopped, CLAIMED_START).unwrap_err();
+        assert!(err.contains("command line"), "got {err:?}");
+    }
+
+    #[test]
+    fn gate5_refuses_a_start_time_that_no_longer_matches_the_claim() {
+        let port = port_with(1, Some(full_holder()));
+        let err = free_port_gate(&port, Status::Stopped, "a different start time").unwrap_err();
+        assert!(err.contains("changed"), "got {err:?}");
+    }
+
+    #[test]
+    fn gate1_refuses_an_unidentified_holder_while_busy() {
+        let port = port_with(0, None);
+        let err = free_port_gate(&port, Status::Stopped, CLAIMED_START).unwrap_err();
+        assert!(err.contains("could not be identified") || err.contains("processes are listening"), "got {err:?}");
+    }
+
+    #[test]
+    fn every_gate_satisfied_on_a_stopped_project_is_allowed() {
+        let port = port_with(1, Some(full_holder()));
+        let pid = free_port_gate(&port, Status::Stopped, CLAIMED_START).unwrap();
+        assert_eq!(pid, 4321);
     }
 }

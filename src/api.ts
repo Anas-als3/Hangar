@@ -122,3 +122,14 @@ export function getRegistryError(): Promise<RegistryError | null> {
 export function getPortStatus(): Promise<PortStatus[]> {
   return invoke<PortStatus[]>("get_port_status");
 }
+
+/**
+ * §7 `free_port` (added 2026-08-10, plan 042) — SPEC.md §9 step 1's one authorised signal to a
+ * process Hangar did not spawn. Rejects with a message if any gate fails; Rust re-verifies
+ * everything immediately before signalling, so a rejection here means nothing was touched. `void`
+ * on success too — whether the port is still held afterwards is read back via `getPortStatus`,
+ * never inferred from this promise settling (see `freePortAction` in `store.ts`).
+ */
+export function freePort(projectId: string, pid: number): Promise<void> {
+  return invoke<void>("free_port", { projectId, pid });
+}

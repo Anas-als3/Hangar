@@ -13,6 +13,7 @@ import { listen } from "@tauri-apps/api/event";
 import {
   addProject,
   clearLogBuffer,
+  freePort,
   getLogBuffer,
   getPortStatus,
   getProjects,
@@ -843,6 +844,29 @@ export async function refreshPorts(): Promise<void> {
   try {
     const ports = await getPortStatus();
     setState({ ports });
+  } catch (err) {
+    setToast(errorMessage(err));
+  }
+}
+
+/**
+ * SPEC.md §9 step 1 (amended 2026-08-10) / plan 042 — sends SIGTERM to a foreign port's holder.
+ * Rust re-verifies every gate immediately before signalling, so a rejection here means nothing was
+ * touched. `free_port` itself returns `void` (§8's honesty rule forbids widening the frozen shape
+ * to smuggle a result), so the "still held" fact is read back the same way the rest of this panel
+ * reads truth: a fresh `refreshPorts()`, never a guess. Never chains a Run — §9 step 1 forbids it.
+ */
+export async function freePortAction(projectId: string, pid: number, port: number): Promise<void> {
+  try {
+    await freePort(projectId, pid);
+    await refreshPorts();
+    const stillBusy = state.ports?.find((p) => p.projectId === projectId)?.busy ?? false;
+    setToast(
+      stillBusy
+        ? `Sent SIGTERM to PID ${pid} — port ${port} is still held.`
+        : `Port ${port} is free.`,
+      "neutral",
+    );
   } catch (err) {
     setToast(errorMessage(err));
   }

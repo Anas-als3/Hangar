@@ -1079,6 +1079,41 @@ fn signal_group(pgid: u32, signal: i32) -> std::io::Result<()> {
     }
 }
 
+/// SPEC.md §9 step 1 (amended 2026-08-10, plan 042): the ONE signal Hangar may send to a process
+/// it did not spawn. Unlike [`signal_group`] just above — which negates `pgid` **on purpose** to
+/// reach every member of one of Hangar's OWN process groups, and is correct only for our own trees
+/// — this function never negates. It takes a single **positive** pid and signals exactly that one
+/// process, nothing else. A reviewer must be able to tell the two apart at a glance: `-pgid` there,
+/// a bare positive `pid` here. This is the only path in Hangar permitted to touch a stranger's
+/// process, and it is gated by `commands::free_port_gate` before it is ever called.
+#[cfg(unix)]
+pub fn signal_one_process(pid: u32) -> std::io::Result<()> {
+    let pid = i32::try_from(pid).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "process id out of range")
+    })?;
+    // SAFETY: `kill(2)` with a positive pid signals exactly that one process — no negation, no
+    // group, no Rust memory touched. A negative return is reported through errno, as usual.
+    let rc = unsafe { libc::kill(pid, libc::SIGTERM) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+/// SPEC.md §9 step 1: "On Windows the action is unavailable" until command-line and start-time
+/// reads are verified on real hardware — `taskkill /PID <pid> /F` with no start-time guard is a
+/// weaker operation than that rule authorises. Kept beside the Unix half so `free_port`'s call
+/// site compiles unconditionally on both platforms; gate 8 (Unix only) is enforced by this always
+/// returning an error here, never by `#[cfg]`-ing the caller out.
+#[cfg(windows)]
+pub fn signal_one_process(_pid: u32) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "freeing a port is not available on Windows yet",
+    ))
+}
+
 /// SPEC.md §8 verification, Unix half: `kill(-pgid, 0)` returning `ESRCH` means no member of the
 /// group is left. `EPERM` means a member exists that we may not signal — that is still *alive*, so
 /// it must not count as death.
