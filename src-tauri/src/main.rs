@@ -3,6 +3,7 @@
 
 mod commands;
 mod env_resolve;
+mod github;
 mod process;
 mod registry;
 mod run;
@@ -39,6 +40,11 @@ fn main() {
                 settings,
                 load.error,
             ));
+            // SPEC.md §18 / plan 053: its OWN managed cell, never nested inside `AppState` —
+            // no GitHub call may hold a lock `AppState.projects`/`.runtime`/`.dev_env` uses.
+            // Nothing here reads the keychain or the network; that happens lazily, once per
+            // session, on the first `#[tauri::command]` call a webview action makes.
+            app.manage(github::GithubState::new());
 
             // SPEC.md §8: resolve the login-shell environment ONCE at startup, in the background so
             // it can never block the window from appearing. A Run that arrives before this finishes
@@ -77,6 +83,10 @@ fn main() {
             commands::get_port_status,
             commands::free_port,
             commands::find_free_port,
+            // SPEC.md §18 / plan 053 — additions to the frozen §7 list, never a rename/reshape.
+            commands::get_github_status,
+            commands::set_github_token,
+            commands::remove_github_token,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
