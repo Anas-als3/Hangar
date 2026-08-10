@@ -193,3 +193,60 @@ function createGhost(sourceId: string, point: Point): HTMLDivElement | null {
   document.body.appendChild(el);
   return el;
 }
+
+function onPointerUp(): void {
+  const s = session;
+  if (!s) return;
+  const commit = s.armed && s.targetId !== null && s.targetKind !== null;
+  const { sourceId, targetId, targetKind, targetEl, moved } = s;
+  teardown();
+  if (moved) suppressNextClick();
+  if (commit && targetId && targetKind) void commitDrop(sourceId, targetId, targetKind, targetEl);
+}
+
+function onPointerCancel(): void {
+  cancelSession();
+}
+
+function onWindowBlur(): void {
+  cancelSession();
+}
+
+function onKeyDown(event: KeyboardEvent): void {
+  if (event.key === "Escape") cancelSession();
+}
+
+/** Reset without committing — `pointercancel`, `blur`, `Escape`, a vanished source/target, or a
+ *  `pointerup` that never armed. */
+function cancelSession(): void {
+  const moved = session?.moved ?? false;
+  teardown();
+  if (moved) suppressNextClick();
+}
+
+function teardown(): void {
+  const s = session;
+  if (!s) return;
+  if (s.armTimer) clearTimeout(s.armTimer);
+  s.ghost?.remove();
+  window.removeEventListener("pointermove", onPointerMove);
+  window.removeEventListener("pointerup", onPointerUp);
+  window.removeEventListener("pointercancel", onPointerCancel);
+  window.removeEventListener("keydown", onKeyDown);
+  window.removeEventListener("blur", onWindowBlur);
+  session = null;
+  setDragView({ sourceId: null, targetId: null, armed: false });
+}
+
+/** Suppresses the trailing synthetic `click` a drag's `pointerup` produces — otherwise dropping a
+ *  card also fires whatever it landed on (a folder's open/close button, Run, ...). */
+function suppressNextClick(): void {
+  window.addEventListener(
+    "click",
+    (event) => {
+      event.stopPropagation();
+      event.preventDefault();
+    },
+    { capture: true, once: true },
+  );
+}
