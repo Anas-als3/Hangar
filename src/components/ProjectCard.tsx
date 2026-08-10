@@ -24,8 +24,17 @@ import {
   useHangarStore,
 } from "../store";
 import { lastRunLabel, STATUS_LABEL, STATUS_TONE } from "../status";
-import type { ProjectView, Status } from "../types";
+import type { ProjectStack, ProjectView, Status } from "../types";
 import { PhaseStrip } from "./PhaseStrip";
+
+/** Plan 035 step 1: one hover string for BOTH the badge and the libraries line, so whichever
+ *  renders alone (a Vite project with no allow-listed deps has a badge and no line; a monorepo
+ *  root has a line and no badge) still carries the whole stack. Single line, ` · ` separator —
+ *  no timestamp, no `\n` (multi-line `title` renders differently across webviews). */
+function stackHoverText(stack: ProjectStack): string | null {
+  const parts = stack.framework ? [stack.framework, ...stack.libraries] : stack.libraries;
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
 
 /** §6/§10 step 7: Edit — confirm-and-stop first if the project isn't stopped/crashed. */
 async function handleEdit(projectId: string): Promise<void> {
@@ -257,9 +266,14 @@ export function ProjectCard({ project }: { project: ProjectView }) {
         </span>
 
         {/* §11 (added 2026-08-09): the one permitted stack badge — display-only, derived, never
-            a control. Quieter than the status pill on purpose: status is what users scan for. */}
+            a control. Quieter than the status pill on purpose: status is what users scan for.
+            `title` (plan 035 step 1) carries the whole stack — this badge can be the only
+            stack element a card shows, so it must not depend on the libraries line existing. */}
         {project.stack?.framework && (
-          <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 font-mono text-xs text-muted">
+          <span
+            className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 font-mono text-xs text-muted"
+            title={stackHoverText(project.stack) ?? undefined}
+          >
             {project.stack.framework}
           </span>
         )}
@@ -272,14 +286,20 @@ export function ProjectCard({ project }: { project: ProjectView }) {
       </div>
 
       {/* §11 libraries line (added 2026-08-10): capped, display-only, never a control — the
-          full list stays in the Edit dialog. `truncate` is a second line of defence behind the
-          3-item cap; `title` carries the full list for hover. Sibling of the status row, not a
+          full list stays in the Edit dialog. `title` (plan 035 step 1) carries framework +
+          the full library list, not just the visible three, since this line can be the only
+          stack element a card shows. `+N` (plan 035 step 1) is now a `shrink-0` sibling of the
+          `truncate` span, not text inside it — otherwise the one visible signal that a hover
+          exists is clipped by the same ellipsis as the names. Sibling of the status row, not a
           fourth item inside it — a fourth item there is what pushes a 14 rem card to wrap. */}
       {project.stack && project.stack.libraries.length > 0 && (
-        <p className="truncate text-xs text-muted" title={project.stack.libraries.join(" · ")}>
-          {project.stack.libraries.slice(0, 3).join(" · ")}
+        <p
+          className="flex items-baseline gap-1 text-xs text-muted"
+          title={stackHoverText(project.stack) ?? undefined}
+        >
+          <span className="truncate">{project.stack.libraries.slice(0, 3).join(" · ")}</span>
           {project.stack.libraries.length > 3 && (
-            <span className="text-muted/60"> +{project.stack.libraries.length - 3}</span>
+            <span className="shrink-0 text-muted/60">+{project.stack.libraries.length - 3}</span>
           )}
         </p>
       )}
