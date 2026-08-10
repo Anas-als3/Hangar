@@ -27,6 +27,37 @@ function pickDefaultScript(scripts: Record<string, string>): string | null {
   return keys.length > 0 ? keys[0] : null;
 }
 
+/**
+ * Fix 3 (plan 034): the TS mirror of `registry.rs`'s `extract_url_port` — deliberately not a full
+ * URL parser (no dependency for one call site), just enough to find an explicit `host:port`
+ * between the scheme and the next `/`, `?` or `#`. Kept in lockstep with the Rust original, which
+ * stays the tested canonical definition.
+ */
+function extractUrlPort(url: string): number | null {
+  const schemeIdx = url.indexOf("://");
+  const afterScheme = schemeIdx === -1 ? url : url.slice(schemeIdx + 3);
+  const cut = ["/", "?", "#"]
+    .map((c) => afterScheme.indexOf(c))
+    .filter((i) => i !== -1);
+  const authority = afterScheme.slice(0, cut.length > 0 ? Math.min(...cut) : afterScheme.length);
+  // Last colon, not first — an IPv6 literal's own colons (`[::1]:3000`) must not confuse the split.
+  const lastColon = authority.lastIndexOf(":");
+  if (lastColon === -1) return null;
+  const portStr = authority.slice(lastColon + 1);
+  if (!/^\d+$/.test(portStr)) return null;
+  const parsed = Number(portStr);
+  return parsed <= 65535 ? parsed : null;
+}
+
+/** SPEC.md §5: non-blocking warning text, mirroring `url_port_mismatch_warning` in `registry.rs`. */
+function urlPortMismatchWarning(url: string, port: number): string | null {
+  const trimmed = url.trim();
+  if (trimmed === "") return null;
+  const urlPort = extractUrlPort(trimmed);
+  if (urlPort === null || urlPort === port) return null;
+  return "URL port differs from the ready-check port.";
+}
+
 /** §5 `stack.detectedAt`: coarse relative time, same tone as §11's "no ticking seconds" rule. */
 function relativeTime(iso: string): string {
   const then = Date.parse(iso);
@@ -73,6 +104,11 @@ export function AddEditDialog() {
     setReadyTimeoutSec(editing?.readyTimeoutSec ?? 60);
     setStack(editing?.stack);
     setSaving(false);
+    // Fix 2 (plan 034): scripts/selectedScript/packageManager are `handleBrowse` output, not
+    // project fields — left unreset, they held the *previous* dialog target's values.
+    setScripts({});
+    setSelectedScript(null);
+    setPackageManager("npm");
     // Plan 025: opening Edit on a project that predates plan 023 (or whose package.json has
     // changed since) should pick up its stack without forcing a re-browse. `setStack` above
     // seeds from `editing?.stack` so the dialog renders immediately; this overwrites once the
@@ -117,12 +153,15 @@ export function AddEditDialog() {
       const defaultScript = pickDefaultScript(info.scripts);
       setSelectedScript(defaultScript);
       if (defaultScript) setCommand(commandFor(info.packageManager, defaultScript));
-      if (info.portSuggestion !== undefined) setPort(String(info.portSuggestion));
+      // §10 step 4: "a suggestion, never silent magic" — a folder with no detectable port must
+      // not keep showing the *previous* folder's port as if it were a suggestion for this one.
+      setPort(info.portSuggestion !== undefined ? String(info.portSuggestion) : "");
       setStack(info.stack);
     } catch {
       // §10 step 6: no/unparseable package.json falls back to manual command + port entry.
       setScripts({});
       setSelectedScript(null);
+      setPackageManager("npm");
       setStack(undefined);
     }
   }
@@ -134,7 +173,18 @@ export function AddEditDialog() {
 
   const parsedPort = Number(port);
   const portValid = port.trim() !== "" && Number.isInteger(parsedPort) && parsedPort > 0;
-  const canSave = name.trim() !== "" && path.trim() !== "" && command.trim() !== "" && portValid;
+  // Fix 4 (plan 034): the input's `min={1}` is advisory only — React does not enforce it, and
+  // `AttemptBudget::new(0)` kills the tree on the very first poll (§9 step 7).
+  const readyTimeoutValid = Number.isInteger(readyTimeoutSec) && readyTimeoutSec >= 1;
+  const canSave =
+    name.trim() !== "" &&
+    path.trim() !== "" &&
+    command.trim() !== "" &&
+    portValid &&
+    readyTimeoutValid;
+  // Fix 3 (plan 034): advisory only — SPEC.md §5 requires this to be non-blocking, so it must
+  // never be folded into `canSave`.
+  const urlPortWarning = portValid ? urlPortMismatchWarning(url, parsedPort) : null;
 
   async function handleSave() {
     if (!canSave) return;
@@ -276,6 +326,10 @@ export function AddEditDialog() {
               placeholder={`http://localhost:${port || editing.port}`}
               className="mt-1.5 w-full rounded-md border border-white/10 bg-bg px-3 py-2 font-mono text-sm text-text outline-none focus:border-accent"
             />
+            {/* §5: non-blocking — Save stays enabled, `canSave` never sees this. */}
+            {urlPortWarning && (
+              <p className="mt-1.5 text-xs text-status-danger">{urlPortWarning}</p>
+            )}
           </>
         )}
 
@@ -315,7 +369,11 @@ export function AddEditDialog() {
             type="button"
             disabled={saving || !canSave}
             onClick={() => void handleSave()}
-            title={!canSave ? "Name, folder, command and a valid port are required" : undefined}
+            title={
+              !canSave
+                ? "Name, folder, command, a valid port and a ready timeout of at least 1 second are required"
+                : undefined
+            }
             className="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-bg transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {saving ? "Saving…" : "Save"}

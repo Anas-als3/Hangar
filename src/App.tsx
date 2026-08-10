@@ -18,6 +18,7 @@ import SettingsDialog from "./components/SettingsDialog";
 import {
   loadRegistry,
   openAddDialog,
+  openLogs,
   openSettingsDialog,
   runningCount,
   setSearch,
@@ -78,8 +79,23 @@ function EmptyState() {
  * §7: command errors surface as toasts ("errors always say what happened and what to do next").
  * `tone` defaults to the original error styling — plan 029 adds `"neutral"` for the
  * move-to-folder confirmation, which is an announcement, not something gone wrong.
+ *
+ * Plan 034: `projectName` is looked up by the caller from `toastProjectId` — `undefined` when
+ * there is no id, or the id no longer resolves (project removed meanwhile). Only then does the
+ * message get a "<name> — " prefix and a Show logs button; a dangling id must never render a
+ * stale name.
  */
-function Toast({ message, tone = "error" }: { message: string; tone?: ToastTone }) {
+function Toast({
+  message,
+  tone = "error",
+  projectId,
+  projectName,
+}: {
+  message: string;
+  tone?: ToastTone;
+  projectId?: string;
+  projectName?: string;
+}) {
   return (
     <div
       role="alert"
@@ -87,7 +103,22 @@ function Toast({ message, tone = "error" }: { message: string; tone?: ToastTone 
         tone === "neutral" ? "border-white/10" : "border-status-danger/40"
       }`}
     >
-      <span className="min-w-0">{message}</span>
+      <span className="min-w-0">
+        {projectName ? <span className="font-medium">{projectName} — </span> : null}
+        {message}
+      </span>
+      {projectId && projectName && (
+        <button
+          type="button"
+          onClick={() => {
+            void openLogs(projectId);
+            setToast(null);
+          }}
+          className="shrink-0 text-xs text-muted underline-offset-2 transition-colors hover:text-text hover:underline"
+        >
+          Show logs
+        </button>
+      )}
       <button
         type="button"
         aria-label="Dismiss"
@@ -118,8 +149,9 @@ function SearchInput({ value }: { value: string }) {
 }
 
 function App() {
-  const { projects, registryError, loading, loadError, toast, toastTone, search } =
+  const { projects, registryError, loading, loadError, toast, toastTone, toastProjectId, search } =
     useHangarStore();
+  const toastProjectName = projects.find((p) => p.id === toastProjectId)?.name;
 
   useEffect(() => {
     void loadRegistry();
@@ -199,7 +231,14 @@ function App() {
       <AddEditDialog />
       <MoveToFolderDialog />
       <SettingsDialog />
-      {toast && <Toast message={toast} tone={toastTone} />}
+      {toast && (
+        <Toast
+          message={toast}
+          tone={toastTone}
+          projectId={toastProjectId ?? undefined}
+          projectName={toastProjectName}
+        />
+      )}
     </div>
   );
 }

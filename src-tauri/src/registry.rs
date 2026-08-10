@@ -386,9 +386,10 @@ pub fn port_conflict<'a>(
 /// Not called from `add_project`/`update_project`: SPEC.md §7 freezes both commands' return type
 /// as `ProjectView`, which has no field for an advisory message, and this warning must never
 /// become a rejection either — wiring it into a `Result<_, String>` command would risk exactly
-/// that the next time someone edits the error path. `AddEditDialog.tsx` mirrors this exact
-/// wording as the user types, live, which is what SPEC.md §5 asks for ("show a non-blocking
-/// validation warning"). This function stays the tested, canonical definition of the rule.
+/// that the next time someone edits the error path. `AddEditDialog.tsx` (fix 3, plan 034) now
+/// mirrors this exact wording as the user types, live — a TS port of `extract_url_port` below,
+/// kept in lockstep by hand. This function stays the tested, canonical definition of the rule;
+/// `#[allow(dead_code)]` stays too, because Rust itself still never calls it.
 #[allow(dead_code)]
 pub fn url_port_mismatch_warning(url: Option<&str>, port: u16) -> Option<String> {
     let url = url?.trim();
@@ -419,6 +420,20 @@ fn extract_url_port(url: &str) -> Option<u16> {
     // port is always after the LAST colon in the authority.
     let (_, port_str) = authority.rsplit_once(':')?;
     port_str.parse::<u16>().ok()
+}
+
+/// Fix 4 (plan 034): the input's `min={1}` (SPEC.md §10 step 4) is advisory only — HTML does not
+/// enforce it and React does not either — so `add_project`/`update_project` must reject a zero
+/// timeout themselves. `AttemptBudget::new(0)` reports `is_exhausted()` on the very first poll
+/// (§9 step 7), killing the tree the instant Run is clicked. Rejecting with a clear message, not
+/// silently clamping to some floor the user didn't ask for — §10 step 4's "never silent magic"
+/// applies to values as much as to prefills.
+pub fn validate_ready_timeout_sec(seconds: u32) -> Result<(), String> {
+    if seconds < 1 {
+        Err("Ready timeout must be at least 1 second.".to_string())
+    } else {
+        Ok(())
+    }
 }
 
 // -------------------------------------------------------------------------------------------
@@ -1107,6 +1122,13 @@ mod tests {
             url_port_mismatch_warning(Some("http://[::1]:3001"), 3000),
             Some("URL port differs from the ready-check port.".to_string())
         );
+    }
+
+    #[test]
+    fn a_zero_ready_timeout_is_rejected_not_clamped() {
+        assert!(validate_ready_timeout_sec(0).is_err());
+        assert!(validate_ready_timeout_sec(1).is_ok());
+        assert!(validate_ready_timeout_sec(60).is_ok());
     }
 
     /// Recursively asserts every object key in `value` is declared as a TypeScript property

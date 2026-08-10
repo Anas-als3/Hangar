@@ -85,6 +85,11 @@ export interface HangarState {
   toast: string | null;
   /** §11: the current toast's styling. Defaults to `"error"` — see `ToastTone`. */
   toastTone: ToastTone;
+  /** Plan 034: which project (if any) the current toast is about, so the toast can offer a
+   *  "Show logs" button that opens that project's panel. `null` for generic toasts, and cleared
+   *  whenever a toast is set without one, so a later unrelated toast never inherits a stale
+   *  project's button. */
+  toastProjectId: string | null;
   /** Which dialog (add/edit/settings) is open — see `DialogState`. */
   dialog: DialogState;
   /** Ephemeral header search term (plan 017) — never persisted, filters by name only. */
@@ -108,6 +113,7 @@ let state: HangarState = {
   notesFor: null,
   toast: null,
   toastTone: "error",
+  toastProjectId: null,
   dialog: null,
   search: "",
   openFolders: new Set(),
@@ -153,9 +159,17 @@ function errorMessage(err: unknown): string {
 /**
  * `tone` defaults to `"error"` — the styling every existing call site already gets, unchanged.
  * The move-to-folder confirmation is the one caller that passes `"neutral"` explicitly.
+ *
+ * `projectId` (plan 034) is a third optional parameter so the 13 call sites that don't know a
+ * project stay textually unchanged. Always cleared to `null` when omitted — a generic toast must
+ * never inherit an earlier toast's "Show logs" button.
  */
-export function setToast(message: string | null, tone: ToastTone = "error"): void {
-  setState({ toast: message, toastTone: tone });
+export function setToast(
+  message: string | null,
+  tone: ToastTone = "error",
+  projectId?: string,
+): void {
+  setState({ toast: message, toastTone: tone, toastProjectId: projectId ?? null });
 }
 
 /**
@@ -398,7 +412,7 @@ function applyStatusChanged(payload: StatusChangedPayload): void {
   // can only reach the user through this event. Scoped to `crashed`: `stop-failed` already toasts
   // from the rejected `stop_project` call, and toasting both would double up.
   if (payload.status === "crashed" && payload.message) {
-    setToast(payload.message);
+    setToast(payload.message, "error", payload.projectId);
   }
 }
 
@@ -442,7 +456,10 @@ export async function startProject(projectId: string): Promise<void> {
   try {
     await runProject(projectId);
   } catch (err) {
-    setToast(errorMessage(err));
+    // Plan 034: carries its project id even though its text can match the `crashed` event's
+    // toast (both come from `crash_run`'s single message) — whichever lands second decides
+    // whether the "Show logs" button renders, so both must know the project.
+    setToast(errorMessage(err), "error", projectId);
     // SPEC.md §5: pathExists must refresh "when Run is clicked" — a rejection is often exactly
     // that check failing, so the card should pick up the warning state that caused it.
     await loadRegistry();
