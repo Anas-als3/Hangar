@@ -20,6 +20,7 @@ import {
   openAddDialog,
   openLogs,
   openSettingsDialog,
+  refreshRegistryQuietly,
   runningCount,
   setSearch,
   setToast,
@@ -159,10 +160,12 @@ function App() {
 
   // SPEC.md §5: pathExists must refresh "at startup, on registry change, and when Run is
   // clicked". Window focus is the natural "user came back from the browser" moment for a folder
-  // that moved while Hangar sat in the background — no timer, so this never polls.
+  // that moved while Hangar sat in the background — no timer, so this never polls. Plan 038: the
+  // quiet refresh, not loadRegistry — coming back from the browser is the single most frequent
+  // event in the app, and blanking the whole grid to re-stat three paths is the worst trade.
   useEffect(() => {
     const onFocus = () => {
-      void loadRegistry();
+      void refreshRegistryQuietly();
     };
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
