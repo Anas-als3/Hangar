@@ -52,7 +52,7 @@ function FindingRow({ finding }: { finding: PreflightFinding }) {
 }
 
 export function DoctorPanel() {
-  const { doctorOpen, preflight, projects } = useHangarStore();
+  const { doctorOpen, preflight, preflightPending, projects } = useHangarStore();
 
   // §11: Esc closes the slide-over — the only keyboard shortcut in v0. No layered confirm to
   // dismiss first, because this panel opens none.
@@ -87,13 +87,18 @@ export function DoctorPanel() {
         <header className="flex items-center justify-between gap-3 border-b border-white/5 px-5 py-4">
           <div className="min-w-0">
             <h2 className="font-display text-base font-medium text-text">Doctor</h2>
-            <p className="mt-0.5 font-mono text-xs text-muted">as of {asOf}</p>
+            {/* §11: "the header states when the snapshot was taken." While a read is in flight the
+                honest header is that it is being taken, not a stale timestamp presented as now. */}
+            <p className="mt-0.5 font-mono text-xs text-muted">
+              {preflightPending ? "checking…" : `as of ${asOf}`}
+            </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <button
               type="button"
+              disabled={preflightPending}
               onClick={() => void refreshPreflight()}
-              className="rounded-md border border-white/10 px-3 py-1.5 text-sm text-muted transition-colors hover:bg-white/5 hover:text-text"
+              className="rounded-md border border-white/10 px-3 py-1.5 text-sm text-muted transition-colors hover:bg-white/5 hover:text-text disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted"
             >
               Refresh
             </button>
@@ -111,7 +116,16 @@ export function DoctorPanel() {
         {/* One section per project, in the array order `get_preflight` returned — never sorted by
             severity (§11, same reasoning as the grid never re-sorting). */}
         <ul className="flex-1 overflow-y-auto">
-          {!preflight || preflight.length === 0 ? (
+          {/* Plan 059 review finding 2: "not fetched yet" and "fetched, and there are none" are
+              different facts. Conflating them rendered "No registered projects." at every open —
+              false, and now visible for seconds once the dependency check is on. `preflight` is
+              kept on screen during a Refresh (same "don't blank a working view" rule as Ports),
+              so only the very first fetch shows the bare loading line. */}
+          {preflight === null ? (
+            <li className="px-5 py-4 text-sm text-muted">
+              {preflightPending ? "Checking…" : "Nothing checked yet."}
+            </li>
+          ) : preflight.length === 0 ? (
             <li className="px-5 py-4 text-sm text-muted">No registered projects.</li>
           ) : (
             preflight.map((report) => {
@@ -141,10 +155,15 @@ export function DoctorPanel() {
         </ul>
 
         {/* §11: the panel carries no control that changes anything. Saying so where the user can
-            see it is the point — a diagnostic they trust is worth more than one they fear. */}
-        <footer className="border-t border-white/5 px-5 py-3 text-xs text-muted">
+            see it is the point — a diagnostic they trust is worth more than one they fear.
+            Plan 059 adds the second half of that: this panel is the only place Hangar makes an
+            unprompted network call, so it says so here — worded to be true whether the setting is
+            on or off, which is why it needs no extra fetch to render. */}
+        <footer className="border-t border-white/5 px-5 py-3 text-xs leading-relaxed text-muted">
           Hangar only reads here — it changes nothing, and never blocks Run. Values in .env are
-          never read: only key names.
+          never read: only key names. Dependency checking is off unless you turn it on in Settings;
+          when it is on, the package names and versions in package-lock.json are sent to osv.dev,
+          and nothing else is.
         </footer>
       </aside>
     </div>
