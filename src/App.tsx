@@ -10,6 +10,7 @@
  */
 import { useEffect, useRef } from "react";
 import AddEditDialog from "./components/AddEditDialog";
+import InboxPanel from "./components/InboxPanel";
 import LogPanel from "./components/LogPanel";
 import MoveToFolderDialog from "./components/MoveToFolderDialog";
 import NotesPanel from "./components/NotesPanel";
@@ -20,6 +21,7 @@ import { lastSessionCluster } from "./session";
 import {
   loadRegistry,
   openAddDialog,
+  openInbox,
   openLogs,
   openPorts,
   openSettingsDialog,
@@ -235,15 +237,18 @@ function App() {
     notesFor,
     dialog,
     portsOpen,
+    inboxOpen,
   } = useHangarStore();
   const toastProject = projects.find((p) => p.id === toastProjectId);
   const toastProjectName = toastProject?.name;
 
   const contentRef = useRef<HTMLDivElement | null>(null);
   // §11's aria-modal on each overlay is a promise the DOM doesn't keep by itself (plan 039) —
-  // `inert` on the header+main wrapper below is the actual enforcement. Same four fields as
-  // the folder band's Esc guard in ProjectGrid.tsx (plan 041 adds `portsOpen` to both).
-  const overlayOpen = Boolean(dialog || openLogsFor || notesFor || portsOpen);
+  // `inert` on the header+main wrapper below is the actual enforcement. Same fields as the
+  // folder band's Esc guard in ProjectGrid.tsx (plan 041 adds `portsOpen` to both; SPEC.md §18 /
+  // plan 053 adds `inboxOpen` to both — a fifth over-the-grid surface must be in both, or one Esc
+  // fires two state changes).
+  const overlayOpen = Boolean(dialog || openLogsFor || notesFor || portsOpen || inboxOpen);
 
   useEffect(() => {
     void loadRegistry();
@@ -312,6 +317,17 @@ function App() {
               Ports
             </button>
           )}
+          {/* SPEC.md §18 / plan 053: a quiet Inbox button — no unread count yet (that needs the
+              local cache slice 2 builds; §11 forbids it making a network/keychain call itself). */}
+          {projects.length > 0 && (
+            <button
+              type="button"
+              onClick={() => void openInbox()}
+              className="rounded-md border border-white/10 px-3 py-1.5 text-sm text-muted transition-colors hover:bg-white/5 hover:text-text"
+            >
+              Inbox
+            </button>
+          )}
           <button
             type="button"
             onClick={openAddDialog}
@@ -368,6 +384,7 @@ function App() {
       <LogPanel />
       <NotesPanel />
       <PortsPanel />
+      <InboxPanel />
       <AddEditDialog />
       <MoveToFolderDialog />
       <SettingsDialog />
