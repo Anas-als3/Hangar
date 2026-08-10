@@ -412,7 +412,7 @@ function applyStatusChanged(payload: StatusChangedPayload): void {
   // can only reach the user through this event. Scoped to `crashed`: `stop-failed` already toasts
   // from the rejected `stop_project` call, and toasting both would double up.
   if (payload.status === "crashed" && payload.message) {
-    setToast(payload.message);
+    setToast(payload.message, "error", payload.projectId);
   }
 }
 
@@ -456,7 +456,10 @@ export async function startProject(projectId: string): Promise<void> {
   try {
     await runProject(projectId);
   } catch (err) {
-    setToast(errorMessage(err));
+    // Plan 034: carries its project id even though its text can match the `crashed` event's
+    // toast (both come from `crash_run`'s single message) — whichever lands second decides
+    // whether the "Show logs" button renders, so both must know the project.
+    setToast(errorMessage(err), "error", projectId);
     // SPEC.md §5: pathExists must refresh "when Run is clicked" — a rejection is often exactly
     // that check failing, so the card should pick up the warning state that caused it.
     await loadRegistry();
