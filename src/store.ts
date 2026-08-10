@@ -91,6 +91,15 @@ export interface HangarState {
    *  never touched by `loadRegistry`/`refreshRegistryQuietly`, never read by anything but the
    *  card's primary button. */
   pendingRun: Record<string, true>;
+  /** Plan 052 (§11's crash-reason amendment) — the text for a `crashed`/`stop-failed` card's
+   *  muted reason line, keyed by project id. Sourced ONLY from the `status-changed` event's
+   *  `message` field, in `applyStatusChanged` below — never from the log buffer: `crash_run`
+   *  (Rust) sends its message to this event alone and never writes it into the ring buffer, so a
+   *  last-line-of-the-log heuristic would print an unrelated earlier warning under a red pill as
+   *  though it were the cause. Ephemeral, like `phasesSeen`: never persisted, never touched by
+   *  `loadRegistry`/`refreshRegistryQuietly`, cleared the moment the project leaves
+   *  `crashed`/`stop-failed` for any other status (a fresh run wipes the old reason). */
+  lastFailure: Record<string, string>;
   /** Which project's slide-over is open (§11), or `null`. */
   openLogsFor: string | null;
   /** Which project's notes slide-over is open (§11), or `null`. */
