@@ -124,10 +124,32 @@ fn to_view(project: &Project, runtime: &RuntimeMap) -> ProjectView {
 
 #[tauri::command]
 pub async fn get_projects(state: State<'_, AppState>) -> Result<Vec<ProjectView>, String> {
-    let projects = state.projects.lock().await;
-    let runtime = state.runtime.lock().await;
+    // §4 / plan 010: snapshot (project, status) under both locks, THEN drop them, THEN stat each
+    // path — `Path::exists` is a syscall that can stall for seconds on an unreachable network
+    // mount or a stalled cloud-sync folder (SPEC §16), and this command now runs after nearly
+    // every mutation (plan 038's `refreshRegistryQuietly`), not just at startup. Mirrors
+    // `get_port_status`'s snapshot-then-probe shape; deliberately does NOT reuse `to_view`, which
+    // is still called with a live `runtime` guard by `add_project`/`update_project` (unchanged,
+    // out of this plan's scope).
+    let snapshot: Vec<(Project, Status)> = {
+        let projects = state.projects.lock().await;
+        let runtime = state.runtime.lock().await;
+        projects
+            .iter()
+            .map(|p| {
+                let status = runtime.get(&p.id).map(|r| r.status).unwrap_or(Status::Stopped);
+                (p.clone(), status)
+            })
+            .collect()
+    };
     // Array order is the display order — no sorting, ever (SPEC.md §11).
-    Ok(projects.iter().map(|p| to_view(p, &runtime)).collect())
+    Ok(snapshot
+        .into_iter()
+        .map(|(project, status)| {
+            let path_exists = Path::new(&project.path).exists();
+            ProjectView { project, status, path_exists }
+        })
+        .collect())
 }
 
 /// SPEC.md §7 `add_project` / §10 steps 1-6. The one place a fresh registry entry is created —
