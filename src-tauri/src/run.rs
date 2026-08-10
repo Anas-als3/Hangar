@@ -595,7 +595,22 @@ async fn await_ready_then_hand_off(app: AppHandle, project: Project, exited: wat
             if apply(&app, &project.id, Trigger::Ready, None).await.is_err() {
                 return;
             }
-            let _ = open_in_browser(&app, &project).await;
+            // SPEC.md §5 / §9 step 6 (added 2026-08-10): the status transition above is
+            // unconditional — only the browser hand-off is skipped when the opt-out is on. The log
+            // still records readiness either way; silence here would look like a failure.
+            if project.open_browser_on_ready.unwrap_or(true) {
+                let _ = open_in_browser(&app, &project).await;
+            } else {
+                process::append_system(
+                    &app,
+                    &project.id,
+                    format!(
+                        "ready on {} — browser opt-out is on for this project",
+                        project_url(&project)
+                    ),
+                )
+                .await;
+            }
         }
 
         ReadyOutcome::TimedOut => on_ready_timeout(&app, &project).await,
