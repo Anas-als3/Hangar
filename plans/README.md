@@ -69,6 +69,7 @@ conditions, and update your row below when done.
 | 056 | Integration ideas register — ranked, with evidence and counter-arguments | — | — | — | — | REGISTER (not a build plan) |
 | 057 | Preflight "Doctor" panel — env-key drift, node version, install-needed | — | P1 | M | 056 | DONE (merged `9ba0e56`, 2026-08-11) — 181 tests, was 168; serialization guard mutation-tested **and re-run independently by the reviewer**; **`engines.node` NOT checked — STOP condition fired, see below** |
 | 058 | Restore the Windows cross-check (feature-gate the TLS stack) | — | P1 | S-M | — | TODO |
+| 059 | Dependency health via OSV.dev — folded into the Doctor panel, opt-in | — | P2 | M | 057 | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
 
