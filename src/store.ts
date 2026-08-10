@@ -681,7 +681,7 @@ export async function updateProjectAction(project: Project): Promise<boolean> {
 export async function removeProjectAction(projectId: string): Promise<void> {
   try {
     await removeProject(projectId);
-    await loadRegistry();
+    await refreshRegistryQuietly();
   } catch (err) {
     setToast(errorMessage(err));
   }
