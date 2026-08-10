@@ -242,6 +242,47 @@ explicitly deferred to a human test on a Windows machine (SPEC.md §15 test 3).
   (`-force` if it reports busy) and delete the `rw.*.dmg` leftovers. Seen twice: 2026-08-09 and
   2026-08-10. Only affects the `.dmg`; the `.app` and the install are unaffected.
 
+## CI has never run. Not once. (found 2026-08-11)
+
+`gh run list` returns **60 runs, 60 failures** — every run in the repository's
+history. They are not build failures. Each job completes in **2–3 seconds**,
+with `runner_name` empty and `steps` empty: the jobs are never assigned a
+runner at all. That is an account/billing condition, not anything in the code.
+
+Why it matters more than it looks:
+
+- `.github/workflows/ci.yml` has four jobs, including a **`windows-latest`**
+  one that compiles *and runs* the `#[cfg(windows)]` Job Object kill path.
+  CLAUDE.md ranks §8's process rules as the highest-priority correctness
+  requirement in the project. **That code has never been executed by anything,
+  ever.**
+- Several plans in this directory say "CI's Windows job is the only real
+  check." That sentence was false when it was written.
+- Everything actually verified so far has been verified by hand on this
+  machine, on macOS only.
+
+The repo is **private**, and macOS runners bill at 10× against the free
+allowance. **This is the maintainer's to fix** — it needs a billing/spending-limit
+decision, and no amount of code changes it.
+
+## The Windows cross-check regressed, and it was the only Windows gate
+
+Before §18 slice 1, `cargo check --target x86_64-pc-windows-msvc` **passed** on
+this machine (with `/opt/homebrew/opt/llvm/bin` on PATH for `llvm-rc`).
+Measured directly at `2f68088`, the commit before `reqwest` entered Cargo.toml.
+
+It now fails: `reqwest → rustls → aws-lc-rs → aws-lc-sys`, whose C build script
+needs `windows.h`. Both executors that hit this could only prove it was not
+their own change; the bisect above is what proves it arrived with `reqwest`.
+
+`ring` does not rescue it either — swapping crypto backends hits the same wall
+(`fatal error: 'assert.h' file not found`). The blocker is the absent Windows
+CRT/SDK headers on macOS, not the choice of provider. Any rustls backend needs
+a C toolchain targeting Windows.
+
+So with CI dead, **§8's Windows code currently has no verification of any kind.**
+See plan 058.
+
 ## Environment facts (verified 2026-08-05, do not re-derive)
 
 - macOS 26.5.1, arm64. Node v24.18.0, npm 11.16.0. Rust 1.97.1 / cargo 1.97.1 (installed for this project).
