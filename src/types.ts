@@ -43,6 +43,12 @@ export interface Project {
   folderId?: string;
   /** The folder's display name, denormalised onto every member (SPEC.md §5, added 2026-08-10). */
   folderName?: string;
+  /**
+   * When `false`, reaching ready does not hand off to the browser — the status transition is
+   * unaffected, only the tab is skipped. Absent/`true` is the default (SPEC.md §5 / §9 step 6,
+   * added 2026-08-10).
+   */
+  openBrowserOnReady?: boolean;
 }
 
 /** SPEC.md §5 `Project.stack` / §7 `read_package_json`'s `stack` field. */
