@@ -136,6 +136,17 @@ pub async fn add_project(
 /// and comparing the rest with the derived `PartialEq` means any other field — including ones a
 /// future plan adds — is covered by the guard automatically, with nothing to remember to update
 /// here.
+///
+/// Also normalises out the **app-owned** set (SPEC.md §6's app-owned bullet, added 2026-08-10):
+/// `last_run_at` and `last_lockfile_hash`. The backend writes both without telling the frontend
+/// (`run.rs`'s per-Run save persists `last_run_at`; the install phase persists
+/// `last_lockfile_hash`), and `status-changed` carries only `status`, so the caller's payload is
+/// stale in these two fields for the entire updating/installing/starting window — exactly when a
+/// run-inert save (a note, a folder move) is most likely to happen. Leaving them in the comparison
+/// made the run-inert exemption unreachable during that window. This does not widen what a caller
+/// can change: `update_project` (see `merge_run_inert_fields` and step 3 below) preserves both
+/// fields from the stored record on every write, guarded or not, so a caller's value for them is
+/// never actually written regardless of what this comparison decides.
 fn is_run_inert_change(stored: &Project, incoming: &Project) -> bool {
     let mut stored = stored.clone();
     let mut incoming = incoming.clone();
@@ -145,6 +156,10 @@ fn is_run_inert_change(stored: &Project, incoming: &Project) -> bool {
     incoming.folder_id = None;
     stored.folder_name = None;
     incoming.folder_name = None;
+    stored.last_run_at = None;
+    incoming.last_run_at = None;
+    stored.last_lockfile_hash = None;
+    incoming.last_lockfile_hash = None;
     stored == incoming
 }
 
