@@ -40,8 +40,10 @@ conditions, and update your row below when done.
 | 027 | Move the phase strip's `seen` set into the store | — | P2 | S | — | DONE (merged `014dc57`, 2026-08-10) |
 | 028 | Folders, backend half — the two fields and the run-inert guard | — | P2 | M | SPEC `c53d767` | DONE (merged `0b21ee9`, 2026-08-10) |
 | 029 | Folders, frontend half — tile, band, Move to folder… | — | P2 | L | 028 | DONE (merged `5f91717`, 2026-08-10) |
+| 030 | Folders, the drag-to-merge gesture | — | P2 | M | 029 | DONE (merged `7597feb`, 2026-08-10) |
 | 031 | Folder tile: measure `min-h` against a real card; §11's `scrollIntoView` when a folder's earliest member leaves | — | P3 | S | 029 | TODO |
-| 030 | Folders, the drag-to-merge gesture | — | P3 | M | 029 | TODO |
+| 032 | Make the run-inert exemption actually reachable (guard staleness) | — | P1 | S | 028 | DONE (merged `548b748`, 2026-08-10) |
+| 033 | Four folder-UI defects found by review | — | P2 | S | 029, 030 | DONE (merged, 2026-08-10) |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
 
