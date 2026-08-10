@@ -207,10 +207,17 @@ function App() {
       {/* Plan 046 step 4: the one shared wrapper for both the header row and <main>'s content —
           already the `inert` boundary (plan 039), so capping width here instead of adding a new
           div keeps that guard intact. Capping only the grid was rejected: it would move every
-          Run button inward while "Add project" stayed pinned to the far edge. At 1200px this is
-          a no-op (1136 < 1280); at 1920/2560px it centres the content instead of sprawling to
-          7/10 columns. */}
-      <div ref={contentRef} className="mx-auto flex w-full max-w-[80rem] flex-1 flex-col">
+          Run button inward while "Add project" stayed pinned to the far edge.
+
+          LEFT-ALIGNED, not centred, and capped at 120rem rather than 80rem (fixed 2026-08-10,
+          same day 046 shipped). `mx-auto max-w-[80rem]` centred the whole app, so at fullscreen
+          on a 1512-logical display the "Hangar" title sat 200px+ from the left edge with a band
+          of empty background beside it — the maintainer's report, and correct: a launcher's mark
+          belongs in the top-left corner, not floating in the middle of the titlebar row.
+          `mr-auto` keeps that corner while the cap still stops a very wide monitor sprawling.
+          At 1512 and 1728 logical the 120rem cap is a no-op (6 and 7 columns, zero waste); it
+          only engages past ~1984px. */}
+      <div ref={contentRef} className="mr-auto flex w-full max-w-[120rem] flex-1 flex-col">
       <header className="flex items-center justify-between border-b border-white/5 px-8 py-5">
         <div className="flex items-center gap-3">
           {/* Plan 046 step 3: text-xl -> text-2xl (20 -> 24px). text-2xl's 32px line box is still
