@@ -45,7 +45,12 @@ export type DialogState =
   | { kind: "add" }
   | { kind: "edit"; project: Project }
   | { kind: "settings" }
+  | { kind: "move-folder"; project: Project }
   | null;
+
+/** §11: the neutral toast tone for non-error confirmations (the move-to-folder toast). Defaults
+ *  to `"error"` everywhere `setToast` is already called, so those call sites stay unchanged. */
+export type ToastTone = "error" | "neutral";
 
 /** Mirrors the Rust ring buffer (SPEC.md §8) so the panel's copy can never outgrow it. */
 export const LOG_BUFFER_LIMIT = 500;
@@ -67,6 +72,8 @@ export interface HangarState {
   notesFor: string | null;
   /** Last command error — §7: errors surface as toasts. */
   toast: string | null;
+  /** §11: the current toast's styling. Defaults to `"error"` — see `ToastTone`. */
+  toastTone: ToastTone;
   /** Which dialog (add/edit/settings) is open — see `DialogState`. */
   dialog: DialogState;
   /** Ephemeral header search term (plan 017) — never persisted, filters by name only. */
@@ -87,6 +94,7 @@ let state: HangarState = {
   openLogsFor: null,
   notesFor: null,
   toast: null,
+  toastTone: "error",
   dialog: null,
   search: "",
   openFolders: new Set(),
@@ -128,8 +136,12 @@ function errorMessage(err: unknown): string {
   return String(err);
 }
 
-export function setToast(message: string | null): void {
-  setState({ toast: message });
+/**
+ * `tone` defaults to `"error"` — the styling every existing call site already gets, unchanged.
+ * The move-to-folder confirmation is the one caller that passes `"neutral"` explicitly.
+ */
+export function setToast(message: string | null, tone: ToastTone = "error"): void {
+  setState({ toast: message, toastTone: tone });
 }
 
 /** Header search box (plan 017) — ephemeral view state, never written to disk. */
@@ -551,6 +563,11 @@ export function openEditDialog(project: Project): void {
 
 export function openSettingsDialog(): void {
   setState({ dialog: { kind: "settings" } });
+}
+
+/** §11 "Move to folder…" — the overflow-menu item `ProjectCard` adds (plan 029). */
+export function openMoveToFolderDialog(project: Project): void {
+  setState({ dialog: { kind: "move-folder", project } });
 }
 
 export function closeDialog(): void {
