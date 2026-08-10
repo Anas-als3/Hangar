@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!--
+    Hangar's app mark — SPEC.md §11's identity, drawn in §11's own tokens.
+
+    The form is a hangar door: a flat-shouldered arch, the silhouette you would
+    recognise from an airfield at a distance. Cut through it, a chevron pointing
+    up — the thing in the bay is about to leave. That is the product in one
+    shape: a place you keep projects, and a launch.
+
+    Sized for the smallest place it appears, not the largest. A first draft with
+    a finer chevron and a floor line was legible at 128px and collapsed into a
+    violet blob at 32px, which is the size that actually matters — a Dock icon
+    and a title-bar glyph. So: the arch fills most of the plate, the chevron is
+    a 96-unit stroke spanning two thirds of the arch's width (≈3px of a 32px
+    icon), and the floor line is gone. Two shapes, two colours, no detail that
+    cannot survive being 32 pixels wide.
+
+    Monochrome-geometric to match the app's existing glyph language (⋯ ✕ ⚙ + ›).
+    No gradient, no bevel, no depth — §11 bans all three inside the app, and an
+    icon should not contradict the window it opens.
+
+    Palette is §11's exactly: surface #16181E for the plate, accent violet
+    #8B7BF7 for the arch, background #0C0D11 for the negative space. No hue here
+    that the app does not already use.
+  -->
+  <defs>
+    <clipPath id="arch">
+      <path d="M 300 748 L 300 512 A 212 212 0 0 1 724 512 L 724 748 Z" />
+    </clipPath>
+  </defs>
+
+  <!-- The plate. A 100 inset with a 185 radius approximates macOS's squircle
+       closely enough at every size Tauri generates, without shipping a mask. -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="#16181E" />
+
+  <!-- One hairline lip, the same white/10 every card border uses, so the icon
+       sits on a dark Dock the way a card sits on the grid. -->
+  <rect x="100" y="100" width="824" height="824" rx="185"
+        fill="none" stroke="#FFFFFF" stroke-opacity="0.10" stroke-width="4" />
+
+  <!-- The hangar arch. -->
+  <path d="M 300 748 L 300 512 A 212 212 0 0 1 724 512 L 724 748 Z" fill="#8B7BF7" />
+
+  <!-- The launch chevron, cut out rather than drawn on top, so the mark stays
+       two colours at every size. Clipped to the arch so the stroke can never
+       spill past the silhouette. -->
+  <g clip-path="url(#arch)">
+    <path d="M 372 612 L 512 472 L 652 612" fill="none" stroke="#0C0D11"
+          stroke-width="96" stroke-linecap="round" stroke-linejoin="round" />
+  </g>
+</svg>
