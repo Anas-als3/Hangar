@@ -19,12 +19,22 @@ export function NotesPanel() {
   const [dirty, setDirty] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Mirrors `value`/`dirty` for flushPendingSave() (below), which the Esc handler also calls.
+  // That handler lives in an effect keyed only on [notesFor], so a closure over `value`/`dirty`
+  // directly would go stale between re-renders — it would keep whatever those were when
+  // [notesFor] last changed, not what was last typed. Refs are dereferenced at call time, not
+  // closure-creation time, so keeping these in lockstep with every setValue/setDirty call means
+  // flushPendingSave() always reads the latest keystroke no matter how old its own closure is.
+  const valueRef = useRef("");
+  const dirtyRef = useRef(false);
 
   // Seeds the textarea only when a (possibly different) project's panel opens. Deliberately NOT
   // keyed on `project` itself: a save triggers `loadRegistry()`, which would otherwise re-run
   // this effect mid-typing and clobber keystrokes made during that round trip with the slightly
   // stale value the save just wrote.
   useEffect(() => {
+    valueRef.current = project?.notes ?? "";
+    dirtyRef.current = false;
     setValue(project?.notes ?? "");
     setDirty(false);
     setJustSaved(false);
@@ -32,11 +42,18 @@ export function NotesPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [notesFor]);
 
-  // §11: Esc closes the slide-over — the only keyboard shortcut in v0.
+  // §11: Esc closes the slide-over — the only keyboard shortcut in v0. Must flush first: Esc
+  // fires no `blur`, so without this an edit made in the last 800ms of debounce is silently
+  // discarded (plan 039). flushPendingSave() (below) reads valueRef/dirtyRef rather than
+  // `value`/`dirty` directly, so this closure cannot go stale even though the effect only
+  // re-runs when `notesFor` changes.
   useEffect(() => {
     if (!notesFor) return;
     function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") closeNotes();
+      if (event.key === "Escape") {
+        flushPendingSave();
+        closeNotes();
+      }
     }
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
@@ -55,12 +72,15 @@ export function NotesPanel() {
     // stale `project` closure here (e.g. from before some other field changed elsewhere while
     // this panel sat open) can never leak a non-notes change into the saved payload.
     void saveNotesAction(project.id, text).then(() => {
+      dirtyRef.current = false;
       setDirty(false);
       setJustSaved(true);
     });
   }
 
   function handleChange(text: string): void {
+    valueRef.current = text;
+    dirtyRef.current = true;
     setValue(text);
     setDirty(true);
     setJustSaved(false);
@@ -68,9 +88,16 @@ export function NotesPanel() {
     debounceRef.current = setTimeout(() => save(text), SAVE_DEBOUNCE_MS);
   }
 
-  function handleBlur(): void {
+  // Extracted so both the blur route and the Esc route (above) flush the same way: clear the
+  // pending debounce, then save if there's unsaved text. Reads the refs, not `value`/`dirty`
+  // directly, for the reason explained where they're declared.
+  function flushPendingSave(): void {
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    if (dirty) save(value);
+    if (dirtyRef.current) save(valueRef.current);
+  }
+
+  function handleBlur(): void {
+    flushPendingSave();
   }
 
   if (!notesFor || !project) return null;
