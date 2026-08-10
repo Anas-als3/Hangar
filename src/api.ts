@@ -11,6 +11,7 @@ import type {
   LogLine,
   NewProject,
   PackageJsonInfo,
+  PortStatus,
   Project,
   ProjectView,
   RegistryError,
@@ -111,4 +112,13 @@ export function setSettings(s: Settings): Promise<void> {
  */
 export function getRegistryError(): Promise<RegistryError | null> {
   return invoke<RegistryError | null>("get_registry_error");
+}
+
+/**
+ * §7 `get_port_status` (added 2026-08-10, plan 041) — the §11 Ports panel's one snapshot read.
+ * Never rejects for an unidentifiable owner (see `PortStatus`'s doc comment in `types.ts`); a
+ * genuine rejection here is an IPC-level failure, handled by the store like every other action.
+ */
+export function getPortStatus(): Promise<PortStatus[]> {
+  return invoke<PortStatus[]>("get_port_status");
 }
