@@ -2498,6 +2498,26 @@ My Dev Server.exe                1 Console                    1     45,678 K
         assert!(!entry.child_registered);
     }
 
+    #[test]
+    fn the_kill_pid_does_not_survive_a_confirmed_death() {
+        // Plan 014 / SPEC.md §16: once death is confirmed the pgid must not survive to a retry, or
+        // a later Stop could re-signal a number the kernel has since handed to an unrelated process.
+        let (mut entry, _claim) = started_run();
+        let (_exit_tx, exit_rx) = watch::channel(false);
+        entry.register_child(Some(4321), exit_rx, "/usr/bin".to_string());
+        entry.status = Status::Stopping;
+
+        entry.retire_confirmed_kill_pid();
+
+        let target = entry.take_kill_target();
+        assert_eq!(target.pid, None, "the confirmed-dead pgid must not be handed to a retry");
+        assert!(
+            target.had_child,
+            "but the fact a child once existed must survive, so a retry with nothing left to \
+             signal reports an honest 'death cannot be confirmed' rather than 'nothing was ever here'"
+        );
+    }
+
     /// Plan 007 (review round): guards the ready-timeout's ownership claim structurally, not just
     /// as documentation. `claim_timeout_kill` must do BOTH halves — set `user_stop` so the exit
     /// watcher holds its announcement, AND hand back a usable kill target — or the §9 step 7 toast
