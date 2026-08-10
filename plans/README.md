@@ -66,6 +66,7 @@ conditions, and update your row below when done.
 | 053 | GitHub credential — slice 1 of §18 (token, keychain, panel shell) | — | P2 | M | SPEC §18, §11 inbox amendments | DONE (merged `f9b3fba`, 2026-08-11) — 162 tests, was 147; **keychain experiment still owed by a human** |
 | 054 | GitHub notification list — slice 2 | — | P2 | L | 053 | TODO |
 | 055 | GitHub read + reply — slice 3 | — | P2 | M | 054 | TODO |
+| 056 | Integration ideas register — ranked, with evidence and counter-arguments | — | — | — | — | REGISTER (not a build plan) |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
 
