@@ -23,7 +23,7 @@ import {
   stopProjectAction,
   useHangarStore,
 } from "../store";
-import { lastRunLabel, STATUS_LABEL, STATUS_TONE } from "../status";
+import { lastRunLabel, relativeTime, STATUS_LABEL, STATUS_TONE } from "../status";
 import type { ProjectStack, ProjectView, Status } from "../types";
 import { PhaseStrip } from "./PhaseStrip";
 
@@ -113,21 +113,28 @@ const MENU_ITEMS: ReadonlyArray<{
 ];
 
 export function ProjectCard({ project }: { project: ProjectView }) {
-  const [menuOpen, setMenuOpen] = useState(false);
+  // Plan 037 step 2: one overlay at a time (the `⋯` menu or the stack reveal panel), each with its
+  // own ref. The outside-click effect below tests whichever ref matches the open overlay — reusing
+  // `menuRef` for the panel would read every click inside the panel as "outside" and close it
+  // instantly, since `menuRef` sits on the header div and does not contain the libraries line.
+  const [overlay, setOverlay] = useState<"menu" | "stack" | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const stackRef = useRef<HTMLDivElement | null>(null);
+  const menuOpen = overlay === "menu";
 
   useEffect(() => {
-    if (!menuOpen) return;
+    if (!overlay) return;
+    const activeRef = overlay === "menu" ? menuRef : stackRef;
     function onPointerDown(event: MouseEvent) {
-      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
-        setMenuOpen(false);
+      if (activeRef.current && !activeRef.current.contains(event.target as Node)) {
+        setOverlay(null);
       }
     }
     document.addEventListener("mousedown", onPointerDown);
     return () => {
       document.removeEventListener("mousedown", onPointerDown);
     };
-  }, [menuOpen]);
+  }, [overlay]);
 
   // Plan 033 defect 1: this used to be a `document` keydown listener, but member cards live
   // inside an open folder's band, which also owns Esc (ProjectGrid.tsx). A document listener
@@ -137,9 +144,34 @@ export function ProjectCard({ project }: { project: ProjectView }) {
   const onMenuKeyDown: KeyboardEventHandler<HTMLDivElement> = (event) => {
     if (event.key === "Escape" && menuOpen) {
       event.stopPropagation();
-      setMenuOpen(false);
+      setOverlay(null);
     }
   };
+
+  // Plan 037 step 3: same scoped-Esc shape as `onMenuKeyDown` above — stopPropagation only while
+  // the panel is actually open, so a closed panel never eats the folder band's own Esc.
+  const stackOpen = overlay === "stack";
+  const stackButtonRef = useRef<HTMLButtonElement | null>(null);
+  const stackPanelRef = useRef<HTMLDivElement | null>(null);
+  const onStackKeyDown: KeyboardEventHandler<HTMLDivElement> = (event) => {
+    if (event.key === "Escape" && stackOpen) {
+      event.stopPropagation();
+      setOverlay(null);
+    }
+  };
+
+  // Plan 037 step 3.7: focus the panel the instant it opens; when it closes (Esc, outside click,
+  // or a second `+N` press), return focus to the `+N` button rather than dropping it to `<body>`.
+  const wasStackOpenRef = useRef(false);
+  useEffect(() => {
+    if (stackOpen) {
+      wasStackOpenRef.current = true;
+      stackPanelRef.current?.focus();
+    } else if (wasStackOpenRef.current) {
+      wasStackOpenRef.current = false;
+      stackButtonRef.current?.focus();
+    }
+  }, [stackOpen]);
 
   // §11: a crashed card's primary button is Run (retry). While `stopping` it is a disabled
   // spinner. A `stop-failed` card keeps Stop, enabled, so the user can retry the kill (§6/§12).
@@ -170,7 +202,12 @@ export function ProjectCard({ project }: { project: ProjectView }) {
       onPointerDown={(e) => startCardDrag(e.nativeEvent, project.id)}
       className={`hangar-fade-in relative flex select-none flex-col gap-2 rounded-lg border border-white/5 bg-surface p-3 transition-transform duration-150 [-webkit-user-drag:none] hover:-translate-y-0.5 ${
         isArmedTarget ? "ring-2 ring-accent" : ""
-      } ${isDragSource ? "opacity-40" : ""}`}
+      } ${isDragSource ? "opacity-40" : ""} ${
+        // Plan 037 step 3.4: `hover:-translate-y-0.5` above makes this card its own stacking
+        // context, so a `z-10` child stays sealed inside it unless the card itself is lifted
+        // above later-DOM-order siblings while the panel is open.
+        stackOpen ? "z-20" : ""
+      }`}
     >
       <header className="flex items-start justify-between gap-3">
         <div className="min-w-0">
@@ -195,7 +232,7 @@ export function ProjectCard({ project }: { project: ProjectView }) {
             }
             aria-haspopup="menu"
             aria-expanded={menuOpen}
-            onClick={() => setMenuOpen((open) => !open)}
+            onClick={() => setOverlay((open) => (open === "menu" ? null : "menu"))}
             className="relative rounded px-2 py-1 text-muted transition-colors hover:bg-white/5 hover:text-text"
           >
             <span aria-hidden="true">⋯</span>
@@ -221,7 +258,7 @@ export function ProjectCard({ project }: { project: ProjectView }) {
                   onClick={
                     action
                       ? () => {
-                          setMenuOpen(false);
+                          setOverlay(null);
                           action(project.id);
                         }
                       : undefined
@@ -285,23 +322,62 @@ export function ProjectCard({ project }: { project: ProjectView }) {
         )}
       </div>
 
-      {/* §11 libraries line (added 2026-08-10): capped, display-only, never a control — the
-          full list stays in the Edit dialog. `title` (plan 035 step 1) carries framework +
-          the full library list, not just the visible three, since this line can be the only
-          stack element a card shows. `+N` (plan 035 step 1) is now a `shrink-0` sibling of the
-          `truncate` span, not text inside it — otherwise the one visible signal that a hover
-          exists is clipped by the same ellipsis as the names. Sibling of the status row, not a
-          fourth item inside it — a fourth item there is what pushes a 14 rem card to wrap. */}
+      {/* §11 libraries line (added 2026-08-10, `+N` reveal added 2026-08-10 — plan 037): capped,
+          display-only text, with the one permitted exception ("the count is the one exception to
+          'never controls'"): `+N` is a button revealing the full detected stack in a read-only
+          panel. `title` (plan 035 step 1) still carries the whole stack for a plain hover. `<div>`
+          + `relative` (not `<p>`) because the panel is `absolute`: a `<ul>` inside a `<p>` is
+          invalid nesting the browser would hoist out, and the panel's `w-full` needs a block
+          containing block, not the inline `+5` glyph. */}
       {project.stack && project.stack.libraries.length > 0 && (
-        <p
-          className="flex items-baseline gap-1 text-xs text-muted"
+        <div
+          className="relative flex items-baseline gap-1 text-xs text-muted"
           title={stackHoverText(project.stack) ?? undefined}
+          ref={stackRef}
+          onKeyDown={onStackKeyDown}
         >
           <span className="truncate">{project.stack.libraries.slice(0, 3).join(" · ")}</span>
           {project.stack.libraries.length > 3 && (
-            <span className="shrink-0 text-muted/60">+{project.stack.libraries.length - 3}</span>
+            <button
+              type="button"
+              ref={stackButtonRef}
+              aria-label={`+${project.stack.libraries.length - 3} more — show the full stack for ${project.name}`}
+              aria-expanded={stackOpen}
+              onClick={() => setOverlay((open) => (open === "stack" ? null : "stack"))}
+              className="shrink-0 rounded-sm border-0 bg-transparent p-0 text-muted/60 transition-colors hover:text-text"
+            >
+              +{project.stack.libraries.length - 3}
+            </button>
           )}
-        </p>
+          {stackOpen && (
+            <div
+              ref={stackPanelRef}
+              tabIndex={-1}
+              aria-label={`Detected stack for ${project.name}`}
+              onPointerDown={(e) => e.stopPropagation()}
+              className="absolute left-0 bottom-full z-10 mb-2 w-full max-h-52 overflow-y-auto select-text rounded-md border border-white/10 bg-bg p-2.5 shadow-lg"
+            >
+              <ul className="flex flex-wrap gap-1">
+                {project.stack.framework && (
+                  <li className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 font-mono text-xs text-muted">
+                    {project.stack.framework}
+                  </li>
+                )}
+                {project.stack.libraries.map((lib) => (
+                  <li
+                    key={lib}
+                    className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 font-mono text-xs text-muted"
+                  >
+                    {lib}
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-2 text-xs text-muted/60">
+                detected {relativeTime(project.stack.detectedAt)}
+              </p>
+            </div>
+          )}
+        </div>
       )}
 
       {/* §11 time slot — uptime while running (30 s granularity, no ticking seconds),

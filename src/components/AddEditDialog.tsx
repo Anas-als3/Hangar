@@ -10,6 +10,7 @@ import { useEffect, useState } from "react";
 import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
 import { readPackageJson } from "../api";
 import { addProjectAction, closeDialog, updateProjectAction, useHangarStore } from "../store";
+import { relativeTime } from "../status";
 import type { PackageJsonInfo, ProjectStack } from "../types";
 
 /** §10 step 3: `npm run <script>` / `pnpm run <script>` / `yarn <script>` per package manager. */
@@ -56,18 +57,6 @@ function urlPortMismatchWarning(url: string, port: number): string | null {
   const urlPort = extractUrlPort(trimmed);
   if (urlPort === null || urlPort === port) return null;
   return "URL port differs from the ready-check port.";
-}
-
-/** §5 `stack.detectedAt`: coarse relative time, same tone as §11's "no ticking seconds" rule. */
-function relativeTime(iso: string): string {
-  const then = Date.parse(iso);
-  if (Number.isNaN(then)) return "unknown time";
-  const minutes = Math.floor((Date.now() - then) / 60_000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes} m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} h ago`;
-  return `${Math.floor(hours / 24)} d ago`;
 }
 
 export function AddEditDialog() {

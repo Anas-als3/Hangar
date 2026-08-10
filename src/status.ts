@@ -42,3 +42,17 @@ export function lastRunLabel(iso: string | undefined): string {
   const days = Math.floor(hours / 24);
   return `Last run ${days} d ago`;
 }
+
+/** §5 `stack.detectedAt`: coarse relative time, same tone as §11's "no ticking seconds" rule.
+ *  Moved from `AddEditDialog.tsx` (plan 037 step 1) — the stack reveal panel needs it too, and
+ *  two copies of a relative-time formatter would drift. */
+export function relativeTime(iso: string): string {
+  const then = Date.parse(iso);
+  if (Number.isNaN(then)) return "unknown time";
+  const minutes = Math.floor((Date.now() - then) / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} h ago`;
+  return `${Math.floor(hours / 24)} d ago`;
+}
