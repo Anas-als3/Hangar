@@ -468,11 +468,23 @@ function applyStatusChanged(payload: StatusChangedPayload): void {
   const pendingRun = { ...state.pendingRun };
   delete pendingRun[payload.projectId];
 
+  // Plan 052 (§11 crash-reason amendment): `lastFailure` is sourced from THIS event's `message`
+  // only — never the log buffer (see the field's own comment above for why). Set on `crashed` or
+  // `stop-failed` when a message rides along; cleared on any other status, so a fresh run wipes
+  // the old reason before the next one can arrive.
+  const lastFailure = { ...state.lastFailure };
+  if ((payload.status === "crashed" || payload.status === "stop-failed") && payload.message) {
+    lastFailure[payload.projectId] = payload.message;
+  } else if (payload.status !== "crashed" && payload.status !== "stop-failed") {
+    delete lastFailure[payload.projectId];
+  }
+
   setState({
     projects,
     logs: runIsStarting ? { ...state.logs, [payload.projectId]: [] } : state.logs,
     phasesSeen: { ...state.phasesSeen, [payload.projectId]: nextPhases },
     pendingRun,
+    lastFailure,
   });
 
   // §7: "message carries e.g. the crash reason". A Run is fire-and-forget, so everything that goes
