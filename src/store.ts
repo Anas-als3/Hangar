@@ -618,3 +618,83 @@ export async function stopIfRunningWithConfirm(project: ProjectView): Promise<bo
   const after = state.projects.find((p) => p.id === project.id)?.status;
   return after === "stopped" || after === "crashed";
 }
+
+// ---------------------------------------------------------------------------------------------
+// Folders (§11 "Folders", §5 folder semantics) — moveToFolder is the required non-drag route
+// both into and out of a folder; rename/ungroup are the folder tile's own menu actions.
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * `target` is a discriminated union rather than a bare string: on the wire an existing folder id
+ * and a freshly typed folder name are both strings, so collapsing them into one `string | null`
+ * parameter would make "is this id-shaped or name-shaped" a runtime guess. `MoveToFolderDialog`
+ * already has both the id and the display name of every folder it lists, so passing both costs it
+ * nothing and saves a lookup here.
+ */
+export type FolderTarget =
+  | { kind: "existing"; folderId: string; folderName: string }
+  | { kind: "new"; name: string }
+  | { kind: "none" };
+
+/** §5: folder ids are opaque and generated, never derived from the name. `crypto.randomUUID()` is
+ *  available in WKWebView (§4/scope: no id library added for this one call site). */
+function generateFolderId(): string {
+  return crypto.randomUUID();
+}
+
+/**
+ * §11 "Move to folder…" — reads the project fresh via `findProject` at call time, never from a
+ * value captured earlier, copying `saveNotesAction`'s defence exactly: a stale snapshot taken
+ * before an `await` (e.g. from when the dialog first opened) could roll back whatever a run wrote
+ * to some other field in the meantime.
+ */
+export async function moveToFolder(projectId: string, target: FolderTarget): Promise<boolean> {
+  const project = findProject(projectId);
+  if (!project) return false;
+  const patch =
+    target.kind === "none"
+      ? { folderId: undefined, folderName: undefined }
+      : target.kind === "new"
+        ? { folderId: generateFolderId(), folderName: target.name }
+        : { folderId: target.folderId, folderName: target.folderName };
+  try {
+    await updateProject({ ...project, ...patch });
+    await loadRegistry();
+    return true;
+  } catch (err) {
+    setToast(errorMessage(err));
+    return false;
+  }
+}
+
+/**
+ * §11 folder tile menu — Rename. N `updateProject` calls, one per member (§5: `folderName` is
+ * denormalised, there is no folder record to write once). If a call partway through fails, §5
+ * already specifies the recovery: "the earliest member in array order supplies the displayed
+ * name, with the next rename repairing the rest" — no special rollback needed here.
+ */
+export async function renameFolder(folderId: string, name: string): Promise<void> {
+  const members = state.projects.filter((p) => p.folderId === folderId);
+  try {
+    for (const member of members) {
+      await updateProject({ ...member, folderName: name });
+    }
+    await loadRegistry();
+  } catch (err) {
+    setToast(errorMessage(err));
+  }
+}
+
+/** §11 folder tile menu — Ungroup. Clears both folder fields on every member; the folder record
+ *  is only ever the set of projects sharing an id, so there is nothing else to clean up (§5). */
+export async function ungroupFolder(folderId: string): Promise<void> {
+  const members = state.projects.filter((p) => p.folderId === folderId);
+  try {
+    for (const member of members) {
+      await updateProject({ ...member, folderId: undefined, folderName: undefined });
+    }
+    await loadRegistry();
+  } catch (err) {
+    setToast(errorMessage(err));
+  }
+}
