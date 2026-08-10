@@ -6,9 +6,28 @@
 > report — do not improvise. When done, update the status row for this plan
 > in `plans/README.md`.
 >
-> **Drift check (run first)**: `git diff --stat 91be38f..HEAD -- src-tauri/src/run.rs src-tauri/src/commands.rs`
-> On any change, compare the "Current state" excerpts against the live code;
-> on a mismatch, STOP.
+> **Drift check (run first)**: `grep -n "save_projects" src-tauri/src/run.rs` and
+> `sed -n '/pub async fn get_projects/,/^}/p' src-tauri/src/commands.rs`.
+>
+> **Re-verified 2026-08-10 at commit `e7ecada`** — both findings still hold, and
+> the line numbers below have moved since this plan was written (2026-08-06).
+> Work from the *shape* described, not from the old line numbers:
+>
+> - `run.rs` has **two** in-lock saves now, not one: the `lastRunAt` + `stack`
+>   write in `run_project` (~:830-839) and the `lastLockfileHash` + `stack`
+>   write in `store_lockfile_hash` (~:1076-1085). Plan 025 added the second.
+>   Both are `{ let mut projects = state.projects.lock().await; …;
+>   registry::save_projects(&state.config_dir, &projects).err() }` — the save,
+>   and its `fsync`, happen inside the block that holds the lock.
+> - `commands.rs`'s `get_projects` still takes **both** locks and then calls
+>   `to_view`, which calls `Path::new(&project.path).exists()` per project.
+>
+> **This has become more urgent, not less.** When the plan was written,
+> `get_projects` ran at startup and on window focus. Plan 038 made
+> `refreshRegistryQuietly` the default post-mutation refresh, so it now also
+> runs after every add, edit, remove, folder move, rename, ungroup, notes
+> autosave and rejected Run — and plan 035 calls it again whenever a project
+> reaches `running`.
 
 ## Status
 
