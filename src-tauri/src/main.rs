@@ -114,6 +114,11 @@ fn main() {
             commands::set_github_token,
             #[cfg(feature = "github")]
             commands::remove_github_token,
+            // SPEC.md §18 / §11's Inbox entry (amended 2026-08-11) — plan 062. Same subset rule as
+            // the three above. It reads GitHub's check-runs API only: no write of any kind, and
+            // never `/notifications`, which can mutate read state.
+            #[cfg(feature = "github")]
+            commands::get_build_status,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

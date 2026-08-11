@@ -4,10 +4,14 @@
 
 use std::time::Duration;
 
+use super::build::{CheckRun, ChecksPage};
 use super::error::GithubError;
 use super::secret::Secret;
 
 const API_BASE: &str = "https://api.github.com";
+/// The single page `check_runs` asks for. A response this long may have more behind it, which is
+/// the whole reason [`ChecksPage::complete`] exists.
+const PER_PAGE: u32 = 100;
 /// The client's own per-request timeout.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// The outer bound wrapping the whole send — deliberately a little larger than
@@ -76,6 +80,74 @@ pub async fn validate(secret: &Secret) -> Result<ValidatedUser, GithubError> {
     let scopes = scopes_from_headers(&headers);
     let body: UserBody = response.json().await.map_err(|_| GithubError::Offline)?;
     Ok(ValidatedUser { login: body.login, scopes })
+}
+
+/// GET /repos/{owner}/{repo}/commits/{ref}/check-runs — the ONE read plan 062 adds, and the whole
+/// of it: one request per distinct repository, on the same `send()` above, bounded by the same two
+/// timeouts, with the same zero retries.
+///
+/// # Why this endpoint, and not the two alternatives
+///
+/// - **Not `/notifications`.** It is the wrong *shape*: fifty unread notifications on the measured
+///   account are fifty rows all saying "CI workflow run failed for main branch", when the question
+///   is a single piece of state. It is also the wrong *verb* — the notifications API is the one
+///   GitHub surface here that can mutate read state, and Hangar reads.
+/// - **Not `/commits/{ref}/status`** (the combined status endpoint). That is the *legacy commit
+///   status* API, which GitHub Actions never writes to. On a repository whose CI is Actions —
+///   exactly the measured case, where all 50 notifications were `CheckSuite` — it answers with an
+///   empty `statuses` array and a `state` of `pending`, forever. A red build reported as "pending",
+///   and a repository with no CI at all reported identically: the precise failure mode
+///   `BuildState` exists to prevent.
+/// - **`/check-runs` is the API the Checks system populates**, which is the system those
+///   `CheckSuite` notifications come from, and it works for any provider that reports checks rather
+///   than for Actions alone.
+///
+/// `{ref}` is the project's locally checked-out branch (see `repo::RepoTarget::git_ref`): a branch
+/// name is documented as a valid ref for this endpoint, it needs no second call to learn the
+/// repository's default branch, and it answers "is the build red for what I am working on".
+/// **GitHub resolves that ref on its own side**, so the answer describes the branch's tip *there*,
+/// not the working copy here — a green row for a branch with unpushed commits means the pushed part
+/// is green, and says nothing about the part that was never sent. That is inherent to asking a
+/// remote about a build; the row states the branch it asked about so the reading is not ambiguous.
+///
+/// Every path segment is validated in `repo.rs` (`is_valid_segment` / `is_url_safe_ref`) before it
+/// reaches this function, so a `.git/config` cannot steer the request at another endpoint.
+///
+/// A **404 is `Unexpected { status: 404 }`**, and the caller turns it into an *absent* row, not an
+/// unknown one: the repository is invisible to this token, or the branch was never pushed, and
+/// SPEC.md §11 says such a project "is simply absent". Absent is not green, so the guard holds.
+pub async fn check_runs(
+    secret: &Secret,
+    owner: &str,
+    repo: &str,
+    git_ref: &str,
+) -> Result<ChecksPage, GithubError> {
+    /// Only the array is read. `total_count` is deliberately not bound: whether it counts before or
+    /// after `filter=latest` was not verifiable here, and completeness is read off the page length
+    /// instead, which is unambiguous — see [`ChecksPage`].
+    #[derive(serde::Deserialize)]
+    struct CheckRunsBody {
+        check_runs: Vec<CheckRun>,
+    }
+
+    // `filter=latest` is the endpoint's own default, stated rather than implied: it returns the
+    // most recent run per check name, so a re-run does not make an old red result outvote today's
+    // green one.
+    let path = format!(
+        "/repos/{owner}/{repo}/commits/{git_ref}/check-runs?filter=latest&per_page={PER_PAGE}"
+    );
+    let response = send(secret, &path).await?;
+    let status = response.status();
+    let headers = response.headers().clone();
+    if !status.is_success() {
+        return Err(classify_error(status, &headers));
+    }
+    let body: CheckRunsBody = response.json().await.map_err(|_| GithubError::Offline)?;
+    // ONE request, no pagination follow (§18: one attempt, bounded twice, no retries). A response
+    // that filled the page may therefore be hiding the failing run, and `complete: false` is what
+    // stops the rest of the fold calling that green.
+    let complete = body.check_runs.len() < PER_PAGE as usize;
+    Ok(ChecksPage { runs: body.check_runs, complete })
 }
 
 fn header_str<'a>(headers: &'a reqwest::header::HeaderMap, name: &str) -> Option<&'a str> {

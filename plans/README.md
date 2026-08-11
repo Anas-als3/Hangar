@@ -72,7 +72,7 @@ conditions, and update your row below when done.
 | 059 | Dependency health via OSV.dev — folded into the Doctor panel, opt-in | — | P2 | M | 057 | DONE (2026-08-11) — 200 tests, was 181; **four guards mutation-tested**, two of them re-run independently by the reviewer; new `osv` cargo feature keeps `--no-default-features` (the Windows gate) dropping `reqwest`; no new §7 command, no new dependency; **live API called: 173 packages → 0 advisories**, which is this feature's honest output today; **⚠️ amends §3's OUT list — awaiting the maintainer's ruling, see below** |
 | 060 | Launch line — unpushed commits / uncommitted / crashed, on open | — | **P1** | M | 057 | DONE (merged `28931f2`, 2026-08-11) — 210 tests, was 200; 16 `node --test` cases; **the plan's own `git grep` done-criterion was vacuous — no `--untracked`, so it never read the new file it existed to check; the executor caught it and replaced its blacklist test with a whitelist that parses the command string**; **"silent when clean" mutation-tested**; **new `vcs.rs`, not an extension of `get_preflight`** (§11 forbids the Doctor's report on the startup path, and plan 059 put a network call behind it) — see below; **`+N` is a plain count, not a Doctor button**, because the §11 amendment this plan itself mandates says the only action is scroll-into-view; no network call, no git write, `git grep` for the five forbidden verbs still empty |
 | 061 | Open in editor in one click — promote it out of the overflow menu | — | P1 | S | — | DONE (2026-08-11) — **no capability added**: one icon-only button sharing the `⋯` row, calling the same `openInEditorAction` the menu row already called; **zero `.rs` files touched**, tests unchanged at 191/3; §11 amended with the one-control budget; the overflow row stays; disabled only on `pathExists === false`, never by a §6 status; **no test added — the change is JSX with one negation already spelled out for Run in the same file, and this repo has no React harness (the plan's own instruction)**; **not visually verified — the executor is headless** |
-| 062 | Inbox rebuilt around build state — supersedes 054 | — | **P1** | M | 053 | TODO |
+| 062 | Inbox rebuilt around build state — supersedes 054 | — | **P1** | M | 053 | **BUILT, uncommitted** (worktree, 2026-08-11) — 213 tests, was 191; SPEC §11 Inbox rewritten + §18 scope amended; **verified against fixtures only, never the live API** (see Environment facts) |
 | 063 | Tell the user when they are running an old build | — | **P1** | S | — | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
@@ -449,6 +449,20 @@ hardware settles SPEC.md §15 test 3.
   ad-hoc-signature/CDHash behaviour the plan describes actually resolves, "denied" can never
   render as "no token" in the UI. A human with the built app should still run the real
   store/quit/relaunch/rebuild/`tauri dev` sequence the plan describes and correct this entry.
+
+- **Plan 062 was never run against the live GitHub API — reported plainly rather than implied.**
+  The executor had no token (§18 stores it in the OS keychain, and reading it would have meant
+  using the maintainer's real credential from a background agent) and made **zero** network
+  calls. Everything is verified against fixtures: `github/repo.rs` against real `.git`
+  directories in temp dirs, `github/build.rs` against captured check-run JSON shapes. Two
+  consequences a human should settle with one real open of the panel:
+  **(a)** whether `GET /repos/{owner}/{repo}/commits/{ref}/check-runs` answers as expected for
+  the locally checked-out branch — the code uses the branch from `.git/HEAD` precisely because a
+  branch name is *documented* as a valid `{ref}` while the literal `HEAD` is not, but documented
+  is not the same as observed; and **(b)** whether a 404 (repository invisible to the token, or a
+  local branch never pushed) is the right call to render as *absent* — SPEC.md §11 mandates
+  absent, and absent is never green, but a maintainer who expects a row and sees none should read
+  this entry rather than assume a bug.
 
 ## Known residuals (recorded, not lost)
 

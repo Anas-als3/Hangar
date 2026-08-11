@@ -1049,10 +1049,13 @@ impl GithubStatus {
 }
 
 /// SPEC.md §18's reviewable invariant: NOT `impl From<GithubError> for String` (nor for
-/// `GithubStatus`) — a plain, explicitly-named function called at exactly the two places in this
-/// file a `GithubError` is ever turned into user-facing text, so a reviewer sees every
-/// conversion. Every branch is secret-free by construction: `GithubError`'s own fields are status
-/// codes and timestamps, never request/response bodies (see its own guard test).
+/// `GithubStatus`) — a plain, explicitly-named function, and **the only** place in the entire
+/// codebase a `GithubError` becomes user-facing text, so a reviewer sees every conversion. It is
+/// called from three sites, all in this file and all named: `get_github_status`,
+/// `set_github_token`, and `row_from_error` below (which delegates here rather than writing a
+/// second vocabulary for the same six failures). Every branch is secret-free by construction:
+/// `GithubError`'s own fields are status codes and timestamps, never request/response bodies (see
+/// its own guard test).
 #[cfg(feature = "github")]
 fn status_from_error(err: GithubError, had_stored_token: bool) -> GithubStatus {
     let (state, detail, reset_at, retry_after_sec) = match err {
@@ -1110,6 +1113,42 @@ fn status_from_error(err: GithubError, had_stored_token: bool) -> GithubStatus {
     }
 }
 
+/// What the session cache had to say about the one credential. Three values, never two: SPEC.md
+/// §18's "a denied keychain must never render as 'no token'" is enforced by the type, not by a
+/// convention every caller has to remember.
+#[cfg(feature = "github")]
+enum SessionSecret {
+    Denied,
+    Absent,
+    Present(github::secret::Secret),
+}
+
+/// SPEC.md §18's "nothing runs without a token", in one place so both GitHub reads obey it
+/// identically. Reads the keychain at most once per session (`SessionCache::resolved`) so a
+/// session never re-triggers the OS permission prompt; whether a cached token is still *valid* is
+/// a separate, time-varying question each caller re-asks over the network.
+///
+/// Holds `GithubState`'s own mutex and nothing else — never `AppState`'s (SPEC.md §18: "no GitHub
+/// call may hold any lock §8 or §9 uses").
+#[cfg(feature = "github")]
+async fn resolve_session_secret(github: &GithubState) -> SessionSecret {
+    let mut session = github.session.lock().await;
+    if !session.resolved {
+        match github::keychain::read() {
+            Ok(found) => session.secret = found,
+            Err(_) => session.keychain_denied = true,
+        }
+        session.resolved = true;
+    }
+    if session.keychain_denied {
+        return SessionSecret::Denied;
+    }
+    match session.secret.clone() {
+        Some(secret) => SessionSecret::Present(secret),
+        None => SessionSecret::Absent,
+    }
+}
+
 /// SPEC.md §18 / plan 053 `get_github_status` — the ONE read the Inbox panel calls to render its
 /// own state in place (§11: "none of them is a toast, and none is an error"). Reads the keychain
 /// at most once per session (`SessionCache::resolved`); re-validates over the network on every
@@ -1118,22 +1157,10 @@ fn status_from_error(err: GithubError, had_stored_token: bool) -> GithubStatus {
 #[cfg(feature = "github")]
 #[tauri::command]
 pub async fn get_github_status(github: State<'_, GithubState>) -> Result<GithubStatus, String> {
-    let secret = {
-        let mut session = github.session.lock().await;
-        if !session.resolved {
-            match github::keychain::read() {
-                Ok(found) => session.secret = found,
-                Err(_) => session.keychain_denied = true,
-            }
-            session.resolved = true;
-        }
-        if session.keychain_denied {
-            return Ok(GithubStatus::keychain_denied());
-        }
-        session.secret.clone()
-    };
-    let Some(secret) = secret else {
-        return Ok(GithubStatus::disconnected());
+    let secret = match resolve_session_secret(&github).await {
+        SessionSecret::Denied => return Ok(GithubStatus::keychain_denied()),
+        SessionSecret::Absent => return Ok(GithubStatus::disconnected()),
+        SessionSecret::Present(secret) => secret,
     };
     match github::client::validate(&secret).await {
         Ok(user) => Ok(GithubStatus::connected(user.login, user.scopes)),
@@ -1187,6 +1214,202 @@ pub async fn remove_github_token(github: State<'_, GithubState>) -> Result<(), S
     session.keychain_denied = false;
     session.secret = None;
     Ok(())
+}
+
+// -------------------------------------------------------------------------------------------
+// SPEC.md §18 / §11's Inbox entry (amended 2026-08-11) — plan 062: the Inbox's one read.
+// -------------------------------------------------------------------------------------------
+
+/// The wire shape for `get_build_status`. SPEC.md §7 addition (plan 062) — an addition to the
+/// frozen list, never a rename or a reshape of anything in it.
+///
+/// Two fields, and deliberately not a third: there is **no connection-status field** here. Whether
+/// there is a usable credential is `get_github_status`'s question, the panel already asks it, and a
+/// second copy of the answer on this shape would be a field that can disagree with the first. When
+/// there is no credential this returns an empty `repos` and the caller — which knows why — renders
+/// its Connect form. Once there is one, every failure (offline included) lives on a row as
+/// `unknown`, so an offline read shows the repositories it knows about and says it could not check
+/// them, rather than silently emptying the panel.
+#[cfg(feature = "github")]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildReport {
+    /// One row per distinct repository, in `projects.json` array order — never sorted by state,
+    /// for the same reason the grid, the Ports panel and the Doctor panel are never re-sorted.
+    pub repos: Vec<github::build::RepoBuild>,
+    /// ISO — one timestamp shared by every row in a single call. §11: a stale green is worse than
+    /// no green, so the panel states when the snapshot was taken.
+    pub checked_at: String,
+}
+
+/// Turns a failed request into a row. **Delegates to `status_from_error`** rather than writing a
+/// second vocabulary for the same six failures, so SPEC.md §18's rule that every `GithubError`
+/// becomes text at one named place still holds exactly.
+///
+/// `None` means *no row at all*: a 404 says GitHub does not admit this repository exists for this
+/// token — it is private and unshared, it was renamed, or the local branch was never pushed — and
+/// SPEC.md §11 is explicit that such a project "is simply absent, with no toast, no banner and no
+/// `system` log line". Absent is not green, so the could-not-run guard is untouched.
+#[cfg(feature = "github")]
+fn row_from_error(
+    err: GithubError,
+    repository: String,
+    branch: Option<String>,
+    project_ids: Vec<String>,
+) -> Option<github::build::RepoBuild> {
+    if matches!(err, GithubError::Unexpected { status: 404 }) {
+        return None;
+    }
+    let status = status_from_error(err, true);
+    let detail = status
+        .detail
+        .unwrap_or_else(|| "Hangar could not check this repository.".to_string());
+    let mut row = github::build::RepoBuild::unknown(repository, branch, project_ids, detail);
+    row.reset_at = status.reset_at;
+    row.retry_after_sec = status.retry_after_sec;
+    Some(row)
+}
+
+/// SPEC.md §7 addition (plan 062) `get_build_status` — one row per distinct GitHub repository the
+/// registry's projects point at: is its build red or green right now.
+///
+/// **A state, not a feed.** Measured against the live account on 2026-08-11, all 50 unread
+/// notifications were `CheckSuite` results and there were 0 issues, 0 pull requests and 0
+/// discussions. Listing those notifications would have produced fifty identical rows saying "CI
+/// workflow run failed"; one line per repository is the fact anyone acts on.
+///
+/// **Nothing here writes to GitHub, and nothing here reads `/notifications`** — that endpoint can
+/// mutate read state, and Hangar reads.
+///
+/// Never runs before the grid renders and never without a token (§18): the only caller is the
+/// Inbox panel opening or being refreshed, and the first thing this does is ask the session cache
+/// for a credential.
+///
+/// `Ok` for every network outcome. Offline, rate-limited and an unexpected status are all rows
+/// with `state: "unknown"`, because §7 turns every `Err` into a toast and §18 makes offline a
+/// first-class state. `Err` is reserved for the command itself failing to run.
+#[cfg(feature = "github")]
+#[tauri::command]
+pub async fn get_build_status(
+    state: State<'_, AppState>,
+    github: State<'_, GithubState>,
+) -> Result<BuildReport, String> {
+    let checked_at = crate::run::iso8601_utc(SystemTime::now());
+
+    // §18: "nothing runs without a token." Before the registry is even read, and before a single
+    // file is touched. No credential means no rows — the caller renders the Connect form.
+    let secret = match resolve_session_secret(&github).await {
+        SessionSecret::Denied | SessionSecret::Absent => {
+            return Ok(BuildReport { repos: Vec::new(), checked_at })
+        }
+        SessionSecret::Present(secret) => secret,
+    };
+
+    // Lock discipline (§4 / plan 010, same shape as `get_port_status`, `get_preflight` and
+    // `get_vcs_status`): snapshot under the lock, THEN drop it, THEN touch the filesystem.
+    let snapshot: Vec<(String, PathBuf)> = {
+        let projects = state.projects.lock().await;
+        projects.iter().map(|p| (p.id.clone(), PathBuf::from(&p.path))).collect()
+    };
+
+    // Detection is two small file reads per project (`.git/config`, `.git/HEAD`) and a project may
+    // sit on a stalled network mount — the whole walk goes to the blocking pool, exactly as plan
+    // 010 requires of `get_projects`' `Path::exists`.
+    let dirs: Vec<PathBuf> = snapshot.iter().map(|(_, dir)| dir.clone()).collect();
+    let detected: Vec<Option<github::repo::RepoTarget>> =
+        tauri::async_runtime::spawn_blocking(move || {
+            dirs.iter().map(|dir| github::repo::detect(dir)).collect::<Vec<_>>()
+        })
+        // Fixed sentence, no `JoinError` interpolated — same reasoning as the per-repository arm
+        // below: this task ran under the same lexical scope as the credential, and a panic payload
+        // is not a string this feature has audited (SPEC.md §18).
+        .await
+        .map_err(|_| "The repository scan did not finish, so no builds were read.".to_string())?;
+
+    // §11: "the unit is the repository, never the project" — two cards sharing one repo root
+    // collapse to one row, in `projects.json` array order. A project with no GitHub repository is
+    // simply absent: no row, no error, no toast.
+    let mut targets: Vec<(github::repo::RepoTarget, Vec<String>)> = Vec::new();
+    for ((project_id, _), detected) in snapshot.iter().zip(detected) {
+        let Some(target) = detected else { continue };
+        match targets.iter_mut().find(|(existing, _)| existing.same_row(&target)) {
+            Some((_, project_ids)) => project_ids.push(project_id.clone()),
+            None => targets.push((target, vec![project_id.clone()])),
+        }
+    }
+
+    // One request per repository, spawned first and awaited afterwards, so N repositories cost one
+    // timeout rather than N. No retries anywhere (§18) — one attempt, bounded twice by `client.rs`.
+    //
+    // The fan-out is deliberately uncapped. N here is the number of *distinct repositories in the
+    // registry* — a handful, far under GitHub's own concurrency guidance — and batching would trade
+    // that for ceil(N/batch) sequential timeouts on a hung network, which is the case where the
+    // user is already waiting. If Hangar ever grows a library where this is a real number, a cap
+    // belongs here, not a retry.
+    let mut pending = Vec::with_capacity(targets.len());
+    for (target, project_ids) in targets {
+        let repository = target.slug();
+        let Some(git_ref) = target.git_ref.clone() else {
+            // A repository whose ref could not be determined is UNKNOWN — never skipped, and never
+            // green. This is the local half of the could-not-run guard.
+            pending.push(Err(github::build::RepoBuild::unknown(
+                repository,
+                None,
+                project_ids,
+                "Hangar could not tell which branch this repository is on, so its build was not \
+                 checked."
+                    .to_string(),
+            )));
+            continue;
+        };
+        let task_secret = secret.clone();
+        let task_owner = target.owner.clone();
+        let task_repo = target.repo.clone();
+        let task_ref = git_ref.clone();
+        pending.push(Ok((
+            repository,
+            git_ref,
+            project_ids,
+            tauri::async_runtime::spawn(async move {
+                github::client::check_runs(&task_secret, &task_owner, &task_repo, &task_ref).await
+            }),
+        )));
+    }
+
+    let mut repos = Vec::with_capacity(pending.len());
+    for entry in pending {
+        match entry {
+            Err(row) => repos.push(row),
+            Ok((repository, git_ref, project_ids, handle)) => match handle.await {
+                Ok(Ok(page)) => repos.push(github::build::RepoBuild::new(
+                    repository,
+                    Some(git_ref),
+                    project_ids,
+                    github::build::summarize(&page),
+                )),
+                Ok(Err(e)) => {
+                    if let Some(row) = row_from_error(e, repository, Some(git_ref), project_ids) {
+                        repos.push(row);
+                    }
+                }
+                // A panicked or cancelled task is a check that did not run. It becomes an
+                // `unknown` row, never a dropped one and never a green one.
+                // A panicked or cancelled task is a check that did not run. The sentence is FIXED —
+                // the `JoinError` is deliberately not formatted into it, because the task that
+                // panicked is the one holding the `Secret` and a panic payload is the one string in
+                // this feature nobody has audited (SPEC.md §18).
+                Err(_) => repos.push(github::build::RepoBuild::unknown(
+                    repository,
+                    Some(git_ref),
+                    project_ids,
+                    "The check for this repository did not finish, so its build was not read."
+                        .to_string(),
+                )),
+            },
+        }
+    }
+
+    Ok(BuildReport { repos, checked_at })
 }
 
 #[cfg(test)]
@@ -1698,5 +1921,88 @@ mod tests {
         let port = port_with(1, Some(full_holder()));
         let pid = free_port_gate(&port, Status::Stopped, CLAIMED_START).unwrap();
         assert_eq!(pid, 4321);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // SPEC.md §18 / plan 062 — `row_from_error`, the other half of "a check that could not run
+    // must never render as a passing build". `summarize` owns the fold; this owns every way a
+    // request can fail, and it is the half a mutation would otherwise slip through unnoticed.
+    // ---------------------------------------------------------------------------------------
+
+    #[cfg(feature = "github")]
+    fn a_row(err: GithubError) -> Option<github::build::RepoBuild> {
+        row_from_error(err, "anas/hangar".to_string(), Some("main".to_string()), vec!["abc".into()])
+    }
+
+    /// Every failure that is not a 404 becomes an `Unknown` row **with a sentence** — never a
+    /// dropped row (which would read as "this project is fine"), and never a `Passing` one.
+    ///
+    /// Mutation-tested: making the body `_ => None` (drop every failed row, so an offline read
+    /// quietly empties the panel) fails the first assertion of every iteration below.
+    #[cfg(feature = "github")]
+    #[test]
+    fn every_request_failure_except_a_404_is_an_unknown_row_with_a_reason() {
+        let failures = [
+            GithubError::Offline,
+            GithubError::Unauthorized,
+            GithubError::InsufficientScope,
+            GithubError::RateLimited { reset_at: "2026-08-11T09:00:00Z".into() },
+            GithubError::SecondaryRateLimited { retry_after_sec: 60 },
+            GithubError::Unexpected { status: 500 },
+            GithubError::Unexpected { status: 502 },
+        ];
+        for err in failures {
+            let row = a_row(err.clone()).unwrap_or_else(|| panic!("{err:?} must still be a row"));
+            assert_eq!(row.state, github::build::BuildState::Unknown, "{err:?}");
+            assert_ne!(row.state, github::build::BuildState::Passing, "{err:?}");
+            assert!(row.detail.is_some(), "{err:?} must say why");
+        }
+    }
+
+    /// SPEC.md §18: "rate limits are shown, never swallowed… and says when it resets." Both limits
+    /// carry their own timing field onto the row rather than losing it in the sentence.
+    #[cfg(feature = "github")]
+    #[test]
+    fn both_rate_limits_carry_their_timing_onto_the_row() {
+        let primary = a_row(GithubError::RateLimited { reset_at: "2026-08-11T09:00:00Z".into() })
+            .expect("a rate-limited repository still has a row");
+        assert_eq!(primary.reset_at.as_deref(), Some("2026-08-11T09:00:00Z"));
+        assert_eq!(primary.retry_after_sec, None);
+
+        let secondary = a_row(GithubError::SecondaryRateLimited { retry_after_sec: 60 })
+            .expect("a throttled repository still has a row");
+        assert_eq!(secondary.retry_after_sec, Some(60));
+        assert_eq!(secondary.reset_at, None);
+    }
+
+    /// The one failure that is *absent* rather than unknown: a 404 is GitHub saying it does not
+    /// admit this repository exists for this token, and SPEC.md §11 is explicit that such a project
+    /// "is simply absent, with no toast, no banner and no `system` log line". Absent is not green,
+    /// so the guard is untouched — but it is a different fact from `unknown` and must stay one.
+    #[cfg(feature = "github")]
+    #[test]
+    fn a_404_is_absent_rather_than_unknown() {
+        assert!(a_row(GithubError::Unexpected { status: 404 }).is_none());
+        // …and nothing near it is swept up with it.
+        assert!(a_row(GithubError::Unexpected { status: 403 }).is_some());
+        assert!(a_row(GithubError::Unexpected { status: 405 }).is_some());
+    }
+
+    /// No sentence this function can produce carries a credential: it delegates to
+    /// `status_from_error`, whose inputs are `GithubError`'s own status codes and timestamps.
+    #[cfg(feature = "github")]
+    #[test]
+    fn no_row_detail_can_carry_a_token() {
+        for err in [
+            GithubError::Unauthorized,
+            GithubError::InsufficientScope,
+            GithubError::Unexpected { status: 500 },
+        ] {
+            let row = a_row(err).unwrap();
+            let wire = serde_json::to_string(&row).unwrap();
+            assert!(!wire.contains("ghp_"), "{wire}");
+            assert!(!wire.contains("Bearer"), "{wire}");
+            assert!(!wire.contains("Authorization"), "{wire}");
+        }
     }
 }
