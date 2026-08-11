@@ -1230,7 +1230,7 @@ mod tests {
 
     #[test]
     fn a_project_present_in_the_runtime_map_reflects_its_status() {
-        let project = sample_project("/tmp/ielts");
+        let project = sample_project("/tmp/example-app");
         let mut runtime = RuntimeMap::new();
         runtime.insert(
             project.id.clone(),
@@ -1252,7 +1252,7 @@ mod tests {
 
     #[test]
     fn a_notes_only_change_is_permitted_while_running() {
-        let stored = sample_project("/tmp/ielts");
+        let stored = sample_project("/tmp/example-app");
         let incoming = Project {
             notes: Some("tried the staging flag".into()),
             ..stored.clone()
@@ -1263,7 +1263,7 @@ mod tests {
 
     #[test]
     fn a_change_to_any_other_field_is_still_rejected_while_running() {
-        let stored = sample_project("/tmp/ielts");
+        let stored = sample_project("/tmp/example-app");
         let incoming = Project {
             port: 3001,
             ..stored.clone()
@@ -1276,7 +1276,7 @@ mod tests {
 
     #[test]
     fn both_kinds_of_change_are_permitted_while_stopped() {
-        let stored = sample_project("/tmp/ielts");
+        let stored = sample_project("/tmp/example-app");
         let notes_only = Project {
             notes: Some("tried the staging flag".into()),
             ..stored.clone()
@@ -1302,7 +1302,7 @@ mod tests {
         // not just the `None` -> `Some(..)` direction.
         let stored = Project {
             notes: Some("old note".into()),
-            ..sample_project("/tmp/ielts")
+            ..sample_project("/tmp/example-app")
         };
         let incoming = Project {
             notes: None,
@@ -1314,7 +1314,7 @@ mod tests {
 
     #[test]
     fn an_identical_project_is_a_no_op_permitted_while_running() {
-        let stored = sample_project("/tmp/ielts");
+        let stored = sample_project("/tmp/example-app");
         let incoming = stored.clone();
         let is_run_inert = is_run_inert_change(&stored, &incoming);
         assert!(guard_update(is_run_inert, &stored, Status::Running).is_ok());
@@ -1327,7 +1327,7 @@ mod tests {
 
     #[test]
     fn a_folder_id_only_change_is_permitted_while_running() {
-        let stored = sample_project("/tmp/ielts");
+        let stored = sample_project("/tmp/example-app");
         let incoming = Project {
             folder_id: Some("fld_1".into()),
             ..stored.clone()
@@ -1338,7 +1338,7 @@ mod tests {
 
     #[test]
     fn a_folder_name_only_change_is_permitted_while_running() {
-        let stored = sample_project("/tmp/ielts");
+        let stored = sample_project("/tmp/example-app");
         let incoming = Project {
             folder_name: Some("Client Work".into()),
             ..stored.clone()
@@ -1349,7 +1349,7 @@ mod tests {
 
     #[test]
     fn notes_and_folder_id_together_are_still_run_inert() {
-        let stored = sample_project("/tmp/ielts");
+        let stored = sample_project("/tmp/example-app");
         let incoming = Project {
             notes: Some("tried the staging flag".into()),
             folder_id: Some("fld_1".into()),
@@ -1361,7 +1361,7 @@ mod tests {
 
     #[test]
     fn a_port_only_change_is_still_rejected_while_running() {
-        let stored = sample_project("/tmp/ielts");
+        let stored = sample_project("/tmp/example-app");
         let incoming = Project {
             port: 3001,
             ..stored.clone()
@@ -1376,7 +1376,7 @@ mod tests {
     fn folder_id_cannot_smuggle_a_port_change_past_the_guard() {
         // Proves the run-inert exemption cannot be used as a smuggling route: pairing a
         // run-inert field with a guarded one must still be guarded.
-        let stored = sample_project("/tmp/ielts");
+        let stored = sample_project("/tmp/example-app");
         let incoming = Project {
             folder_id: Some("fld_1".into()),
             port: 3001,
@@ -1395,7 +1395,7 @@ mod tests {
         // run-inert save from that stale copy must not roll it back (SPEC.md §6, plan 028).
         let mut stored = Project {
             last_run_at: Some("2026-08-05T10:00:00Z".into()),
-            ..sample_project("/tmp/ielts")
+            ..sample_project("/tmp/example-app")
         };
         let incoming = Project {
             last_run_at: None, // stale frontend copy
@@ -1415,7 +1415,7 @@ mod tests {
 
     #[test]
     fn an_open_browser_on_ready_only_change_is_permitted_while_running() {
-        let stored = sample_project("/tmp/ielts");
+        let stored = sample_project("/tmp/example-app");
         let incoming = Project {
             open_browser_on_ready: Some(false),
             ..stored.clone()
@@ -1426,7 +1426,7 @@ mod tests {
 
     #[test]
     fn open_browser_on_ready_cannot_smuggle_a_port_change_past_the_guard() {
-        let stored = sample_project("/tmp/ielts");
+        let stored = sample_project("/tmp/example-app");
         let incoming = Project {
             open_browser_on_ready: Some(false),
             port: 3001,
@@ -1443,7 +1443,7 @@ mod tests {
         let mut stored = Project {
             last_run_at: Some("2026-08-05T10:00:00Z".into()),
             stack: Some(sample_stack("2026-08-05T10:00:00Z")),
-            ..sample_project("/tmp/ielts")
+            ..sample_project("/tmp/example-app")
         };
         let incoming = Project {
             last_run_at: None, // stale frontend copy
@@ -1464,7 +1464,7 @@ mod tests {
         // alone made every save from the dialog guarded.
         let stored = Project {
             open_browser_on_ready: None,
-            ..sample_project("/tmp/ielts")
+            ..sample_project("/tmp/example-app")
         };
         let incoming = Project {
             open_browser_on_ready: Some(true),
@@ -1490,7 +1490,7 @@ mod tests {
         // guard_update would reject with "stop it first".
         let stored = Project {
             last_run_at: Some("2026-08-10T09:00:00Z".into()),
-            ..sample_project("/tmp/ielts")
+            ..sample_project("/tmp/example-app")
         };
         let incoming = Project {
             folder_id: Some("fld_1".into()),
@@ -1506,7 +1506,7 @@ mod tests {
     fn a_stale_last_lockfile_hash_does_not_defeat_a_notes_save_while_installing() {
         let stored = Project {
             last_lockfile_hash: Some("freshhash".into()),
-            ..sample_project("/tmp/ielts")
+            ..sample_project("/tmp/example-app")
         };
         let incoming = Project {
             notes: Some("tried the staging flag".into()),
@@ -1531,7 +1531,7 @@ mod tests {
         // registry.rs:559 re-stamps `detected_at` on every Run, same staleness as `lastRunAt`.
         let stored = Project {
             stack: Some(sample_stack("2026-08-10T09:00:00Z")),
-            ..sample_project("/tmp/ielts")
+            ..sample_project("/tmp/example-app")
         };
         let incoming = Project {
             folder_id: Some("fld_1".into()),
@@ -1547,7 +1547,7 @@ mod tests {
     fn a_stack_differing_in_framework_is_still_guarded_while_running() {
         let stored = Project {
             stack: Some(sample_stack("2026-08-10T09:00:00Z")),
-            ..sample_project("/tmp/ielts")
+            ..sample_project("/tmp/example-app")
         };
         let mut changed_stack = sample_stack("2026-08-10T09:00:00Z");
         changed_stack.framework = Some("Remix".into());
@@ -1567,7 +1567,7 @@ mod tests {
         // with a genuinely guarded change must still be guarded.
         let stored = Project {
             last_run_at: Some("2026-08-10T09:00:00Z".into()),
-            ..sample_project("/tmp/ielts")
+            ..sample_project("/tmp/example-app")
         };
         let incoming = Project {
             port: 3001,
@@ -1589,7 +1589,7 @@ mod tests {
         let stored = Project {
             last_run_at: Some("2026-08-10T09:00:00Z".into()),
             last_lockfile_hash: Some("freshhash".into()),
-            ..sample_project("/tmp/ielts")
+            ..sample_project("/tmp/example-app")
         };
         let incoming = Project {
             name: "Example App (renamed)".into(),

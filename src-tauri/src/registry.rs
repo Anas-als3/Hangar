@@ -202,7 +202,7 @@ pub struct RegistryLoad {
 /// warning state. That is expected and correct.
 fn seed_projects() -> Vec<Project> {
     vec![Project {
-        id: "ielts-coach".to_string(),
+        id: "example-app".to_string(),
         name: "Example App".to_string(),
         path: "REPLACE_WITH_ABSOLUTE_PATH".to_string(),
         command: "npm run dev".to_string(),
@@ -876,7 +876,7 @@ mod tests {
         Project {
             id: "abc123".into(),
             name: "Example App".into(),
-            path: "/tmp/ielts".into(),
+            path: "/tmp/example-app".into(),
             command: "npm run dev".into(),
             port: 3000,
             url: Some("http://localhost:3000".into()),
@@ -1108,7 +1108,7 @@ mod tests {
         assert_eq!(
             json,
             concat!(
-                r#"{"id":"abc123","name":"Example App","path":"/tmp/ielts","command":"npm run dev","port":3000,"#,
+                r#"{"id":"abc123","name":"Example App","path":"/tmp/example-app","command":"npm run dev","port":3000,"#,
                 r#""url":"http://localhost:3000","updateOnRun":true,"readyTimeoutSec":60,"#,
                 r#""lastLockfileHash":"deadbeef","lastRunAt":"2026-08-05T10:00:00Z","#,
                 r#""notes":"Remember to try the staging flag next time.","#,

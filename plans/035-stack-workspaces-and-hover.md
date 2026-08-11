@@ -32,7 +32,7 @@ The maintainer, verbatim:
 
 > the stack dont show on the auto job applier, i want the stack to show, like
 > when i hover on it it should show the stack used to build it, and also in the
-> ielts coach it should show more than just vite alone like the whole stack
+> example app it should show more than just vite alone like the whole stack
 
 Three separate defects, all confirmed against their real registry:
 

@@ -2069,9 +2069,9 @@ mod tests {
 
     fn project_fixture(url: Option<&str>) -> Project {
         Project {
-            id: "ielts-coach".into(),
+            id: "example-app".into(),
             name: "Example App".into(),
-            path: "/tmp/ielts".into(),
+            path: "/tmp/example-app".into(),
             command: "npm run dev".into(),
             port: 3000,
             url: url.map(str::to_string),

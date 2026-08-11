@@ -108,7 +108,7 @@ interface ProjectView extends Project {
 ```json
 [
   {
-    "id": "ielts-coach",
+    "id": "example-app",
     "name": "Example App",
     "path": "REPLACE_WITH_ABSOLUTE_PATH",
     "command": "npm run dev",
