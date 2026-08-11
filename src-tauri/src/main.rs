@@ -8,11 +8,6 @@ mod env_resolve;
 // script and back to compiling SPEC.md §8's `#[cfg(windows)]` code.
 #[cfg(feature = "github")]
 mod github;
-// Plan 059: the other `reqwest` user, gated on the same terms and for the same reason. Default-ON,
-// so the shipped app always has it — but the CHECK itself is off until the user turns it on, which
-// is a settings question, never a compile-time one (see `osv.rs`'s RULE 1).
-#[cfg(feature = "osv")]
-mod osv;
 mod preflight;
 mod process;
 mod registry;

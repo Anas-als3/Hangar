@@ -116,9 +116,9 @@ export function DoctorPanel() {
         {/* One section per project, in the array order `get_preflight` returned — never sorted by
             severity (§11, same reasoning as the grid never re-sorting). */}
         <ul className="flex-1 overflow-y-auto">
-          {/* Plan 059 review finding 2: "not fetched yet" and "fetched, and there are none" are
-              different facts. Conflating them rendered "No registered projects." at every open —
-              false, and now visible for seconds once the dependency check is on. `preflight` is
+          {/* "Not fetched yet" and "fetched, and there are none" are different facts. Conflating
+              them rendered "No registered projects." at every open — a false statement shown for
+              as long as the call took, to a user who does have projects registered. `preflight` is
               kept on screen during a Refresh (same "don't blank a working view" rule as Ports),
               so only the very first fetch shows the bare loading line. */}
           {preflight === null ? (
@@ -155,15 +155,10 @@ export function DoctorPanel() {
         </ul>
 
         {/* §11: the panel carries no control that changes anything. Saying so where the user can
-            see it is the point — a diagnostic they trust is worth more than one they fear.
-            Plan 059 adds the second half of that: this panel is the only place Hangar makes an
-            unprompted network call, so it says so here — worded to be true whether the setting is
-            on or off, which is why it needs no extra fetch to render. */}
-        <footer className="border-t border-white/5 px-5 py-3 text-xs leading-relaxed text-muted">
+            see it is the point — a diagnostic they trust is worth more than one they fear. */}
+        <footer className="border-t border-white/5 px-5 py-3 text-xs text-muted">
           Hangar only reads here — it changes nothing, and never blocks Run. Values in .env are
-          never read: only key names. Dependency checking is off unless you turn it on in Settings;
-          when it is on, the package names and versions in package-lock.json are sent to osv.dev,
-          and nothing else is.
+          never read: only key names.
         </footer>
       </aside>
     </div>

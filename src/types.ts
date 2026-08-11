@@ -154,7 +154,7 @@ export type VcsState =
   /**
    * `git status` did **not** answer (git missing, timed out, non-zero exit). **Not "clean".** The
    * line must render something for this, or a check that could not run renders as a clean bill of
-   * health — the exact bug SPEC.md §11 forbids for the Doctor panel's dependency check.
+   * health — the rule SPEC.md §11 states for this element, and `vcs.rs` opens with.
    */
   | "unavailable";
 
@@ -191,12 +191,6 @@ export interface LogLinesPayload {
 /** §7 `get_settings` / `set_settings`. */
 export interface Settings {
   editorCommand: string;
-  /**
-   * SPEC.md §11 / plan 059 — the osv.dev dependency check in the Doctor panel. **Off by default**;
-   * mirrors `registry::Settings::check_dependencies`. When on, opening Doctor sends the package
-   * names and versions from each project's `package-lock.json` to osv.dev, and nothing else.
-   */
-  checkDependencies: boolean;
 }
 
 /**

@@ -1,12 +1,6 @@
 /**
- * SPEC.md §11 — the gear dialog. "Editor command" (default `code`), and since plan 059 the one
- * opt-in switch Hangar has: the osv.dev dependency check the Doctor panel runs. Both are backed by
- * the §7 `get_settings` / `set_settings` commands. Nothing else — §11 is explicit.
- *
- * **The dependency label states exactly what leaves this machine**, in the place the user actually
- * reads, not only in a comment: package names and versions from `package-lock.json`, and nothing
- * else. It is off until they turn it on. Both halves of that promise are checked by tests in
- * `src-tauri/src/osv.rs`; the sentence below is what makes them a promise rather than a detail.
+ * SPEC.md §11 — the gear dialog. One field, "Editor command" (default `code`), backed by the §7
+ * `get_settings` / `set_settings` commands. Nothing else — §11 is explicit.
  *
  * Esc closes, same pattern as `LogPanel`.
  */
@@ -18,9 +12,6 @@ export function SettingsDialog() {
   const { dialog } = useHangarStore();
   const isOpen = dialog?.kind === "settings";
   const [editorCommand, setEditorCommand] = useState("code");
-  // Mirrors the backend default (plan 059): off, so a dialog that somehow rendered before the
-  // fetch resolved could never show this as on.
-  const [checkDependencies, setCheckDependencies] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -33,7 +24,6 @@ export function SettingsDialog() {
     void getSettings().then((s) => {
       if (!cancelled) {
         setEditorCommand(s.editorCommand);
-        setCheckDependencies(s.checkDependencies);
         setLoading(false);
       }
     });
@@ -61,7 +51,7 @@ export function SettingsDialog() {
     // so mirror that same condition explicitly — the one place both routes now share.
     if (saving || loading || editorCommand.trim() === "") return;
     setSaving(true);
-    const ok = await saveSettingsAction({ editorCommand, checkDependencies });
+    const ok = await saveSettingsAction({ editorCommand });
     if (!ok) setSaving(false);
   }
 
@@ -102,36 +92,6 @@ export function SettingsDialog() {
           placeholder="code"
           className="mt-1.5 w-full rounded-md border border-white/10 bg-bg px-3 py-2 font-mono text-sm text-text outline-none focus:border-accent disabled:opacity-50"
         />
-
-        {/* Plan 059. The sentence under the checkbox is the feature's contract with the user, and
-            it is deliberately specific: naming osv.dev, naming package-lock.json, and listing what
-            is NOT sent. "We take your privacy seriously" is what this exists instead of. */}
-        <div className="mt-6 border-t border-white/5 pt-5">
-          <label className="flex items-start gap-2.5" htmlFor="check-dependencies">
-            <input
-              id="check-dependencies"
-              type="checkbox"
-              disabled={loading}
-              checked={checkDependencies}
-              onChange={(e) => setCheckDependencies(e.target.checked)}
-              className="mt-0.5 size-4 shrink-0 rounded border-white/20 bg-bg accent-accent disabled:opacity-50"
-            />
-            <span className="min-w-0">
-              <span className="block text-sm text-text">
-                Check dependencies for known vulnerabilities
-              </span>
-              <span className="mt-1 block text-xs leading-relaxed text-muted">
-                Off unless you turn it on. Each time the Doctor panel is opened or refreshed,
-                Hangar sends the package names and versions from each project&rsquo;s
-                package-lock.json to osv.dev. Nothing else is sent &mdash; no file paths, no
-                project names, no machine identifier. Dependencies installed from git, a local
-                path or a link are never sent; a package from a private registry cannot be told
-                apart from a public one, so its name is. npm projects only; pnpm and yarn
-                lockfiles are not read.
-              </span>
-            </span>
-          </label>
-        </div>
 
         <div className="mt-6 flex justify-end gap-2">
           <button

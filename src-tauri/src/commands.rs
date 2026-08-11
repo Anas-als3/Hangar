@@ -20,10 +20,6 @@ use crate::env_resolve::{DevEnvCell, EnvMap};
 // own doc comment in `github/mod.rs`. Plan 058: behind the default-ON `github` feature.
 #[cfg(feature = "github")]
 use crate::github::{self, error::GithubError, GithubState};
-// Plan 059: the osv.dev dependency check, a SOURCE of §11 findings and not a §7 command of its own.
-// Behind the default-ON `osv` feature for the same `reqwest`/Windows-cross-check reason as above.
-#[cfg(feature = "osv")]
-use crate::osv;
 use crate::preflight;
 use crate::process::{self, LogLine, RuntimeMap};
 use crate::registry::{self, Project, ProjectView, RegistryError, Settings, Status};
@@ -599,11 +595,6 @@ pub async fn get_port_status(state: State<'_, AppState>) -> Result<Vec<PortStatu
 /// `Ok` even when a project's folder is gone or its `.env` is unreadable — those are *findings*
 /// (§11), because §7 turns every `Err` into a toast and a toast per project on open would be
 /// intolerable. `Err` is reserved for the command itself failing.
-///
-/// Plan 059 added a second *source* of findings — osv.dev dependency advisories — and **no new
-/// command**: §7 stays exactly as frozen. That source is off unless `settings.checkDependencies`
-/// is on, which is read here, per call, and passed down as `osv::dependency_findings`' first
-/// argument; see `osv.rs`'s RULE 1 for why the guard lives there rather than at this call site.
 #[tauri::command]
 pub async fn get_preflight(
     state: State<'_, AppState>,
@@ -614,10 +605,6 @@ pub async fn get_preflight(
         let projects = state.projects.lock().await;
         projects.clone()
     };
-    // Read per call, under its own short-lived lock, so turning the setting off takes effect on the
-    // very next Refresh rather than at the next launch.
-    let check_dependencies = state.settings.lock().await.check_dependencies;
-    let project_dirs: Vec<PathBuf> = snapshot.iter().map(|p| PathBuf::from(&p.path)).collect();
 
     let env = state.dev_env.get().await.vars.clone();
     let checked_at = crate::run::iso8601_utc(SystemTime::now());
@@ -628,42 +615,16 @@ pub async fn get_preflight(
     // The per-project reads (`.env`, `.nvmrc`, the lockfile hash) are blocking I/O, and a project
     // may sit on a stalled network mount — same reasoning as plan 010's `Path::exists` note on
     // `get_projects`, but with more files, so the whole walk goes to the blocking pool.
-    #[allow(unused_mut)]
-    let mut reports: Vec<preflight::PreflightReport> = tauri::async_runtime::spawn_blocking(
-        move || {
-            snapshot
-                .iter()
-                .map(|project| {
-                    preflight::build_report(project, node_version.as_deref(), &checked_at)
-                })
-                .collect()
-        },
-    )
+    tauri::async_runtime::spawn_blocking(move || {
+        snapshot
+            .iter()
+            .map(|project| {
+                preflight::build_report(project, node_version.as_deref(), &checked_at)
+            })
+            .collect()
+    })
     .await
-    .map_err(|e| format!("preflight task failed: {e}"))?;
-
-    // Plan 059 — the dependency source, appended after the §11 check order (folder → env → node →
-    // install) so the existing findings keep their positions. Runs LAST because it is the only one
-    // that can touch the network, and only when the user has turned it on.
-    #[cfg(feature = "osv")]
-    {
-        let extra = osv::dependency_findings(
-            check_dependencies,
-            project_dirs,
-            osv::TOTAL_BUDGET,
-            osv::query_osv,
-        )
-        .await;
-        for (report, findings) in reports.iter_mut().zip(extra) {
-            report.findings.extend(findings);
-        }
-    }
-    // The `--no-default-features` Windows cross-check build has no `osv` module and therefore no
-    // dependency check at all; it is a compile gate, never a shipped binary (see `Cargo.toml`).
-    #[cfg(not(feature = "osv"))]
-    let _ = (check_dependencies, project_dirs);
-
-    Ok(reports)
+    .map_err(|e| format!("preflight task failed: {e}"))
 }
 
 /// SPEC.md §11 "Launch line" (added 2026-08-11, plan 060) — one local version-control row per
@@ -671,10 +632,9 @@ pub async fn get_preflight(
 /// frozen §7 list, never a rename or a reshape of anything in it.
 ///
 /// **A new command rather than an extension of `get_preflight`.** Plan 060 asked for the extension
-/// first, and it does not fit: §11 binds the Doctor's report to "never runs on the startup path"
-/// (and, since plan 059, to an opt-in network call reached through that same command), while this
-/// line is *precisely* the startup path. One command cannot be both. The two share `vcs.rs`'s
-/// reads only in the sense that neither exists in the other.
+/// first, and it does not fit: §11 binds the Doctor's report to "never runs on the startup path",
+/// while this line is *precisely* the startup path. One command cannot be both. The two share
+/// `vcs.rs`'s reads only in the sense that neither exists in the other.
 ///
 /// **No network.** `vcs.rs` runs exactly one `git status` read against local refs — see that
 /// module's THE TWO INVARIANTS. Nothing here fetches, and therefore nothing here reports "behind".
@@ -704,10 +664,10 @@ pub async fn get_vcs_status(state: State<'_, AppState>) -> Result<Vec<vcs::VcsSt
     .await
     .map_err(|e| format!("the version-control scan did not finish ({e})."));
 
-    // Plan 059's lesson, applied before the bug could happen: a pass that did not run must NOT
-    // come back as a quiet result. If the scan itself failed, every project is `unavailable` —
-    // never an `Err` (a toast on launch), and never an empty/`not-a-repo` list that the silent-
-    // when-clean line would render as a clean library.
+    // The rule `vcs.rs` opens with, applied before the bug could happen: a pass that did not run
+    // must NOT come back as a quiet result. If the scan itself failed, every project is
+    // `unavailable` — never an `Err` (a toast on launch), and never an empty/`not-a-repo` list
+    // that the silent-when-clean line would render as a clean library.
     let is_repo: Vec<bool> = match &scan {
         Ok(flags) => flags.clone(),
         Err(detail) => {
