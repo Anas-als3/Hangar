@@ -3,6 +3,9 @@
 
 mod commands;
 mod env_resolve;
+// SPEC.md §11 "Build freshness" / plan 063. Text only: it reports that the bundle on disk is newer
+// than this process, and nothing here restarts, kills or downloads anything (§3, §8).
+mod freshness;
 // Plan 058: default-ON (see `Cargo.toml`'s `[features]`), so the shipped app is unchanged. Only
 // the `--no-default-features` Windows cross-check drops it, to get past `aws-lc-sys`'s C build
 // script and back to compiling SPEC.md §8's `#[cfg(windows)]` code.
@@ -35,6 +38,12 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            // SPEC.md §11 "Build freshness" / plan 063 — FIRST, before anything else in setup.
+            // This reads the mtime of the executable we were launched from, and `npm run
+            // install:app` replaces exactly that file; reading it later would mean comparing a new
+            // build against itself. One `stat`, no spawn, no network. Silent on every failure.
+            freshness::capture_running_build();
+
             // SPEC.md §4 (Storage): app_config_dir, created before the first write.
             let config_dir = app.path().app_config_dir()?;
             std::fs::create_dir_all(&config_dir)?;
@@ -98,6 +107,9 @@ fn main() {
             // SPEC.md §11 "Launch line" / plan 060 — an addition to the frozen §7 list, never a
             // rename/reshape. It reads local git refs only: no network, and no write of any kind.
             commands::get_vcs_status,
+            // SPEC.md §11 "Build freshness" / plan 063 — an addition to the frozen §7 list, never a
+            // rename/reshape. Two `stat`s: no network, no spawn, and no action of any kind.
+            commands::get_build_freshness,
             // SPEC.md §18 / plan 053 — additions to the frozen §7 list, never a rename/reshape.
             //
             // Plan 058: `#[cfg]` here is NOT a §7 violation. §7 freezes the SHAPE of the API —

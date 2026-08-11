@@ -14,6 +14,7 @@ import {
   addProject,
   clearLogBuffer,
   freePort,
+  getBuildFreshness,
   getGithubStatus,
   getLogBuffer,
   getPortStatus,
@@ -33,6 +34,7 @@ import {
 } from "./api";
 import { lastRunLabel } from "./status";
 import type {
+  BuildFreshness,
   GithubStatus,
   LogLine,
   LogLinesPayload,
@@ -176,6 +178,15 @@ export interface HangarState {
    * A failed fetch leaves whatever rows were already here untouched.
    */
   vcs: VcsStatus[] | null;
+  /**
+   * SPEC.md §11 "Build freshness" (plan 063): the last `get_build_freshness` answer — `null` before
+   * the first read, which the line treats exactly like `false` and says nothing about.
+   *
+   * Unlike every other snapshot in this store it IS re-read on window focus (see
+   * `refreshBuildFreshness`), because a fact captured only at launch could never observe an install
+   * that happens *while the window is open* — which is the entire event this line exists to report.
+   */
+  buildFreshness: BuildFreshness | null;
 }
 
 let state: HangarState = {
@@ -204,6 +215,7 @@ let state: HangarState = {
   preflight: null,
   preflightPending: false,
   vcs: null,
+  buildFreshness: null,
 };
 
 const listeners = new Set<() => void>();
@@ -1121,4 +1133,38 @@ export function revealProject(projectId: string): void {
   requestAnimationFrame(() => {
     if (!scroll()) requestAnimationFrame(scroll);
   });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Build freshness (SPEC.md §11, plan 063) — "the bundle on disk is newer than this process".
+//
+// Text only. Nothing below restarts, kills, downloads or asks a server about a version: §3 bans
+// auto-update, and §8's guarantee is that Hangar owns its children's lifecycle, so a "Restart now"
+// that killed a running dev server would be a §6/§8 violation wearing a convenience hat.
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Read the answer. Called once when the app mounts — on its own, never chained behind the registry
+ * or the git snapshot — **and again on window focus**, the one snapshot in this store that is
+ * re-read.
+ *
+ * That is a deliberate departure from plan 060's recorded "not on window focus" decision, and the
+ * reason that decision does not reach here is its own reasoning: it refused to add **N git child
+ * processes** to the most frequent event in the app. This is one `stat` of a path the kernel
+ * already resolved to run us — no spawn, no network, no registry read, no lock. And without it the
+ * feature cannot work at all: a check that only ran at launch would be comparing a build against
+ * itself, while the event it exists to report — an install landing *while the window is open* — is
+ * by definition later.
+ *
+ * Failure is silent, like `refreshVcs`: the Rust side already answers "say nothing" for every real
+ * failure, so reaching this catch means the command itself could not run, and a toast on launch for
+ * a quiet line would be worse than the line not appearing.
+ */
+export async function refreshBuildFreshness(): Promise<void> {
+  try {
+    const buildFreshness = await getBuildFreshness();
+    setState({ buildFreshness });
+  } catch {
+    // Leaves the previous answer in place — same "don't blank a working view" rule as the others.
+  }
 }

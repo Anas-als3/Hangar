@@ -73,7 +73,7 @@ conditions, and update your row below when done.
 | 060 | Launch line — unpushed commits / uncommitted / crashed, on open | — | **P1** | M | 057 | DONE (merged `28931f2`, 2026-08-11) — 210 tests, was 200; 16 `node --test` cases; **the plan's own `git grep` done-criterion was vacuous — no `--untracked`, so it never read the new file it existed to check; the executor caught it and replaced its blacklist test with a whitelist that parses the command string**; **"silent when clean" mutation-tested**; **new `vcs.rs`, not an extension of `get_preflight`** (§11 forbids the Doctor's report on the startup path, and plan 059 put a network call behind it) — see below; **`+N` is a plain count, not a Doctor button**, because the §11 amendment this plan itself mandates says the only action is scroll-into-view; no network call, no git write, `git grep` for the five forbidden verbs still empty |
 | 061 | Open in editor in one click — promote it out of the overflow menu | — | P1 | S | — | DONE (2026-08-11) — **no capability added**: one icon-only button sharing the `⋯` row, calling the same `openInEditorAction` the menu row already called; **zero `.rs` files touched**, tests unchanged at 191/3; §11 amended with the one-control budget; the overflow row stays; disabled only on `pathExists === false`, never by a §6 status; **no test added — the change is JSX with one negation already spelled out for Run in the same file, and this repo has no React harness (the plan's own instruction)**; **not visually verified — the executor is headless** |
 | 062 | Inbox rebuilt around build state — supersedes 054 | — | **P1** | M | 053 | TODO |
-| 063 | Tell the user when they are running an old build | — | **P1** | S | — | TODO |
+| 063 | Tell the user when they are running an old build | — | **P1** | S | — | DONE (2026-08-11) — 198 tests, was 191; **the tolerance case mutation-tested** (strict `>` → RED, restored → GREEN); **text only** — no restart, no kill, no download, no version server, and `BuildFreshness` has no field that could carry one; **new `freshness.rs` + `get_build_freshness`, not a fold into an existing startup read** (every one of those is a per-project array or persisted config — see below); **the reference point is the later of the `build.rs` stamp and the executable's mtime read at startup**, because the constant alone permanently false-nags on any machine where the bundle was copied into place after it was built; **re-read on window focus**, a stated departure from plan 060's decision — see below; **not visually verified and no real stale install exercised — the executor is headless** |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
 
@@ -554,6 +554,53 @@ hardware settles SPEC.md §15 test 3.
   event in the app; adding N git children to it would be the opposite of quiet.
   The line therefore states its own age. A user who pushes from a terminal sees a
   stale line until the next launch, which is the accepted cost of not polling.
+
+- **Plan 063: the compile-time constant alone would have nagged forever, so the
+  reference point is the LATER of it and the executable's mtime read at startup.**
+  The plan preferred a `build.rs` stamp over the running binary's mtime, and its
+  reason holds — `install:app` copies over the very path the process was launched
+  from, so a mtime read at check time returns the *new* build's and the check
+  could never fire. But the stamp on its own has the opposite failure, and it is
+  the expensive one: on any machine where the bundle was copied into place after
+  it was built — every downloaded release, and every `cp -R` here — the bundle's
+  mtime is legitimately later than the stamp, by the bundling step or by days, so
+  a perfectly current app would show "a newer build is installed" permanently.
+  `freshness.rs` therefore takes `max(stamp, mtime-at-startup)`: the stamp is a
+  floor (an install that preserves timestamps must not make us look older than we
+  are), and *this* install is the reference. A consequence worth knowing: the
+  stamp is allowed to go stale — cargo re-runs a build script only for its
+  `rerun-if-changed` set, and a frontend-only rebuild keeps the old one — and that
+  is harmless precisely because a stale stamp can only ever be ignored by the
+  `max`, never turned into a false nag.
+- **Plan 063: 120 s of tolerance, and it is mutation-tested.** The two timestamps
+  do not share a clock origin, and the error directions are not symmetric: too
+  small is a false nag, which teaches the user to ignore the line and so destroys
+  the next real one; too large only delays a report a restart would give anyway.
+  Two minutes swallows mtime granularity, the gap between launch and the startup
+  capture, and a small NTP step — and cannot swallow a real report, because
+  `install:app` is a full `tauri build` and a new build cannot land within two
+  minutes of the previous one starting to run.
+- **Plan 063: a new `get_build_freshness`, not a fold into an existing startup
+  read — the plan preferred the fold and it does not fit.** Every read already on
+  that path is either a per-project array (`get_projects`, `get_vcs_status`) or
+  persisted config (`get_settings`), and this is one app-level fact about the
+  running process. Hanging it off one of those would *reshape* a §7 payload, which
+  the freeze forbids; adding a command is the subset-and-add pattern
+  `get_preflight` and `get_vcs_status` already set.
+- **Plan 063: this one IS re-read on window focus, and plan 060's decision above
+  does not reach it.** That decision refused the focus path to avoid adding **N
+  git child processes** to the most frequent event in the app. This is one `stat`
+  of a path the kernel already resolved to run us: no spawn, no network, no lock.
+  And without it the feature cannot work at all — read only at launch it would
+  compare a build against itself, while the event it reports (an install landing
+  *while the window is open*) is by definition later. The cost that justified the
+  earlier "no" is simply not present.
+- **Plan 063: it is silent unless the executable sits in `…/<Name>.app/Contents/
+  MacOS/`.** Under `tauri dev` the binary is `target/debug/hangar`, which every
+  `cargo build` rewrites underneath the running app — without that guard a normal
+  development session would raise the line constantly, which is exactly how a real
+  warning gets trained out of a user. Windows and Linux return the same silence
+  from a `#[cfg]` stub that says in its own doc comment that it is deliberate.
 
 ## Findings considered and rejected
 

@@ -8,6 +8,7 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  BuildFreshness,
   GithubStatus,
   LogLine,
   NewProject,
@@ -176,6 +177,21 @@ export function getPreflight(): Promise<PreflightReport[]> {
  */
 export function getVcsStatus(): Promise<VcsStatus[]> {
   return invoke<VcsStatus[]>("get_vcs_status");
+}
+
+/**
+ * SPEC.md §11 "Build freshness" (added 2026-08-11, plan 063) — whether the `.app` on disk is newer
+ * than the process answering this call. Two `stat`s and a compile-time constant:
+ *
+ * - **No network.** Not an update check, not a version server — §3 bans auto-update outright.
+ * - **No action.** The payload has no field that could carry one; the line it feeds is text.
+ *
+ * Never rejects: a missing bundle path, an unreadable executable, an app launched from somewhere
+ * unexpected and every non-macOS platform all come back as `newerBuildInstalled: false`. It runs
+ * when the window opens, where §7's "every rejection is a toast" would mean a toast on launch.
+ */
+export function getBuildFreshness(): Promise<BuildFreshness> {
+  return invoke<BuildFreshness>("get_build_freshness");
 }
 
 /**
