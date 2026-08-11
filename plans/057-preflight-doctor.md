@@ -26,15 +26,15 @@
 It is the only proposed feature with a **confirmed hit on the maintainer's own
 machine before it was built**. Measured 2026-08-11:
 
-- `auto-job-applier/.env.example` documents `ANTHROPIC_API_KEY`.
-- `auto-job-applier/.env` **does not contain that key.**
+- `example-monorepo/.env.example` documents `ANTHROPIC_API_KEY`.
+- `example-monorepo/.env` **does not contain that key.**
 
 If that project reads the key at runtime, it is already broken in the way that
 presents as a mystery crash — which is exactly the class of failure that cost
 the maintainer real time this week from an unrelated cause.
 
-Also measured: `auto-job-applier` has **no `.nvmrc` and no `engines`**, while
-`Ielts-Coach` pins `24.18.0` and `engines: ^22.22.2 || ^24.15.0 || >=26.0.0`.
+Also measured: `example-monorepo` has **no `.nvmrc` and no `engines`**, while
+`example-app` pins `24.18.0` and `engines: ^22.22.2 || ^24.15.0 || >=26.0.0`.
 The machine runs v24.18.0. So the Node check has a true-negative to prove it is
 not just always-green.
 
@@ -189,10 +189,10 @@ folder band's Esc guard, exactly as `inboxOpen` was.
 
 Manual, for the reviewer:
 
-- Open Doctor. `auto-job-applier` should report the missing
+- Open Doctor. `example-monorepo` should report the missing
   `ANTHROPIC_API_KEY` **by name only**. Confirm no value is visible anywhere,
   including in the DOM.
-- `Ielts-Coach` should report clean on the Node check (`.nvmrc` 24.18.0 vs
+- `example-app` should report clean on the Node check (`.nvmrc` 24.18.0 vs
   v24.18.0 running).
 - Point a project at a deleted directory → one blocker, no crash, no toast.
 - Open Doctor while a project is running → Run/Stop unaffected, no phase strip

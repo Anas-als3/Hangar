@@ -39,9 +39,9 @@ the maintainer's own three registrations:
 
 | Project | Would honour an injected `PORT`? |
 |---|---|
-| IELTS Coach — `vite.config.ts`: `port: Number(process.env.PORT) \|\| 5173` | **Yes** — but only because a human wrote that expression |
-| auto-job-applier web — `web/vite.config.ts`: `port: 5173` (bare literal) | **No.** Vite core reads no `PORT` |
-| auto-job-applier server — `config.ts`: `Number(process.env.PORT ?? 4000)` | **Yes** |
+| Example App — `vite.config.ts`: `port: Number(process.env.PORT) \|\| 5173` | **Yes** — but only because a human wrote that expression |
+| example-monorepo web — `web/vite.config.ts`: `port: 5173` (bare literal) | **No.** Vite core reads no `PORT` |
+| example-monorepo server — `config.ts`: `Number(process.env.PORT ?? 4000)` | **Yes** |
 
 Two of three would work; one would fail on **100 % of runs, forever, at 60
 seconds a time**, and Hangar would kill a perfectly healthy server to get there.
@@ -81,7 +81,7 @@ lines and commit after each.
 - `port_conflict`, `get_port_status`, `free_port`, `port_owner`, `port_accepts`,
   the §9 run sequence, the §6 state machine, `run.rs`, `process.rs`'s spawn/kill.
 - Injecting `PORT` into the child's environment. That is one line in `run.rs`
-  and it would kill a healthy Vite on `auto-job-applier web` on every run.
+  and it would kill a healthy Vite on `example-monorepo web` on every run.
 - Reading the port back from log output. §3 bans it outright.
 - Any per-run port selection. §5 says `port` is pinned per project.
 - Any new dependency.
@@ -126,7 +126,7 @@ rewrite the token in the Command field.
 Caption beneath the Port field, `aria-live="polite"`, one of:
 
 - `Pinned :5176 and updated --port in the command. (5175 is in use right now.)`
-- `Pinned :5174 — 5173 is pinned by IELTS Coach. Command updated.`
+- `Pinned :5174 — 5173 is pinned by Example App. Command updated.`
 - `Pinned :5173 (Vite's default, free right now). Command updated.`
 - `Couldn't find a free port near 5173 — enter one yourself.`
 
@@ -194,10 +194,10 @@ part that matters — the token rewrite is where this silently breaks.
 
 Manual checks for the reviewer/maintainer:
 
-- Edit `auto-job-applier web` (command already has `-- --port 5175`), press
+- Edit `example-monorepo web` (command already has `-- --port 5175`), press
   `Choose for me` → the port field and the existing `--port` token both change
   to the same new number, and there is still exactly one ` -- `.
-- Edit IELTS Coach with 5173 free → it stays on 5173 and says so.
+- Edit Example App with 5173 free → it stays on 5173 and says so.
 - With something else holding 5173 → it moves, and the caption names why.
 - Press it with the Path field empty → the button is disabled.
 - Save, then Run → the server binds the port Hangar is waiting on.

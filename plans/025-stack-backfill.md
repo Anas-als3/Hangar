@@ -40,7 +40,7 @@ existed, the badge never appears, because the two write paths both miss:
    saves that straight back, so Edit → Save on a project with no stack writes no
    stack.
 
-Confirmed live: the maintainer's registry contains one project (`IELTS Coach`,
+Confirmed live: the maintainer's registry contains one project (`Example App`,
 added by hand-editing `projects.json`) and it has no `stack` key at all.
 
 Plan 023's own text claimed the stack was "refreshed on Add, on Edit, and during

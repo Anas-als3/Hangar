@@ -237,7 +237,7 @@ No automated tests — this plan ships no behaviour. The verification is:
 
 Manual check left for the maintainer, since a subagent cannot drive a GUI: drag
 the `.app` to `/Applications`, launch it from Spotlight, and confirm the
-existing registry loads (the identifier is unchanged, so the current IELTS Coach
+existing registry loads (the identifier is unchanged, so the current Example App
 project should appear).
 
 ## Done criteria

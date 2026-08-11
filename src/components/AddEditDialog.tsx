@@ -371,7 +371,7 @@ export function AddEditDialog() {
           autoFocus
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder="IELTS Coach"
+          placeholder="Example App"
           className="mt-1.5 w-full rounded-md border border-white/10 bg-bg px-3 py-2 text-sm text-text outline-none focus:border-accent"
         />
 

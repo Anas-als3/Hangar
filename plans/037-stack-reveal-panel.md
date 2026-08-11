@@ -33,10 +33,10 @@ A `title` tooltip shipped hours earlier for exactly this purpose. They did not
 find it. **Treat "hover already does this" as refuted** — the request is the
 evidence that the affordance failed.
 
-Live registry: only the two `auto-job-applier` cards render a `+N`, reading
+Live registry: only the two `example-monorepo` cards render a `+N`, reading
 `+5`. Hidden behind it: **Express · TypeScript · Zod · Playwright · Vitest**.
 `OpenAI` and `Anthropic` are already in the visible three, so the "apis" half of
-the ask is satisfied by backend ordering. IELTS Coach (`React`, `TypeScript`)
+the ask is satisfied by backend ordering. Example App (`React`, `TypeScript`)
 has no `+N` and gains no control.
 
 **And the old fallback route was worse than nothing.** §11 used to say the full
@@ -178,8 +178,8 @@ library, in the badge's exact tokens
 inside a `<ul>`/`<li>`. Footer line: `detected 3 h ago` via `relativeTime`.
 
 **Exact strings**: visible text stays `+5`. Button `aria-label`:
-`+5 more — show the full stack for auto-job-applier web`. Panel `aria-label`:
-`Detected stack for auto-job-applier web`.
+`+5 more — show the full stack for example-monorepo web`. Panel `aria-label`:
+`Detected stack for example-monorepo web`.
 
 **Verify**: `npm run typecheck` → exit 0.
 
@@ -201,7 +201,7 @@ Report each:
 No JS test runner for component behaviour (SPEC.md §4). Manual checks for the
 reviewer/maintainer:
 
-- Click `+5` on an `auto-job-applier` card → a panel opens **upward** listing
+- Click `+5` on an `example-monorepo` card → a panel opens **upward** listing
   Express, TypeScript, Zod, Playwright, Vitest plus the framework, with
   `detected … ago` beneath. The Run button stays visible and clickable.
 - Click `+5` again → closes. Click outside → closes. Esc → closes, and does
@@ -210,7 +210,7 @@ reviewer/maintainer:
   a neighbouring card.
 - Press and drag *starting inside the panel* → nothing is filed into a folder.
 - Select a library name with the mouse and copy it → the text selects.
-- IELTS Coach (2 libraries) shows no `+N` and no control at all.
+- Example App (2 libraries) shows no `+N` and no control at all.
 - Open the `⋯` menu, then click `+N` → only one overlay is open at a time.
 
 ## Done criteria

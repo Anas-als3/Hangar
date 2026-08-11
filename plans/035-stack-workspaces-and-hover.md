@@ -36,11 +36,11 @@ The maintainer, verbatim:
 
 Three separate defects, all confirmed against their real registry:
 
-1. **Both `auto-job-applier` cards show `{"libraries":[]}`.** They point at the
+1. **Both `example-monorepo` cards show `{"libraries":[]}`.** They point at the
    repo root, whose `package.json` has **zero** dependencies and one devDep
    (`npm-run-all`). It declares `"workspaces": ["server","web"]`; everything real
    lives one level down.
-2. **IELTS Coach shows `React · TypeScript`** because `LIBRARY_ALLOW_LIST` has 19
+2. **Example App shows `React · TypeScript`** because `LIBRARY_ALLOW_LIST` has 19
    entries and only those two match. `vitest`, `@testing-library/*`, `jsdom` are
    all present and none is on the list.
 3. **Hover is a literal no-op.** The badge (`ProjectCard.tsx:261-265`) has **no
@@ -336,11 +336,11 @@ Report each:
 Steps 6's unit tests are the machine-checkable part. Manual checks for the
 reviewer/maintainer:
 
-- Run each project once, then look at the cards. `auto-job-applier` (both cards)
-  should go from blank to `OpenAI · Anthropic · React +5`; IELTS Coach from
+- Run each project once, then look at the cards. `example-monorepo` (both cards)
+  should go from blank to `OpenAI · Anthropic · React +5`; Example App from
   `React · TypeScript` to `React · TypeScript · Vitest +1`.
 - Hover the badge **and** the libraries line — both must show the full stack.
-- Open Edit on IELTS Coach — the full-list line now leads with `Vite`.
+- Open Edit on Example App — the full-list line now leads with `Vite`.
 - **The one that matters**: run a project, and *while it is running*, save a note
   and do a Move to folder. Both must succeed. This is what step 4 protects.
 - A project with no `package.json` still shows no badge and no line.
@@ -387,7 +387,7 @@ Stop and report back if:
   ordering makes the visible three the best three by construction. If it still
   reads badly, the escape hatch is the cap integer in `ProjectCard.tsx`, **not**
   a second "show on card" list that must be kept in sync forever.
-- Known and accepted: both `auto-job-applier` cards show the same union, because
+- Known and accepted: both `example-monorepo` cards show the same union, because
   they share one `path`. `React` is web's and `Express` is server's. A superset
   of the truth beats `{"libraries":[]}`.
 - Found while designing this, **not fixed, worth its own one-line plan**:

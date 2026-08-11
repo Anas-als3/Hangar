@@ -1197,7 +1197,7 @@ mod tests {
     fn sample_project(path: &str) -> Project {
         Project {
             id: "abc123".into(),
-            name: "IELTS Coach".into(),
+            name: "Example App".into(),
             path: path.into(),
             command: "npm run dev".into(),
             port: 3000,
@@ -1592,13 +1592,13 @@ mod tests {
             ..sample_project("/tmp/ielts")
         };
         let incoming = Project {
-            name: "IELTS Coach (renamed)".into(),
+            name: "Example App (renamed)".into(),
             last_run_at: None,
             last_lockfile_hash: None,
             ..stored.clone()
         };
         let replaced = replace_preserving_app_owned_fields(&stored, incoming);
-        assert_eq!(replaced.name, "IELTS Coach (renamed)");
+        assert_eq!(replaced.name, "Example App (renamed)");
         assert_eq!(replaced.last_run_at.as_deref(), Some("2026-08-10T09:00:00Z"));
         assert_eq!(replaced.last_lockfile_hash.as_deref(), Some("freshhash"));
     }

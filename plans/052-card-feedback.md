@@ -27,7 +27,7 @@
 ### Part A — the Run button does not admit it was clicked
 
 `run.rs` takes the per-path mutex **before** it claims a §6 status. When two
-cards share a folder — the maintainer's `auto-job-applier` pair, both with
+cards share a folder — the maintainer's `example-monorepo` pair, both with
 `updateOnRun: true` — the second Run blocks for the whole pull + install of the
 first. During that time the second card shows `Stopped`, renders an unlit phase
 strip, and keeps its **Run button enabled**. Clicking does visibly nothing.
@@ -147,7 +147,7 @@ In `ProjectCard.tsx`, when the project is `crashed` or `stop-failed` **and**
 
 No JS test runner for component behaviour. Manual, for the reviewer/maintainer:
 
-- Press Run on **both** `auto-job-applier` cards quickly. The second shows
+- Press Run on **both** `example-monorepo` cards quickly. The second shows
   `Starting…` on its button immediately while its pill still reads `Stopped`,
   and further clicks do nothing. Before this, it looked idle and each click
   queued a rejected run.

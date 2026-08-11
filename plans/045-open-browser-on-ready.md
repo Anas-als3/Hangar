@@ -31,7 +31,7 @@
 `src-tauri/src/run.rs` opens the browser unconditionally when a project reaches
 ready. Two costs, both observed on the maintainer's real registry:
 
-1. **`auto-job-applier server` is an API-only Express server.** It mounts
+1. **`example-monorepo server` is an API-only Express server.** It mounts
    `/api` and `/files` and nothing at `/`. So **every Run since it was added**
    has opened a browser tab reading `Cannot GET /`. There is no page to show and
    there never will be.
@@ -192,12 +192,12 @@ outside a running app (the constraint plan 020 already recorded).
 
 Manual checks for the reviewer/maintainer:
 
-- Edit `auto-job-applier server`, untick **Open browser when ready**, Run it.
+- Edit `example-monorepo server`, untick **Open browser when ready**, Run it.
   **No tab opens**, the card still reaches `Running`, the phase strip still
   lights Ready, and the log says it was ready and that the opt-out is on.
 - On that same project, the card's `:4000` port button and **Open in browser**
   still open the page. That is the explicit action and it must always work.
-- Run IELTS Coach (checkbox left on) → the tab opens exactly as before.
+- Run Example App (checkbox left on) → the tab opens exactly as before.
 - Check `projects.json`: projects that never touched the setting have **no**
   `openBrowserOnReady` key at all.
 

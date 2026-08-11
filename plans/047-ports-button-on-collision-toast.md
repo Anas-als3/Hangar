@@ -102,7 +102,7 @@ action; Dismiss stays the simplest.
 
 Manual, for the reviewer/maintainer:
 
-- Start a dev server outside Hangar on 5173, then press Run on IELTS Coach.
+- Start a dev server outside Hangar on 5173, then press Run on Example App.
   The toast names the PID **and** offers **Ports**; pressing it opens the panel
   with that row visible.
 - A crash toast (not a port collision) also offers Ports — intended, and

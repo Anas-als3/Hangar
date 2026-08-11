@@ -28,9 +28,9 @@ project:
 
 | Project | State |
 |---|---|
-| `Ielts-Coach` | in sync, clean |
+| `example-app` | in sync, clean |
 | `Hangar` | in sync, 1 deliberate local edit |
-| **`auto-job-applier`** | **30 commits unpushed, local-only for 7 days** |
+| **`example-monorepo`** | **30 commits unpushed, local-only for 7 days** |
 
 Thirty commits existing on exactly one laptop, unnoticed for a week. **Nothing
 in the current UI says so, and nothing would ever have said so.** That is the
@@ -53,7 +53,7 @@ It sits as a sibling to the existing resume line (see `ResumeLine` in
 `src/App.tsx` and follow its shape).
 
 - At most **three** items inline; beyond that, `+N` opens the Doctor panel.
-- Each item is one clause: `auto-job-applier · 30 unpushed`.
+- Each item is one clause: `example-monorepo · 30 unpushed`.
 - Clicking an item scrolls its card into view. **That is the only action.**
 
 ## The §3 line this must not cross

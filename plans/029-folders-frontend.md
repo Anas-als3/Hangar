@@ -270,7 +270,7 @@ Rewrite `ProjectGrid.tsx` to map `gridItems(...)` instead of `projects`:
    present, never conditionally rendered.
 3. Mount it in `App.tsx` beside the other dialogs.
 4. `App.tsx:76-93`'s `Toast` is styled as an **error**
-   (`border-status-danger/40`). Announcing "Moved IELTS Coach to Client Work" in
+   (`border-status-danger/40`). Announcing "Moved Example App to Client Work" in
    red is wrong. Add a neutral variant — a `tone` prop defaulting to the current
    error styling so **every existing call site is unchanged** — and use it for
    the move confirmation.

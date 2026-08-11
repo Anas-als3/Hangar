@@ -1744,8 +1744,8 @@ mod tests {
         let rejection = next_status(Status::Running, Trigger::Run(Status::Starting)).unwrap_err();
         assert_eq!(rejection.from, Status::Running);
         assert_eq!(
-            rejection.for_project("IELTS Coach"),
-            "IELTS Coach is running — Run is only valid from stopped or crashed."
+            rejection.for_project("Example App"),
+            "Example App is running — Run is only valid from stopped or crashed."
         );
     }
 
@@ -2070,7 +2070,7 @@ mod tests {
     fn project_fixture(url: Option<&str>) -> Project {
         Project {
             id: "ielts-coach".into(),
-            name: "IELTS Coach".into(),
+            name: "Example App".into(),
             path: "/tmp/ielts".into(),
             command: "npm run dev".into(),
             port: 3000,
@@ -2321,8 +2321,8 @@ http.createServer((_req, res) => res.end('ok')).listen(39222, () => console.log(
     #[test]
     fn remove_and_edit_are_guarded_unless_the_project_is_settled() {
         // §6: Remove/Edit while status ∉ {stopped, crashed} must confirm-and-stop first.
-        assert!(guard_mutation(Status::Stopped, "IELTS Coach").is_ok());
-        assert!(guard_mutation(Status::Crashed, "IELTS Coach").is_ok());
+        assert!(guard_mutation(Status::Stopped, "Example App").is_ok());
+        assert!(guard_mutation(Status::Crashed, "Example App").is_ok());
         for from in [
             Status::Updating,
             Status::Installing,
@@ -2331,8 +2331,8 @@ http.createServer((_req, res) => res.end('ok')).listen(39222, () => console.log(
             Status::Stopping,
             Status::StopFailed,
         ] {
-            let err = guard_mutation(from, "IELTS Coach").unwrap_err();
-            assert!(err.starts_with("IELTS Coach is "), "got {err}");
+            let err = guard_mutation(from, "Example App").unwrap_err();
+            assert!(err.starts_with("Example App is "), "got {err}");
             assert!(err.ends_with(" — stop it first."), "got {err}");
         }
     }

@@ -142,7 +142,7 @@ then save. If it says run-inert, save straight through.
 
 Manual, for the reviewer/maintainer:
 
-- With `auto-job-applier server` **running**, open `⋯ → Edit`. **No prompt, the
+- With `example-monorepo server` **running**, open `⋯ → Edit`. **No prompt, the
   server keeps running.** Untick *Open browser when ready*, Save. It saves, the
   server is still up, and the next Run opens no tab.
 - With it running, open Edit and change the **port**. Save → the old

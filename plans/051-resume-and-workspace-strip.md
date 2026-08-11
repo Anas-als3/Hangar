@@ -43,8 +43,8 @@ constraints.
 `lastRunAt` is already stored per project. The set of projects that were
 running together is therefore **derivable**: those whose `lastRunAt` falls
 within a short window of the most recent one. Verified against the live
-registry — it selects IELTS Coach and auto-job-applier web (seven seconds
-apart) and correctly excludes auto-job-applier server (six hours earlier).
+registry — it selects Example App and example-monorepo web (seven seconds
+apart) and correctly excludes example-monorepo server (six hours earlier).
 
 **No new `Project` field.** That is not tidiness: `is_run_inert_change`
 compares cloned records structurally, so a new field would make every session
@@ -140,7 +140,7 @@ Renders **only** when all three hold:
 - the search box is empty,
 - the cluster has at least one project.
 
-Content: `Last session, 14 h ago · IELTS Coach · auto-job-applier web` and one
+Content: `Last session, 14 h ago · Example App · example-monorepo web` and one
 button, `Start both` (or `Start all N` above two names). List at most three
 names, then `+N`.
 
@@ -201,12 +201,12 @@ Report each:
 Step 2's cases are the machine-checkable part. Manual checks for the
 reviewer/maintainer:
 
-- With all three projects stopped, the resume line names **IELTS Coach and
-  auto-job-applier web** — not the server, which last ran hours earlier.
+- With all three projects stopped, the resume line names **Example App and
+  example-monorepo web** — not the server, which last ran hours earlier.
 - Press **Start both** → both start, then the line disappears.
 - Type in the search box with everything stopped → the line disappears.
 - The workspace strip reads `3 projects · 2 repos` — two, because two cards
-  share `/Users/anas/Projects/auto-job-applier`.
+  share `/Users/dev/Projects/example-monorepo`.
 - Its inventory shows `TypeScript ×2` and `React ×2`, not `×3`.
 - Run one project → the strip does **not** change.
 - Remove all projects → neither element renders; the empty state is unchanged.

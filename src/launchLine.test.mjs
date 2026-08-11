@@ -21,7 +21,7 @@ const checked = (projectId, ahead, uncommitted) => ({
 // --------------------------------------------------------------------------------------------
 
 test("every project settled, in sync and clean -> the line renders nothing", () => {
-  const projects = [project("a", "Ielts-Coach"), project("b", "Hangar")];
+  const projects = [project("a", "example-app"), project("b", "Hangar")];
   const vcs = [checked("a", 0, 0), checked("b", 0, 0)];
   const result = launchLine(projects, vcs);
   assert.deepEqual(result, { items: [], notChecked: [] });
@@ -70,7 +70,7 @@ test("a failed check never becomes an item, so it cannot displace a real finding
     project("a", "One"),
     project("b", "Two"),
     project("c", "Three"),
-    project("d", "auto-job-applier"),
+    project("d", "example-monorepo"),
   ];
   const vcs = [
     { projectId: "a", state: "unavailable" },
@@ -109,13 +109,13 @@ test("a project absent from the snapshot is not reported as failed", () => {
 // --------------------------------------------------------------------------------------------
 
 test("thirty commits that exist only on this laptop are named exactly", () => {
-  const result = launchLine([project("a", "auto-job-applier")], [checked("a", 30, 0)]);
+  const result = launchLine([project("a", "example-monorepo")], [checked("a", 30, 0)]);
   assert.deepEqual(result.items, [
     {
       projectId: "a",
-      name: "auto-job-applier",
+      name: "example-monorepo",
       detail: "30 unpushed",
-      title: "auto-job-applier — 30 unpushed",
+      title: "example-monorepo — 30 unpushed",
     },
   ]);
 });
@@ -168,7 +168,7 @@ test("more than three findings -> the caller shows three and a +N", () => {
 // --------------------------------------------------------------------------------------------
 
 test("nothing this module produces can say 'behind'", () => {
-  const projects = [project("a", "auto-job-applier", "crashed"), project("b", "Hangar")];
+  const projects = [project("a", "example-monorepo", "crashed"), project("b", "Hangar")];
   const vcs = [checked("a", 30, 4), { projectId: "b", state: "unavailable", detail: "git missing" }];
   const result = launchLine(projects, vcs);
   const rendered = JSON.stringify(result);

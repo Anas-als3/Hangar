@@ -38,7 +38,7 @@ else. Reaching the log means finding the card, opening `⋯`, and clicking "Show
 logs" — item 4 of 7 in `MENU_ITEMS` (`src/components/ProjectCard.tsx:94-104`).
 
 **This happened for real on 2026-08-10.** A ready-timeout fired on
-`auto-job-applier web`; the toast asked "did it start on another port?"; the
+`example-monorepo web`; the toast asked "did it start on another port?"; the
 answer (Vite's `Local:` line) was sitting in the log the whole time.
 
 The toast also names no project. Both of the maintainer's Node projects run the

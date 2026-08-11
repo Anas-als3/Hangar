@@ -203,7 +203,7 @@ pub struct RegistryLoad {
 fn seed_projects() -> Vec<Project> {
     vec![Project {
         id: "ielts-coach".to_string(),
-        name: "IELTS Coach".to_string(),
+        name: "Example App".to_string(),
         path: "REPLACE_WITH_ABSOLUTE_PATH".to_string(),
         command: "npm run dev".to_string(),
         port: 3000,
@@ -875,7 +875,7 @@ mod tests {
     fn sample() -> Project {
         Project {
             id: "abc123".into(),
-            name: "IELTS Coach".into(),
+            name: "Example App".into(),
             path: "/tmp/ielts".into(),
             command: "npm run dev".into(),
             port: 3000,
@@ -957,7 +957,7 @@ mod tests {
         let dir = scratch("seed");
         let load = load_projects_with_seed(&dir, true);
         assert_eq!(load.projects.len(), 1);
-        assert_eq!(load.projects[0].name, "IELTS Coach");
+        assert_eq!(load.projects[0].name, "Example App");
         assert_eq!(load.projects[0].path, "REPLACE_WITH_ABSOLUTE_PATH");
         // and it round-trips from disk
         let reloaded = load_projects_with_seed(&dir, false);
@@ -1108,7 +1108,7 @@ mod tests {
         assert_eq!(
             json,
             concat!(
-                r#"{"id":"abc123","name":"IELTS Coach","path":"/tmp/ielts","command":"npm run dev","port":3000,"#,
+                r#"{"id":"abc123","name":"Example App","path":"/tmp/ielts","command":"npm run dev","port":3000,"#,
                 r#""url":"http://localhost:3000","updateOnRun":true,"readyTimeoutSec":60,"#,
                 r#""lastLockfileHash":"deadbeef","lastRunAt":"2026-08-05T10:00:00Z","#,
                 r#""notes":"Remember to try the staging flag next time.","#,
@@ -1698,13 +1698,13 @@ mod tests {
     fn duplicate_port_is_rejected_and_names_the_owner() {
         let owner = Project {
             id: "owner".into(),
-            name: "IELTS Coach".into(),
+            name: "Example App".into(),
             ..sample()
         };
         let projects = vec![owner.clone()];
 
         let conflict = port_conflict(&projects, 3000, None);
-        assert_eq!(conflict.map(|p| p.name.as_str()), Some("IELTS Coach"));
+        assert_eq!(conflict.map(|p| p.name.as_str()), Some("Example App"));
     }
 
     #[test]

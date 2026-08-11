@@ -214,9 +214,9 @@ mod tests {
 
     #[test]
     fn parses_plain_key_value_lines() {
-        let vars = parse_env_output("PATH=/usr/bin\nHOME=/Users/anas\n");
+        let vars = parse_env_output("PATH=/usr/bin\nHOME=/Users/dev\n");
         assert_eq!(vars.get("PATH").map(String::as_str), Some("/usr/bin"));
-        assert_eq!(vars.get("HOME").map(String::as_str), Some("/Users/anas"));
+        assert_eq!(vars.get("HOME").map(String::as_str), Some("/Users/dev"));
         assert_eq!(vars.len(), 2);
     }
 
@@ -234,11 +234,11 @@ mod tests {
     fn joins_multi_line_values_and_ignores_banner_noise() {
         // `env` prints a multi-line value verbatim; its continuation lines are not assignments.
         let vars = parse_env_output(
-            "Welcome to your shell!\nNVM_DIR=/Users/anas/.nvm\nSCRIPT=line one\nline two\nlast line\nTERM=xterm\n",
+            "Welcome to your shell!\nNVM_DIR=/Users/dev/.nvm\nSCRIPT=line one\nline two\nlast line\nTERM=xterm\n",
         );
         assert_eq!(
             vars.get("NVM_DIR").map(String::as_str),
-            Some("/Users/anas/.nvm")
+            Some("/Users/dev/.nvm")
         );
         assert_eq!(
             vars.get("SCRIPT").map(String::as_str),

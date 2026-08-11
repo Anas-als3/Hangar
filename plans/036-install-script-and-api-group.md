@@ -230,7 +230,7 @@ reviewer/maintainer:
 - Deliberately break the build (a syntax error), run the script → it stops
   **before** deleting `/Applications/Hangar.app`. This is the property that
   matters; verify it rather than assuming it.
-- Run `auto-job-applier server` once → its card lists `OpenAI · Anthropic ·
+- Run `example-monorepo server` once → its card lists `OpenAI · Anthropic ·
   Playwright +N` or similar, with the services first.
 
 ## Done criteria

@@ -13,7 +13,7 @@ Amended 2026-08-10: Hangar **surfaces** a repository's GitHub activity and lets 
 ## 2. The one user flow (everything serves this)
 
 1. Open Hangar → see all registered projects as cards with live status.
-2. Click **Run** on "IELTS Coach" → phases: Pull → Install (if needed) → Start → Ready.
+2. Click **Run** on "Example App" → phases: Pull → Install (if needed) → Start → Ready.
 3. Browser opens `http://localhost:<port>` automatically when the server responds.
 4. User checks the app, comes back, clicks **Stop** → port is free, zero orphaned `node` processes.
 5. Click **Run** on the next project → new browser tab opens for it.
@@ -75,7 +75,7 @@ type Status =
 
 interface Project {
   id: string;            // nanoid
-  name: string;          // "IELTS Coach"
+  name: string;          // "Example App"
   path: string;          // absolute folder path
   command: string;       // "npm run dev" — free text, run through the platform shell
   port: number;          // 3000 — pinned per project, used for ready-check + browser URL
@@ -109,7 +109,7 @@ interface ProjectView extends Project {
 [
   {
     "id": "ielts-coach",
-    "name": "IELTS Coach",
+    "name": "Example App",
     "path": "REPLACE_WITH_ABSOLUTE_PATH",
     "command": "npm run dev",
     "port": 3000,

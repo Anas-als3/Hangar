@@ -1,4 +1,4 @@
-/* Entry stylesheet — SPEC.md §4 (Tailwind v4 via @tailwindcss/vite, single import) and §11 (palette + type). */
+              /* Entry stylesheet — SPEC.md §4 (Tailwind v4 via @tailwindcss/vite, single import) and §11 (palette + type). */
 @import "tailwindcss";
 
 /* Fonts ship as npm packages so Vite bundles the woff2 files — no CDN, no runtime network (SPEC.md §4). */

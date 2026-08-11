@@ -448,7 +448,7 @@ hardware settles SPEC.md §15 test 3.
   *is* checked, with nvm's real dot-boundary prefix rule (`24` matches v24.18.0,
   `24.1` does not), and an unresolvable alias (`lts/*`, `node`, `system`) reports
   nothing rather than guessing. A project with `engines.node` and no `.nvmrc` —
-  which is `auto-job-applier`'s neighbour case — gets no Node finding at all.
+  which is `example-monorepo`'s neighbour case — gets no Node finding at all.
   Reopening this needs a node-semver range evaluator, which is its own plan.
 - **Plan 059: pnpm and yarn lockfiles are NOT parsed — the plan's own STOP
   condition fired.** `pnpm-lock.yaml` and `yarn.lock` are not JSON, and reading

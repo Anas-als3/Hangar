@@ -25,13 +25,13 @@ These are measurements, not assumptions. Re-derive before trusting them later.
 
 | Fact | Value |
 |---|---|
-| Project cards | 3 (`IELTS Coach`, `auto-job-applier web`, `auto-job-applier server`) |
+| Project cards | 3 (`Example App`, `example-monorepo web`, `example-monorepo server`) |
 | Distinct repos | 2, both `github.com/Anas-als3/…`, **both solo-owned** |
-| `Ielts-Coach` | `.nvmrc` 24.18.0, `engines` set, 12 direct deps, 205-line README, **no LICENSE**, no `.env.example` |
-| `auto-job-applier` | **no `.nvmrc`, no `engines`**, `.env` + `.env.example`, 26-line README, no LICENSE |
+| `example-app` | `.nvmrc` 24.18.0, `engines` set, 12 direct deps, 205-line README, **no LICENSE**, no `.env.example` |
+| `example-monorepo` | **no `.nvmrc`, no `engines`**, `.env` + `.env.example`, 26-line README, no LICENSE |
 | **`.env` drift, real** | `.env.example` documents `ANTHROPIC_API_KEY`; the actual `.env` **does not contain it** |
 | OSV batch query | 207 lockfile packages → 1 HTTP request → **0 advisories**, no key, no rate limit |
-| Node in use | v24.18.0, matches `Ielts-Coach`'s pin |
+| Node in use | v24.18.0, matches `example-app`'s pin |
 
 The `.env` row is the important one. It was found in about a second, by
 comparing key *names* only. If that project reads `ANTHROPIC_API_KEY` at
@@ -76,9 +76,9 @@ with only three cards. Then it was actually measured:
 
 | Project | State |
 |---|---|
-| `Ielts-Coach` | in sync, clean |
+| `example-app` | in sync, clean |
 | `Hangar` | in sync, 1 uncommitted (a deliberate local edit) |
-| **`auto-job-applier`** | **30 commits unpushed, sitting locally for 7 days** |
+| **`example-monorepo`** | **30 commits unpushed, sitting locally for 7 days** |
 
 Thirty commits existing on exactly one laptop is a real risk to real work, it
 had gone unnoticed for a week, and **nothing in the current UI would ever say
