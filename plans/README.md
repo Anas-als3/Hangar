@@ -313,7 +313,38 @@ own source (`scripts/core.js` builds `ipc://localhost` on macOS, with a
 fonts render, it is fine. If the window is blank, revert `csp` to `null` in
 `src-tauri/tauri.conf.json` and rebuild.
 
-## CI has never run. Not once. (found 2026-08-11)
+## CI now runs, and passes. (resolved 2026-08-11)
+
+**Fixed by making the repository public.** The diagnosis below was right: it was
+never a code or YAML problem, it was that a private repo's Actions allowance was
+not covering the jobs, so they were queued and never given a runner.
+
+First green run, all four jobs:
+
+| Job | Result |
+|---|---|
+| `host (macOS)` | success |
+| `acceptance (macOS, serial)` | success |
+| `bundle (macOS)` | success |
+| **`windows`** | **success** |
+
+That last row is the one that matters. It compiles **and runs** the
+`#[cfg(windows)]` Job Object kill path — `TerminateJobObject`, the `taskkill`
+fallback, `CREATE_NO_WINDOW` — on a real Windows machine. CLAUDE.md calls §8
+the highest-priority correctness requirement in the project, and until this run
+that code had never been executed by anything, anywhere.
+
+One casualty, and it was predicted: plan 058's macOS **Windows cross-check step
+failed** with `NotAttempted("llvm-rc")` — `macos-latest` has no LLVM resource
+compiler on PATH. Plan 058's executor flagged exactly this as unverifiable
+because CI had never run. **The step was removed rather than fixed**: it proved
+*compilation* on a target the `windows` job now proves *execution* on, and
+installing LLVM on every macOS run to duplicate that is cost without cover. The
+local command still works and is documented in `README.md`.
+
+### The original diagnosis, kept for the record
+
+## CI had never run. Not once. (found 2026-08-11)
 
 `gh run list` returns **60 runs, 60 failures** — every run in the repository's
 history. They are not build failures. Each job completes in **2–3 seconds**,
