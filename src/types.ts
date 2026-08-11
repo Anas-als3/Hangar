@@ -246,3 +246,36 @@ export interface GithubStatus {
   /** Lets the panel say "Reconnect" instead of "Connect" once a token existed and stopped working. */
   hadStoredToken?: boolean;
 }
+
+/**
+ * SPEC.md §18 / §11's Inbox entry (amended 2026-08-11, plan 062) — `get_build_status`'s wire
+ * shape. Mirrors `github::build::BuildState`/`RepoBuild` and `commands::BuildReport`.
+ *
+ * `"unknown"` is a value of its own and must stay visibly distinct from `"passing"` everywhere it
+ * is rendered: **a check that could not run must never render as a passing build** (§11, stated
+ * for the launch line, the Doctor panel and here). `"no-checks"` is a fourth thing again — GitHub
+ * answered and this ref has no checks, which is not a pass either.
+ */
+export type BuildState = "passing" | "failing" | "running" | "no-checks" | "unknown";
+
+export interface RepoBuild {
+  /** `owner/repo`. Never a remote URL — one can carry a credential, so none is ever sent. */
+  repository: string;
+  /** The ref that was checked. Absent only on an `unknown` row Hangar could not resolve a ref for. */
+  branch?: string;
+  state: BuildState;
+  /** Which registered projects map to this row — §11: the unit is the repository, not the project. */
+  projectIds: string[];
+  /** One secret-free sentence, present only on `unknown` rows. */
+  detail?: string;
+  /** ISO — present only when the primary rate limit is what stopped this row. */
+  resetAt?: string;
+  /** Present only when the secondary (abuse-detection) limit is what stopped this row. */
+  retryAfterSec?: number;
+}
+
+export interface BuildReport {
+  repos: RepoBuild[];
+  /** ISO — one timestamp for the whole snapshot. §11: a stale green is worse than no green. */
+  checkedAt: string;
+}

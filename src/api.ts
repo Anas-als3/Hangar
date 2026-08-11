@@ -9,6 +9,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   BuildFreshness,
+  BuildReport,
   GithubStatus,
   LogLine,
   NewProject,
@@ -219,4 +220,22 @@ export function setGithubToken(token: string): Promise<GithubStatus> {
  */
 export function removeGithubToken(): Promise<void> {
   return invoke<void>("remove_github_token");
+}
+
+/**
+ * SPEC.md §18 / §11's Inbox entry (amended 2026-08-11, plan 062) `get_build_status` — one row per
+ * distinct GitHub repository the registry points at: is its build red or green right now.
+ *
+ * Called on Inbox open and on Refresh only. It never polls, and nothing on the startup path calls
+ * it — §11 forbids the header's Inbox button making a network or keychain call of its own.
+ *
+ * Reads GitHub's check-runs API. **It never calls `/notifications`** (that endpoint can mutate
+ * read state) and it writes nothing, anywhere.
+ *
+ * Never rejects for a connection problem: offline, rate-limited and an unexpected status all come
+ * back as `state: "unknown"` rows, and no credential at all comes back as an empty `repos` — why
+ * there is no credential is `getGithubStatus`'s answer, not this one's.
+ */
+export function getBuildStatus(): Promise<BuildReport> {
+  return invoke<BuildReport>("get_build_status");
 }

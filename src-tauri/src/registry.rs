@@ -1236,6 +1236,26 @@ mod tests {
             had_stored_token: Some(true),
         };
 
+        // SPEC.md §18 / plan 062: the Inbox's build rows. `repos` is deliberately NON-EMPTY and its
+        // one row has every `Option` `Some` — `assert_keys_in` walks arrays, and a `None` field is
+        // invisible to it (`skip_serializing_if` omits the key), so an empty vector or a realistic
+        // row (which never has `detail`, `resetAt` and `retryAfterSec` at once) would let this
+        // guard pass while never checking `RepoBuild`'s keys. The combination is a wire-shape
+        // sample, not a state this backend produces.
+        #[cfg(feature = "github")]
+        let build_report = crate::commands::BuildReport {
+            repos: vec![crate::github::build::RepoBuild {
+                repository: "anas/hangar".into(),
+                branch: Some("main".into()),
+                state: crate::github::build::BuildState::Failing,
+                project_ids: vec!["abc123".into()],
+                detail: Some("GitHub has rate-limited this token.".into()),
+                reset_at: Some("2026-08-11T09:00:00Z".into()),
+                retry_after_sec: Some(60),
+            }],
+            checked_at: "2026-08-11T09:00:00Z".into(),
+        };
+
         // SPEC.md §11 "Doctor" / plan 057: `findings` is deliberately NON-EMPTY — `assert_keys_in`
         // walks arrays, so an empty vector would let this guard pass while never checking
         // `PreflightFinding`'s keys at all (the same vacuous-sample trap the `Some(...)` fields
@@ -1294,6 +1314,8 @@ mod tests {
         // asserted independently.
         #[cfg(feature = "github")]
         samples.push(serde_json::to_value(&github_status).unwrap());
+        #[cfg(feature = "github")]
+        samples.push(serde_json::to_value(&build_report).unwrap());
         for sample in &samples {
             assert_keys_in(sample, types_ts);
         }
@@ -1339,6 +1361,27 @@ mod tests {
                 types_ts.contains(wire_str),
                 "GithubConnectionState::{state:?} serializes to {wire_str:?}, which does not \
                  appear anywhere in src/types.ts"
+            );
+        }
+
+        // SPEC.md §18 / plan 062: same reasoning again, for `BuildState`'s union — and this one
+        // carries the same weight as `VcsState`'s below. `unknown` and `passing` are the two values
+        // the frontend must be able to tell apart; a union missing `unknown` would collapse a check
+        // that could not run into a repository whose build is green.
+        #[cfg(feature = "github")]
+        for state in [
+            crate::github::build::BuildState::Passing,
+            crate::github::build::BuildState::Failing,
+            crate::github::build::BuildState::Running,
+            crate::github::build::BuildState::NoChecks,
+            crate::github::build::BuildState::Unknown,
+        ] {
+            let wire = serde_json::to_value(state).unwrap();
+            let wire_str = wire.as_str().expect("BuildState serializes to a string");
+            assert!(
+                types_ts.contains(wire_str),
+                "BuildState::{state:?} serializes to {wire_str:?}, which does not appear anywhere \
+                 in src/types.ts"
             );
         }
 

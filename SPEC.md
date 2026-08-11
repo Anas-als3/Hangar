@@ -326,7 +326,7 @@ Steam-library energy, but its own identity — a launch bay for code. Dark, dens
   Implement with **CSS transitions**, not JS animation loops or animation libraries. This is a performance requirement, not a style preference: the store notifies every subscriber on every log flush, so cards re-render frequently; CSS transitions are unaffected by re-render, JS-driven animation is not. No new dependency for motion (§4).
 
   `prefers-reduced-motion` must disable all of the above — the existing global rule in `src/index.css` already does this; keep it working.
-- **Inbox** (added 2026-08-10, §18): a slide-over like the log panel, opened from a quiet **Inbox** button in the header, holding two panes — a list of GitHub notifications for the repositories the registry's projects point at, and a single thread with a reply box. **The unit is the repository, never the project**: two cards sharing one repo root produce one section, and every total is summed over distinct repositories. It shows its own disconnected, offline, rate-limited and empty states in place — none of them is a toast, and none is an error. A project that is not on GitHub, has no remote, or cannot be seen with the current token is simply **absent**, with no toast, no banner and no `system` log line: that buffer is Run narration and GitHub noise in it would make a GitHub failure look like a Run event. The header button may carry an unread count, read from the local cache only — it must never make a network call, a keychain call, or run before the grid does.
+- **Inbox** (added 2026-08-10, §18; **rebuilt 2026-08-11, plan 062**): a slide-over like the log panel, opened from a quiet **Inbox** button in the header. It shows **one line per repository: is that repository's build red or green right now.** A *state*, not a feed. This entry originally described two panes — a list of GitHub notifications and a single thread with a reply box — and that design was measured against the live account before it was built. The measurement replaced it, and is recorded here rather than lost: on 2026-08-11 there were **50 unread notifications, all 50 of them `CheckSuite` build results — 0 issues, 0 pull requests, 0 discussions, 0 stars on either repository.** A threaded conversation reader would have had nothing in it, and listing those 50 notifications would have produced fifty identical rows reading "CI workflow run failed for main branch". Fifty rows saying one thing is not an inbox, it is noise with a scrollbar; they collapse to one fact per repository, which is the only thing anyone acts on — and the same measurement found a project whose CI had been failing on every run without the maintainer knowing, which is precisely what an app you open first thing should say. **Reading and replying to threads is deferred, not cancelled**, and the trigger to revisit is concrete: the first real issue, pull request or comment from someone else, at which point it can be built against a real example instead of an imagined one. **The unit is the repository, never the project**: two cards sharing one repo root produce one row, and every total is summed over distinct repositories. Which repository a project belongs to is read from its `.git/config` — **never by running git**, whose subprocess would resolve against Hangar's own working directory and report every registered project as the same repository. A project that is not on GitHub, has no remote, or cannot be seen with the current token is simply **absent**, with no toast, no banner and no `system` log line: that buffer is Run narration and GitHub noise in it would make a GitHub failure look like a Run event. A row carries exactly the `owner/repo`, the ref that was checked, the projects it stands for, and one of five states — **passing · failing · running · no checks · unknown**. `unknown` is a state of its own and is **visibly distinct from passing in both colour and word**, because **a check that could not run must never render as a passing build**: the same rule the launch line and the Doctor panel are already held to, and the third place in this app it has had to be written down. `no checks` is a fourth thing again — GitHub answered and this ref has none, which is not a pass either. The panel carries **no control that changes anything**: no re-run, no merge, no approve, no reply, and no "mark as read"; its controls are Connect, Disconnect, Refresh, Close and Esc. It is a **snapshot, not a monitor**, on exactly the Ports and Doctor panels' terms: it reads once on open and again only on Refresh, it never polls, nothing it does runs before the grid renders or without a token, and the header states when the snapshot was taken — a stale green is worse than no green. It shows its own disconnected, offline, rate-limited and empty states in place — none of them is a toast, and none is an error. The header button may carry a count, read from the local cache only — it must never make a network call, a keychain call, or run before the grid does.
 - **Resume last session** (added 2026-08-10): a single quiet line above the grid naming the projects that were running together when Hangar last quit, and one button that starts them. The set is **derived, never stored** — the projects whose `lastRunAt` falls within a short window of the most recent one — so it costs no new field, no new file and no new command. It renders **only** when nothing is currently non-`stopped` and the search box is empty, and it disappears the moment anything runs: it is the first ten seconds of a session, not a permanent element. Starting is N sequential `run_project` calls — no new §6 behaviour, no batching. At most a few names are listed, the rest as a count.
 - **Launch line** (added 2026-08-11, plan 060): one line under the header, above the resume line, naming what needs the user when they sit down — and **rendered only when there is something to name**. Silent otherwise: zero pixels, no empty state, no "all clear" badge, no score. It is not on the cards, because §11's card element list is fixed and deliberately short and a git line on every card would put a permanent element on cards that have nothing to say. It reports exactly three things, all of them facts the app can establish **locally**: **unpushed commits** (`HEAD` against the local remote-tracking ref), **uncommitted changes** as a **count of paths** — never a filename, never a diff, never file contents — and a project that **crashed on its last run**, already in the data model and surfaced here so one line answers "what needs me". At most **three** items are shown inline, in `projects.json` array order and never sorted by severity, for the same reason the grid, the Ports panel and the Doctor panel are never re-sorted; anything beyond three is a plain `+N` **count**, not a control. **The only action this element carries is scrolling a card into view** — one click, one viewport move, nothing else. It **never pushes, pulls, fetches, commits or stashes**: not behind a confirm, not in a menu, not "just for convenience", and the read it does run passes `--no-optional-locks` so it will not even take git's index lock. §3's OUT list is absolute here, and the pressure this element will attract is "I can already see it is unpushed, let me add a Push button" — that one button turns a reporting tool into a git client with rounded corners, and it is the thing to reject in review. **It makes no network call of any kind**, which is why it is allowed to run when the window opens at all: `git ls-remote` and `git fetch` are network calls, and one per project on launch would put a hung DNS lookup on the startup path, where it becomes a hung app. That trade has a consequence, and the consequence is **stated rather than hidden**: "ahead" is **exact**, because a project's own `HEAD` and its own tracking ref are both local facts — but **"behind" is deliberately not reported at all**, anywhere, because Hangar does not fetch and a number that is only as fresh as the user's last manual fetch would read as current. A wrong "you are up to date" is worse than silence, and no type in this element's report has a field capable of holding a behind count. **If that sentence — Hangar never fetches, so it can never tell you the remote moved — ever stops being true, this whole element's network argument needs rewriting rather than quietly extending.** Finally, a rule this element shares with every other check in Hangar: **a check that could not run must never render as a clean bill of health.** A git that is missing, times out or exits non-zero is not "clean" — those projects are stated on the line as a trailing `N not checked` count, naming them on hover, and they are counted separately from the items so a broken git can never push a real finding past the three-item cap. It is a **snapshot, not a monitor**: read once when the registry first loads, never polled, never repeated on window focus, and the line says how old the snapshot is.
 - **Build freshness** (added 2026-08-11, plan 063): one line above the launch line, reading **"A newer build is installed. Restart Hangar to use it."**, and **rendered only when the installed bundle is newer than the running process**. Silent otherwise — zero pixels, no "up to date" badge — and on a machine where the app was not installed from a local build, silent forever. It exists because Hangar is developed on the machine it runs on and installed to `/Applications`: replacing the bundle does nothing to a process already running, and three separate times that has made a merged feature look *missing* when it had shipped, which is the most expensive wrong conclusion available because it sends someone debugging code that is correct. It is **text, and only text**: no restart, no relaunch, no kill, no update download, no version check against a server. §3 bans auto-update and §8's guarantee is that Hangar owns its children's lifecycle, so a "Restart now" button that silently killed a running dev server would be a §6/§8 violation wearing a convenience hat — the user restarts Hangar. **It makes no network call of any kind**: two filesystem `stat`s and a constant baked in at compile time, which is also why it may run when the window opens. "Newer" is decided with a **tolerance, not a strict `>`** — the compile-time constant and a filesystem timestamp do not share a clock origin, and a few seconds of skew must never become a permanent nag. The rule the whole element turns on: **it must never claim to be stale when it is not.** A missing bundle path, an unreadable executable, an app launched from somewhere unexpected and every platform other than macOS all mean *say nothing* — never an error, never a toast, because this runs on the startup path. It is the one check re-read on window focus, because an install that lands *while the window is open* is the entire event it reports and one `stat` is not the cost that keeps the other snapshots off that path.
@@ -452,11 +452,13 @@ rule below exists to stop that changing what Hangar is for.
 
 ### The line
 
-Hangar **surfaces** activity and lets you reply to it. It is not a GitHub client. There is no
-repository browser, no file tree, no diff viewer, no PR review UI, no merge, close, label, assign,
-force-push or any other destructive or state-changing operation beyond **posting a comment**. When
-something needs more than a comment, Hangar opens the real page in the real browser — the same
-opener path §9 step 6 already uses.
+Hangar **surfaces** activity. It is not a GitHub client. There is no repository browser, no file
+tree, no diff viewer, no PR review UI, no merge, close, label, assign, force-push or any other
+destructive or state-changing operation beyond **posting a comment** — and as of 2026-08-11 (plan
+062) not even that: the integration has **no write path at all**, which is a stronger position than
+the one this sentence originally licensed, and the ceiling stays where it is written whether or not
+the ceiling is ever reached. When something needs more than Hangar shows, Hangar opens the real page
+in the real browser — the same opener path §9 step 6 already uses.
 
 The test for any proposal here: *does it tell me something I would otherwise have missed, or is it
 a worse version of a page GitHub already serves?* Build the first; link to the second.
@@ -488,9 +490,14 @@ appear in the startup path before the grid renders.
   opened, an explicit Refresh, and at most once on window focus with a sane minimum interval.
 - **Rate limits are shown, never swallowed.** When GitHub throttles, the UI says so and says when
   it resets.
-- **Offline is a first-class state**, not an error banner. The inbox says it is offline and shows
-  the last snapshot with its timestamp — the same staleness-is-visible rule §5 applies to
-  `stack.detectedAt`.
+- **Offline is a first-class state**, not an error banner. The inbox says it is offline **in place,
+  above its rows and never instead of them** — an offline read must not put a Connect form where the
+  rows were, because the token is fine — and the panel states the timestamp of what is on screen,
+  the same staleness-is-visible rule §5 applies to `stack.detectedAt`. **Amended 2026-08-11 (plan
+  062) on one point**, because the two halves of that sentence pulled apart the moment there was a
+  build state to show: a repository whose build could not be re-read is redrawn as **unknown**,
+  never left showing the green it had a minute ago. Staleness is visible when the timestamp is
+  visible; a stale green is not made honest by a date printed beside it.
 - Every request has a timeout. A hung request may never wedge the UI.
 
 ### Storage
@@ -500,15 +507,35 @@ appear in the startup path before the grid renders.
 - It holds no secret and no PII beyond what the API returned for the repositories the user linked.
 - `projects.json` gains at most a repository identifier per project. Nothing else.
 
-### Scope of the first version
+### Scope of the first version (amended 2026-08-11, plan 062)
 
-- An **inbox** of notifications for linked repositories, with unread state.
-- Reading an issue or PR thread.
-- **Posting a comment.** Nothing else writes.
-- Opening the corresponding page on github.com.
+The first version is **one read**: `GET /repos/{owner}/{repo}/commits/{ref}/check-runs`, folded to a
+single state per repository — is the build red or green. It is rendered by §11's Inbox entry, which
+carries the measurement that produced this shape.
 
-Everything else — reviews, merges, labels, assignments, releases, Actions, code — is out, and stays
-out unless this section is amended again.
+- **No call to `/notifications`, in any form.** That endpoint is the wrong shape for a state
+  question — fifty unread notifications were fifty rows saying the same sentence — and it is the one
+  GitHub surface reachable here that can mutate read/unread state. **Hangar reads.**
+- **Nothing writes.** No comment, no re-run, no label, no merge, no marking as read. The "posting a
+  comment" the section above permits is **not built**, and until it is there is no write path in
+  this integration at all.
+- **Reading an issue or PR thread is deferred, not cancelled**, for lack of anything to read — see
+  §11's Inbox entry for the measurement and for the concrete trigger to revisit.
+- Opening the corresponding page on github.com stays permitted, and stays the answer whenever
+  something needs more than one line.
+
+This amends the exclusion below on exactly one point: **read-only check results are in.** "Actions"
+was excluded to keep an Actions *dashboard* out — browsing workflows, re-running jobs, reading job
+logs — and all of that is still out. What is in is one word per repository, with no run ids, no job
+names, no logs, no links to any of them, and no control that touches a workflow. The endpoint is the
+Checks API rather than the Actions API for the same reason: it is the system those `CheckSuite`
+results come from, and it answers for any provider that reports checks, not for Actions alone. The
+legacy combined-status endpoint was rejected on a fact worth keeping: GitHub Actions never writes to
+it, so on the very repositories this feature exists for it answers "pending" forever — a red build
+reported as amber is exactly the failure this integration must not have.
+
+Everything else — reviews, merges, labels, assignments, releases, workflow runs and job logs, code —
+is out, and stays out unless this section is amended again.
 
 ### What this section does not license
 

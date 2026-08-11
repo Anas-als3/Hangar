@@ -15,6 +15,7 @@ import {
   clearLogBuffer,
   freePort,
   getBuildFreshness,
+  getBuildStatus,
   getGithubStatus,
   getLogBuffer,
   getPortStatus,
@@ -35,6 +36,7 @@ import {
 import { lastRunLabel } from "./status";
 import type {
   BuildFreshness,
+  BuildReport,
   GithubStatus,
   LogLine,
   LogLinesPayload,
@@ -150,6 +152,19 @@ export interface HangarState {
    *  panel opens, per §11: the header's unread count, when it exists, reads the local cache
    *  only and "must never make a network call, a keychain call, or run before the grid does"). */
   githubStatus: GithubStatus | null;
+  /**
+   * SPEC.md §18 / §11's Inbox entry (amended 2026-08-11, plan 062): the last `get_build_status`
+   * snapshot — `null` before the first fetch. A **snapshot, not a monitor**, on exactly the Ports
+   * and Doctor panels' terms: read on open and on Refresh, never polled, and never before the grid
+   * renders. A failed fetch leaves whatever rows were already here untouched.
+   */
+  builds: BuildReport | null;
+  /**
+   * Whether a `get_build_status` call is in flight. `builds === null` cannot carry this — it means
+   * "never fetched", and rendering that as "no repositories" would be a false statement shown for
+   * as long as the network call takes. Same reasoning as `preflightPending`.
+   */
+  buildsPending: boolean;
   /** SPEC.md §11 "Doctor" (plan 057): whether the slide-over is open. Ephemeral view state —
    *  never persisted, never touched by `loadRegistry`/`refreshRegistryQuietly` (same reasoning as
    *  `portsOpen`). Nothing on the startup path reads or writes it. */
@@ -211,6 +226,8 @@ let state: HangarState = {
   ports: null,
   inboxOpen: false,
   githubStatus: null,
+  builds: null,
+  buildsPending: false,
   doctorOpen: false,
   preflight: null,
   preflightPending: false,
@@ -987,19 +1004,76 @@ export async function freePortAction(projectId: string, pid: number, port: numbe
 }
 
 // ---------------------------------------------------------------------------------------------
-// Inbox (SPEC.md §18 / plan 053) — connection-status shell only; no notification list or thread
-// yet (slices 2/3). None of these calls ever run before the grid does — see `inboxOpen`'s and
-// `githubStatus`'s own doc comments above.
+// Inbox (SPEC.md §18 / plan 053, rebuilt by plan 062) — the connection surface, plus one build
+// row per distinct repository. There is no notification list and no thread: measured against the
+// live account on 2026-08-11, all 50 unread notifications were CI results and there were 0
+// issues and 0 pull requests, so a threaded reader would have had nothing in it.
+//
+// None of these calls ever run before the grid does — see `inboxOpen`'s, `githubStatus`'s and
+// `builds`'s own doc comments above.
 // ---------------------------------------------------------------------------------------------
 
-/** Opens the slide-over and reads the current connection status. */
+/** Opens the slide-over and takes the first snapshot: the connection status, then the builds. */
 export async function openInbox(): Promise<void> {
   setState({ inboxOpen: true });
-  await refreshGithubStatus();
+  await refreshInbox();
 }
 
 export function closeInbox(): void {
   setState({ inboxOpen: false });
+}
+
+/**
+ * Whether the stored credential is one Hangar can currently *use*.
+ *
+ * §18: "offline is a first-class state, not an error banner" — a token that exists and simply could
+ * not be used this minute (offline, either rate limit) still gets the row list, with the banner
+ * above it. `invalid`, `insufficient-scope` and `keychain-denied` are the opposite case, where the
+ * credential itself is the problem, so those get the Connect form instead.
+ *
+ * One predicate, exported, because two copies of it — one deciding whether to fetch, one deciding
+ * what to render — is exactly how a panel comes to show rows it never fetched.
+ */
+export function githubCredentialUsable(status: GithubStatus | null): boolean {
+  if (!status) return false;
+  if (status.state === "connected") return true;
+  if (status.hadStoredToken !== true) return false;
+  return (
+    status.state === "offline" ||
+    status.state === "rate-limited" ||
+    status.state === "secondary-rate-limited"
+  );
+}
+
+/** §11: "reads once on open and again only on Refresh" — the Ports/Doctor snapshot rule, applied
+ *  to the one network read this panel makes. Sequential, not parallel: `get_github_status` is what
+ *  resolves the keychain for the session, and letting the two race would mean two OS credential
+ *  prompts on the very first open. Never a toast — every outcome is a state the panel renders in
+ *  place (§18). */
+export async function refreshInbox(): Promise<void> {
+  setState({ buildsPending: true });
+  try {
+    await refreshGithubStatus();
+    // No credential Hangar can use means no request: firing N doomed calls on every open of a
+    // panel that is about to render its Connect form would spend rate limit to learn nothing.
+    // The rows go with it, because rows fetched with a credential that no longer works are not
+    // evidence about anything.
+    if (!githubCredentialUsable(state.githubStatus)) {
+      setState({ builds: null });
+      return;
+    }
+    setState({ builds: await getBuildStatus() });
+  } catch (err) {
+    // A genuinely unexpected rejection — not a connection state, which comes back as `Ok`.
+    // SPEC.md §18, as amended by plan 062: "a repository whose build could not be re-read is
+    // redrawn as unknown, never left showing the green it had a minute ago." Keeping the old rows
+    // here would leave a green row under a header still stamped with the old snapshot's time,
+    // which is the stale green that amendment exists to forbid.
+    setState({ builds: null });
+    setToast(errorMessage(err));
+  } finally {
+    setState({ buildsPending: false });
+  }
 }
 
 /** §18: never a toast — a connection problem is a state the panel renders in place. A genuinely
@@ -1019,18 +1093,34 @@ export async function connectGithubAction(token: string): Promise<boolean> {
   try {
     const githubStatus = await setGithubToken(token);
     setState({ githubStatus });
-    return githubStatus.state === "connected";
+    if (githubStatus.state !== "connected") return false;
+    // The token that was just proven good is the one thing standing between the user and the
+    // rows; fetching them here is what makes Connect show something rather than an empty panel.
+    // Its own try/catch on purpose: the token IS stored and the connection IS good, so a failure
+    // to read builds must not be reported to the caller as a failed connect.
+    setState({ buildsPending: true });
+    try {
+      setState({ builds: await getBuildStatus() });
+    } catch (err) {
+      setState({ builds: null });
+      setToast(errorMessage(err));
+    } finally {
+      setState({ buildsPending: false });
+    }
+    return true;
   } catch (err) {
     setToast(errorMessage(err));
     return false;
   }
 }
 
-/** §18: "one obvious action, and must leave no residue." */
+/** §18: "one obvious action, and must leave no residue." The rows go with the token — leaving them
+ *  on screen after a Disconnect would show repository state read with a credential that no longer
+ *  exists. */
 export async function disconnectGithubAction(): Promise<void> {
   try {
     await removeGithubToken();
-    setState({ githubStatus: { state: "disconnected" } });
+    setState({ githubStatus: { state: "disconnected" }, builds: null });
   } catch (err) {
     setToast(errorMessage(err));
   }

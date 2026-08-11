@@ -6,9 +6,13 @@
 //! from the three `#[tauri::command]`s in `commands.rs`, each invoked solely by an explicit
 //! webview call — never from `main.rs`'s `setup`, never from `run.rs`'s startup path.
 
+pub mod build;
 pub mod client;
 pub mod error;
 pub mod keychain;
+/// Plan 062 — repository detection reads `.git/config` directly and spawns nothing. See that
+/// module's header for why a git subprocess is the wrong tool here specifically.
+pub mod repo;
 pub mod secret;
 
 use tokio::sync::Mutex;
