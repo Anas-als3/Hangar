@@ -4,3 +4,15 @@ target/
 .DS_Store
 *.local
 .claude/
+
+# Secrets — never commit these. Added 2026-08-11 before the repo went public:
+# the app now handles a GitHub token, and a .env here would be a real leak
+# rather than a hypothetical one.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
