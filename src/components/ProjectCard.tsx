@@ -243,56 +243,87 @@ export function ProjectCard({ project }: { project: ProjectView }) {
           </p>
         </div>
 
-        <div className="relative" ref={menuRef} onKeyDown={onMenuKeyDown}>
+        {/* §11's one-click amendment (added 2026-08-11, plan 061): the single promoted control,
+            sharing the `⋯` control's row so the card gains no row and no height in any status.
+            No new capability — same `openInEditorAction` the menu row below calls, so the §12
+            "Couldn't run 'code'" toast stays the one error route. Quiet on purpose: the `⋯`
+            button's own tokens (`text-muted` + `hover:bg-white/5 hover:text-text`), never the
+            accent, which belongs to Run and the active phase. `leading-6` matches the `⋯`
+            button's inherited 24px line box exactly, so the two boxes are the same height.
+            Icon-only, glyph in a `<span aria-hidden>` like the ⚙ and ⋯ controls — no icon
+            library, no SVG (§4: no new dependency), and no text label beside Run. `font-mono`
+            follows this card's existing mono glyphs (path, command, `:port`, stack badge) and
+            keeps `</>` even-width; §11's type scale gains nothing new. */}
+        <div className="flex shrink-0 items-start">
           <button
             type="button"
-            aria-label={
-              hasNotes ? `Actions for ${project.name} (has notes)` : `Actions for ${project.name}`
+            // §12: disabled when the folder is gone, exactly as Run is — but NEVER by a §6
+            // status. Opening a running project's source is as valid as opening a stopped
+            // one; this control does not touch the state machine.
+            disabled={!project.pathExists}
+            aria-label={`Open ${project.name} in your editor`}
+            title={
+              project.pathExists
+                ? "Open in your editor"
+                : "The project folder no longer exists"
             }
-            aria-haspopup="menu"
-            aria-expanded={menuOpen}
-            onClick={() => setOverlay((open) => (open === "menu" ? null : "menu"))}
-            className="relative rounded px-2 py-1 text-muted transition-colors hover:bg-white/5 hover:text-text"
+            onClick={() => void openInEditorAction(project.id)}
+            className="rounded px-2 py-1 font-mono text-xs leading-6 text-muted transition-colors hover:bg-white/5 hover:text-text disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-muted"
           >
-            <span aria-hidden="true">⋯</span>
-            {/* §11: a property of the existing control, not a new card element — quiet on purpose. */}
-            {hasNotes && (
-              <span
-                aria-hidden="true"
-                className="absolute right-0.5 top-0.5 size-1.5 rounded-full bg-muted"
-              />
-            )}
+            <span aria-hidden="true">&lt;/&gt;</span>
           </button>
-          {menuOpen && (
-            <div
-              role="menu"
-              className="absolute right-0 z-10 mt-1 w-44 overflow-hidden rounded-md border border-white/10 bg-bg py-1 shadow-lg"
+
+          <div className="relative" ref={menuRef} onKeyDown={onMenuKeyDown}>
+            <button
+              type="button"
+              aria-label={
+                hasNotes ? `Actions for ${project.name} (has notes)` : `Actions for ${project.name}`
+              }
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              onClick={() => setOverlay((open) => (open === "menu" ? null : "menu"))}
+              className="relative rounded px-2 py-1 text-muted transition-colors hover:bg-white/5 hover:text-text"
             >
-              {MENU_ITEMS.map(({ label, action }) => (
-                <button
-                  key={label}
-                  role="menuitem"
-                  type="button"
-                  disabled={action === null}
-                  onClick={
-                    action
-                      ? () => {
-                          setOverlay(null);
-                          action(project.id);
-                        }
-                      : undefined
-                  }
-                  className={
-                    action
-                      ? "block w-full px-3 py-1.5 text-left text-sm text-text transition-colors hover:bg-white/5"
-                      : "block w-full cursor-not-allowed px-3 py-1.5 text-left text-sm text-muted opacity-50"
-                  }
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          )}
+              <span aria-hidden="true">⋯</span>
+              {/* §11: a property of the existing control, not a new card element — quiet on purpose. */}
+              {hasNotes && (
+                <span
+                  aria-hidden="true"
+                  className="absolute right-0.5 top-0.5 size-1.5 rounded-full bg-muted"
+                />
+              )}
+            </button>
+            {menuOpen && (
+              <div
+                role="menu"
+                className="absolute right-0 z-10 mt-1 w-44 overflow-hidden rounded-md border border-white/10 bg-bg py-1 shadow-lg"
+              >
+                {MENU_ITEMS.map(({ label, action }) => (
+                  <button
+                    key={label}
+                    role="menuitem"
+                    type="button"
+                    disabled={action === null}
+                    onClick={
+                      action
+                        ? () => {
+                            setOverlay(null);
+                            action(project.id);
+                          }
+                        : undefined
+                    }
+                    className={
+                      action
+                        ? "block w-full px-3 py-1.5 text-left text-sm text-text transition-colors hover:bg-white/5"
+                        : "block w-full cursor-not-allowed px-3 py-1.5 text-left text-sm text-muted opacity-50"
+                    }
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </header>
 
