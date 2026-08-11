@@ -166,30 +166,17 @@ pub struct ProjectView {
     pub path_exists: bool,
 }
 
-/// SPEC.md §4 — the settings file.
+/// SPEC.md §4 — the one-key settings file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     pub editor_command: String,
-    /// SPEC.md §11 / plan 059 — the osv.dev dependency check in the Doctor panel. **`false` unless
-    /// the user turns it on**: it is the first request Hangar makes without the user having
-    /// connected anything, and a dev tool that phones out on first launch, unasked, is one people
-    /// uninstall.
-    ///
-    /// `#[serde(default)]` is load-bearing, not decoration. Every `settings.json` already on disk
-    /// has only `editorCommand`; without it, this field would be required, `load_settings` would
-    /// read every existing file as unparseable, and the very first launch after an update would
-    /// rename the user's settings to `.broken-<timestamp>` and reset their editor command.
-    #[serde(default)]
-    pub check_dependencies: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
             editor_command: "code".to_string(),
-            // Plan 059's first hard rule, at the only place the word "default" appears.
-            check_dependencies: false,
         }
     }
 }
@@ -1072,62 +1059,8 @@ mod tests {
         let written = std::fs::read_to_string(settings_path(&dir)).unwrap();
         assert!(written.contains("\"editorCommand\""), "got {written}");
 
-        save_settings(
-            &dir,
-            &Settings { editor_command: "subl".into(), check_dependencies: false },
-        )
-        .unwrap();
+        save_settings(&dir, &Settings { editor_command: "subl".into() }).unwrap();
         assert_eq!(load_settings(&dir).editor_command, "subl");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// Plan 059's first hard rule, at the storage layer: a settings file that has never been
-    /// touched leaves the osv.dev check **off**, both in memory and in the bytes on disk.
-    #[test]
-    fn a_fresh_settings_file_has_the_dependency_check_off() {
-        let dir = scratch("settings-fresh");
-
-        let s = load_settings(&dir);
-        assert!(!s.check_dependencies, "the dependency check must default to OFF");
-
-        let written = std::fs::read_to_string(settings_path(&dir)).unwrap();
-        assert!(
-            written.contains("\"checkDependencies\": false"),
-            "a first-run settings.json must persist the OFF state, got {written}"
-        );
-
-        // And it survives the round trip once the user turns it on.
-        save_settings(
-            &dir,
-            &Settings { editor_command: "code".into(), check_dependencies: true },
-        )
-        .unwrap();
-        assert!(load_settings(&dir).check_dependencies);
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// The upgrade path. A `settings.json` written before plan 059 has only `editorCommand`; it
-    /// must still parse, keep that value, and read as OFF — **not** be renamed `.broken-…` and
-    /// replaced, which is what a required field would have caused on the first launch after an
-    /// update.
-    #[test]
-    fn a_settings_file_written_before_this_field_existed_still_loads() {
-        let dir = scratch("settings-upgrade");
-        std::fs::write(settings_path(&dir), "{\n  \"editorCommand\": \"subl\"\n}").unwrap();
-
-        let settings = load_settings(&dir);
-
-        assert_eq!(settings.editor_command, "subl", "the user's editor must survive the upgrade");
-        assert!(!settings.check_dependencies);
-        let backups: Vec<PathBuf> = std::fs::read_dir(&dir)
-            .unwrap()
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.to_string_lossy().contains(".broken-"))
-            .collect();
-        assert!(backups.is_empty(), "an older settings file is not corrupt: {backups:?}");
-
         let _ = std::fs::remove_dir_all(&dir);
     }
 

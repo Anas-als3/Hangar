@@ -27,17 +27,18 @@
 //! `not-a-repo` (looked, nothing to say) · `checked` (git answered) · `unavailable` (git did **not**
 //! answer — missing, timed out, or exited non-zero). A clean repo is `checked` with `ahead: 0,
 //! uncommitted: 0`; a failed check is `unavailable` with both `None`. They can never collapse into
-//! each other, because the state is a separate field the frontend must switch on. This is the same
-//! rule SPEC.md §11 states for the Doctor panel's dependency check — "a check that could not run
-//! must never render as a clean bill of health" — applied to a line that is silent when clean.
+//! each other, because the state is a separate field the frontend must switch on. That separation
+//! is the whole point: **a check that could not run must never render as a clean bill of health.**
+//! In a line that is silent when clean, "I did not look" and "there is nothing to say" would
+//! otherwise draw the same zero pixels, and the user would read reassurance into a failure.
 //!
 //! # Why a sibling module and not `preflight.rs`
 //!
 //! `preflight.rs` is the Doctor panel's module, and §11 binds it to a rule this module breaks by
 //! design: preflight "never runs on the startup path". The launch line *is* the startup path — it
 //! is the thing you see when you sit down. Folding the two together would put one module under two
-//! contradictory lifecycle rules, and would drag the Doctor's opt-in network call (plan 059's
-//! osv.dev check, reached through the same `get_preflight`) onto launch. They stay apart.
+//! contradictory lifecycle rules, and every future check added to the Doctor would arrive on the
+//! launch path by accident rather than by decision. They stay apart.
 
 use std::path::Path;
 use std::time::Duration;

@@ -25,16 +25,9 @@ tauri-build = { version = "2", features = [] }
 #     --target x86_64-pc-windows-msvc --no-default-features --all-targets
 #
 # It proves the Windows code COMPILES. It does not run it — only CI's `windows` job does that.
-#
-# Plan 059 added `osv` on the same terms and for the same single reason: it is the other thing that
-# needs `reqwest`. It is a SEPARATE feature rather than a second use of `github` because it is not
-# GitHub — turning the GitHub slice off must not silently also turn off an unrelated dependency
-# check — and the two modules never reference each other, so they gate independently. The command
-# above is unchanged: `--no-default-features` still drops BOTH, and with them `reqwest`.
 [features]
-default = ["github", "osv"]
+default = ["github"]
 github = ["dep:reqwest", "dep:keyring"]
-osv = ["dep:reqwest"]
 
 [dependencies]
 tauri = { version = "2", features = [] }
@@ -66,8 +59,7 @@ keyring = { version = "4", optional = true, features = ["apple-native-keyring-st
 # DEVIATION: SPEC.md's own snippet names the historic `rustls-tls` feature; reqwest 0.13 renamed it
 # to `rustls` upstream. Kept the spec's INTENT (rustls, never OpenSSL) per CLAUDE.md's "trust the
 # compiler and current docs" rule — verified with `cargo tree`: no `openssl*` crate appears anywhere.
-# `optional` only because of the `github` AND `osv` features above — either one turns it on, and
-# `--no-default-features` (both off) is what drops it. The justification is unchanged.
+# `optional` only because of the `github` feature above — the justification is unchanged.
 reqwest = { version = "0.13", optional = true, default-features = false, features = ["rustls", "json"] }
 
 [target.'cfg(unix)'.dependencies]
