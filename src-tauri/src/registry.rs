@@ -1267,6 +1267,16 @@ mod tests {
             checked_at: "2026-08-11T09:00:00Z".into(),
         };
 
+        // SPEC.md §11 "Build freshness" / plan 063: `installed_at` carries
+        // `skip_serializing_if = "Option::is_none"` and is `None` in the common (quiet) answer, so
+        // it is `Some` here — the quiet answer as a sample would let this guard pass while never
+        // checking that key. `newer_build_installed: true` only because that is the only state
+        // `installed_at` is legal in; the check itself is covered in `freshness.rs`.
+        let build_freshness = crate::freshness::BuildFreshness {
+            newer_build_installed: true,
+            installed_at: Some("2026-08-11T09:11:00Z".into()),
+        };
+
         #[cfg_attr(not(feature = "github"), allow(unused_mut))]
         let mut samples: Vec<serde_json::Value> = vec![
             serde_json::to_value(&project_view).unwrap(),
@@ -1278,6 +1288,7 @@ mod tests {
             serde_json::to_value(&port_status).unwrap(),
             serde_json::to_value(&preflight_report).unwrap(),
             serde_json::to_value(&vcs_status).unwrap(),
+            serde_json::to_value(&build_freshness).unwrap(),
         ];
         // Plan 058 — see the `github_status` sample above. Order is irrelevant: every sample is
         // asserted independently.

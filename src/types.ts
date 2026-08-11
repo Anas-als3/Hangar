@@ -175,6 +175,22 @@ export interface VcsStatus {
   checkedAt: string;
 }
 
+/**
+ * SPEC.md §11 "Build freshness" (added 2026-08-11, plan 063) — `get_build_freshness`'s wire shape.
+ * Mirrors `freshness::BuildFreshness`.
+ *
+ * **There is deliberately no field capable of carrying an action** — no download URL, no version,
+ * no pid, no restart token — for the same reason `VcsStatus` has no `behind`: a field that does not
+ * exist cannot be filled by a later refactor. §3 bans auto-update and §8 owns child-process
+ * lifecycle; this reports, and the user restarts Hangar themselves.
+ */
+export interface BuildFreshness {
+  /** `false` is the common, quiet case, and the answer to every failure and every non-macOS run. */
+  newerBuildInstalled: boolean;
+  /** ISO — when the bundle on disk was written. Only ever present alongside `true`. */
+  installedAt?: string;
+}
+
 /** §7 event payload — emitted on every transition. */
 export interface StatusChangedPayload {
   projectId: string;

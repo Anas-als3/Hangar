@@ -10,6 +10,7 @@
  */
 import { useEffect, useRef } from "react";
 import AddEditDialog from "./components/AddEditDialog";
+import BuildFreshnessLine from "./components/BuildFreshnessLine";
 import DoctorPanel from "./components/DoctorPanel";
 import InboxPanel from "./components/InboxPanel";
 import LaunchLine from "./components/LaunchLine";
@@ -28,6 +29,7 @@ import {
   openLogs,
   openPorts,
   openSettingsDialog,
+  refreshBuildFreshness,
   refreshRegistryQuietly,
   refreshVcs,
   runningCount,
@@ -266,6 +268,14 @@ function App() {
     void loadRegistry().then(() => refreshVcs());
   }, []);
 
+  // SPEC.md §11 "Build freshness" (plan 063): whether the `.app` on disk is newer than this
+  // process. Separate from the effect above and NOT chained behind the registry — it is two `stat`s
+  // in Rust, it needs no project data, and it must not wait on a git snapshot to say that the thing
+  // rendering the git snapshot is out of date.
+  useEffect(() => {
+    void refreshBuildFreshness();
+  }, []);
+
   // SPEC.md §5: pathExists must refresh "at startup, on registry change, and when Run is
   // clicked". Window focus is the natural "user came back from the browser" moment for a folder
   // that moved while Hangar sat in the background — no timer, so this never polls. Plan 038: the
@@ -274,6 +284,12 @@ function App() {
   useEffect(() => {
     const onFocus = () => {
       void refreshRegistryQuietly();
+      // Plan 063: the same "user came back" moment, and the ONLY moment this feature can work —
+      // `npm run install:app` finishes in a terminal, the user clicks back to this window, and the
+      // bundle on disk is now newer than the process drawing it. Read once at launch it would only
+      // ever compare a build against itself. One `stat`, no spawn, no network: the cost that made
+      // plan 060 refuse this path (N git children) is not present here.
+      void refreshBuildFreshness();
     };
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
@@ -386,6 +402,14 @@ function App() {
             Could not load the project registry: {loadError}
           </div>
         )}
+
+        {/* §11 "Build freshness" (plan 063): first of the three lines, because it is the only one
+            about the app itself — if the window is running an old build, every other thing on this
+            screen may be answering for code that is no longer what is installed. Like the launch
+            line it has no render condition here: silence is decided inside the component, which
+            returns null unless Rust said the bundle on disk is newer. Text only — no restart, no
+            kill, no update download (§3, §8). */}
+        <BuildFreshnessLine />
 
         {/* §11 "Launch line" (plan 060): above the resume line, because "you have thirty commits
             on one laptop" outranks "want to start yesterday's set?". It has no render condition of

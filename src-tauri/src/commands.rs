@@ -16,6 +16,8 @@ use tokio::sync::Mutex;
 use serde::Serialize;
 
 use crate::env_resolve::{DevEnvCell, EnvMap};
+// SPEC.md §11 "Build freshness" / plan 063 — two `stat`s and a compile-time constant, no spawn.
+use crate::freshness;
 // SPEC.md §18 / plan 053: `GithubState` is intentionally NOT part of `AppState` below — see its
 // own doc comment in `github/mod.rs`. Plan 058: behind the default-ON `github` feature.
 #[cfg(feature = "github")]
@@ -732,6 +734,30 @@ pub async fn get_vcs_status(state: State<'_, AppState>) -> Result<Vec<vcs::VcsSt
     }
 
     Ok(rows)
+}
+
+/// SPEC.md §11 "Build freshness" (added 2026-08-11, plan 063) — whether the `.app` on disk is newer
+/// than the process serving this call. An addition to the frozen §7 list, never a rename or a
+/// reshape of anything in it.
+///
+/// **A new command rather than a fold into an existing startup read**, which plan 063 asked for
+/// first. It does not fit: every read already on the startup path is either a per-project array
+/// (`get_projects`, `get_vcs_status`) or persisted config (`get_settings`), and this is a single
+/// app-level fact about the running process. Hanging it off one of those payloads would *reshape*
+/// a §7 shape — the one thing the freeze forbids — whereas adding a command is the subset-and-add
+/// pattern `get_preflight` and `get_vcs_status` already set.
+///
+/// **`Ok`, always.** A missing bundle path, an unreadable executable, an app launched from
+/// somewhere unexpected and every non-macOS platform all answer `newerBuildInstalled: false`. This
+/// is called when the window opens, and §7 turns every `Err` into a toast — an error here would be
+/// a toast on every launch.
+///
+/// **No network, no action.** Two `stat`s and a compile-time constant (`freshness.rs`); nothing
+/// restarts, kills, downloads or asks a server about a version. §3 bans auto-update and §8 owns
+/// child-process lifecycle — the user restarts Hangar themselves.
+#[tauri::command]
+pub async fn get_build_freshness() -> Result<freshness::BuildFreshness, String> {
+    Ok(freshness::check())
 }
 
 /// SPEC.md §7 `find_free_port` (added 2026-08-10, plan 043) — §10 step 4's "Choose for me". Walks
