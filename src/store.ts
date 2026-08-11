@@ -33,6 +33,12 @@ import {
   stopProject,
   updateProject,
 } from "./api";
+import {
+  EMPTY_NOTIFICATIONS,
+  markNotificationsRead,
+  pushNotification,
+} from "./notifications";
+import type { NotificationState } from "./notifications";
 import { lastRunLabel } from "./status";
 import type {
   BuildFreshness,
@@ -125,6 +131,21 @@ export interface HangarState {
    *  whenever a toast is set without one, so a later unrelated toast never inherits a stale
    *  project's button. */
   toastProjectId: string | null;
+  /** Plan 064: bumped by every `setToast(message)`, and used by `App.tsx` as the Toast's React
+   *  `key`. Its whole job is that an *identical* message raised twice still remounts the component
+   *  and so restarts the auto-dismiss timer — §11 forbids deduplicating repeated toasts (two "port
+   *  is in use" refusals are two events), and without this the second one would inherit the first's
+   *  already-expiring timer and vanish almost immediately. Never persisted, never rendered. */
+  toastSeq: number;
+  /** SPEC.md §11 "Notifications" (plan 064): every toast raised this session, newest first, plus
+   *  the unread tally. **In memory only** — nothing here is written to disk, there is no
+   *  `projects.json` field and no settings key. See `src/notifications.ts` for the four rules. */
+  notifications: NotificationState;
+  /** §11 Notifications panel (plan 064): whether the slide-over is open. Ephemeral view state —
+   *  never persisted, never touched by `loadRegistry`/`refreshRegistryQuietly` (same reasoning as
+   *  `portsOpen`). Reads local state only: it makes no command call at all, so unlike Ports,
+   *  Doctor and Inbox there is nothing here that could poll or reach the network. */
+  notificationsOpen: boolean;
   /** Which dialog (add/edit/settings) is open — see `DialogState`. */
   dialog: DialogState;
   /** Ephemeral header search term (plan 017) — never persisted, filters by name only. */
@@ -218,6 +239,9 @@ let state: HangarState = {
   toast: null,
   toastTone: "error",
   toastProjectId: null,
+  toastSeq: 0,
+  notifications: EMPTY_NOTIFICATIONS,
+  notificationsOpen: false,
   dialog: null,
   search: "",
   openFolders: new Set(),
@@ -278,13 +302,56 @@ function errorMessage(err: unknown): string {
  * `projectId` (plan 034) is a third optional parameter so the 13 call sites that don't know a
  * project stay textually unchanged. Always cleared to `null` when omitted — a generic toast must
  * never inherit an earlier toast's "Show logs" button.
+ *
+ * Plan 064: **every raised toast is recorded in `notifications` on its way to the screen**, which
+ * is what makes the auto-dismiss timer safe to add. §7 says errors surface as toasts and that is
+ * still true — the bell is where a toast *goes*, not a replacement for it, and nothing anywhere may
+ * raise an error into the history without also raising the toast, or an error could be missed
+ * entirely. Because that rule lives here, in the one function every call site already uses, it holds
+ * for all of them without a single call site changing.
+ *
+ * `setToast(null)` is the dismissal — manual or by the timer — and records nothing: the entry was
+ * written when the message was raised, and writing it again on the way out would double every row.
  */
 export function setToast(
   message: string | null,
   tone: ToastTone = "error",
   projectId?: string,
 ): void {
-  setState({ toast: message, toastTone: tone, toastProjectId: projectId ?? null });
+  if (message === null) {
+    setState({ toast: null, toastTone: tone, toastProjectId: null });
+    return;
+  }
+  setState({
+    toast: message,
+    toastTone: tone,
+    toastProjectId: projectId ?? null,
+    toastSeq: state.toastSeq + 1,
+    notifications: pushNotification(state.notifications, {
+      message,
+      tone,
+      projectId: projectId ?? null,
+      at: Date.now(),
+    }),
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Notifications (SPEC.md §11 "Notifications", plan 064) — the bell. Local state only: there is no
+// command, no fetch and no timer here, so unlike Ports/Doctor/Inbox there is nothing that *could*
+// poll or reach the network. Nothing below writes to disk.
+// ---------------------------------------------------------------------------------------------
+
+/** Opens the slide-over and marks everything read — §11: the badge clears when the panel opens. */
+export function openNotifications(): void {
+  setState({
+    notificationsOpen: true,
+    notifications: markNotificationsRead(state.notifications),
+  });
+}
+
+export function closeNotifications(): void {
+  setState({ notificationsOpen: false });
 }
 
 /**

@@ -8,7 +8,7 @@
  * (§7). Both event listeners are registered once at startup in `src/main.tsx`, not here and
  * certainly not in `LogPanel`.
  */
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import AddEditDialog from "./components/AddEditDialog";
 import BuildFreshnessLine from "./components/BuildFreshnessLine";
 import DoctorPanel from "./components/DoctorPanel";
@@ -17,9 +17,11 @@ import LaunchLine from "./components/LaunchLine";
 import LogPanel from "./components/LogPanel";
 import MoveToFolderDialog from "./components/MoveToFolderDialog";
 import NotesPanel from "./components/NotesPanel";
+import NotificationsPanel from "./components/NotificationsPanel";
 import PortsPanel from "./components/PortsPanel";
 import ProjectGrid from "./components/ProjectGrid";
 import SettingsDialog from "./components/SettingsDialog";
+import { notificationActions, toastDurationMs } from "./notifications";
 import { lastSessionCluster } from "./session";
 import {
   loadRegistry,
@@ -27,6 +29,7 @@ import {
   openDoctor,
   openInbox,
   openLogs,
+  openNotifications,
   openPorts,
   openSettingsDialog,
   refreshBuildFreshness,
@@ -104,7 +107,18 @@ function EmptyState() {
  * cannot tell a port refusal from any other failure kind by parsing `message` — that would be a
  * regex tied to `run.rs`'s wording. Instead the Ports button is shown whenever `projectId`
  * resolves and that project's status is `stopped`/`crashed`, i.e. the Run did not take. Honest
- * for every failed Run, not just a collision — same rule as the "dangling id" guard above.
+ * for every failed Run, not just a collision — same rule as the "dangling id" guard above. Both
+ * buttons' conditions now live in `notifications.ts`'s `notificationActions`, because the bell
+ * panel renders the same two buttons and two copies of the rule would drift.
+ *
+ * Plan 064 — **it auto-dismisses**, 4 s neutral / 6 s error, and the caller gives it a `key` of
+ * `toastSeq` so a new toast remounts it and restarts the clock from full (§11 forbids collapsing
+ * two identical messages into one, so an identical repeat must get its own full duration).
+ *
+ * The timer pauses while the pointer is over the toast **and** while focus is inside it, and
+ * resumes from the *remaining* time rather than restarting: a message that vanishes mid-sentence
+ * while it is being read is the single most irritating version of this feature. The manual dismiss
+ * button stays. Nothing is lost when it goes — `setToast` recorded it in the bell on the way in.
  */
 function Toast({
   message,
@@ -119,9 +133,34 @@ function Toast({
   projectName?: string;
   projectStatus?: Status;
 }) {
+  const [paused, setPaused] = useState(false);
+  // Survives a pause/resume but not a new toast: the caller's `key={toastSeq}` remounts this
+  // component for every raised message, so this ref is re-initialised to the full duration then,
+  // and only then. That is why there is no reset effect racing this one.
+  const remainingRef = useRef(toastDurationMs(tone));
+
+  useEffect(() => {
+    if (paused) return;
+    const startedAt = Date.now();
+    const timer = window.setTimeout(() => setToast(null), remainingRef.current);
+    return () => {
+      window.clearTimeout(timer);
+      // Debit only what actually elapsed, so a hover mid-countdown resumes where it left off.
+      remainingRef.current = Math.max(0, remainingRef.current - (Date.now() - startedAt));
+    };
+  }, [paused]);
+
+  const actions = notificationActions(projectId, projectName, projectStatus);
+
   return (
     <div
       role="alert"
+      // React's onFocus/onBlur are delegated from focusin/focusout, so they fire for the buttons
+      // inside this container too — tabbing into the toast pauses it exactly like hovering does.
+      onMouseEnter={() => setPaused(true)}
+      onMouseLeave={() => setPaused(false)}
+      onFocus={() => setPaused(true)}
+      onBlur={() => setPaused(false)}
       className={`hangar-fade-in fixed bottom-6 left-1/2 z-30 flex max-w-[36rem] -translate-x-1/2 items-start gap-4 rounded-md border bg-surface px-4 py-3 text-sm text-text shadow-lg ${
         tone === "neutral" ? "border-white/10" : "border-status-danger/40"
       }`}
@@ -130,7 +169,7 @@ function Toast({
         {projectName ? <span className="font-medium">{projectName} — </span> : null}
         {message}
       </span>
-      {projectId && projectName && (
+      {actions.showLogs && projectId && (
         <button
           type="button"
           onClick={() => {
@@ -142,7 +181,7 @@ function Toast({
           Show logs
         </button>
       )}
-      {projectId && (projectStatus === "stopped" || projectStatus === "crashed") && (
+      {actions.ports && (
         <button
           type="button"
           onClick={() => {
@@ -163,6 +202,61 @@ function Toast({
         <span aria-hidden="true">✕</span>
       </button>
     </div>
+  );
+}
+
+/**
+ * The bell (plan 064). No glyph in the three bundled §11 fonts renders a bell in text presentation
+ * — U+1F514 is emoji-presentation and would drop a full-colour icon into a deliberately graphite
+ * palette — so this is an inline stroke path in `currentColor`, inheriting the exact muted/hover
+ * treatment of the header buttons beside it. No dependency, no icon set, no network.
+ */
+function BellIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 16 16"
+      className="h-4 w-4"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M8 2.2a3.6 3.6 0 0 0-3.6 3.6c0 3-1.15 4-1.15 4h9.5s-1.15-1-1.15-4A3.6 3.6 0 0 0 8 2.2Z" />
+      <path d="M6.65 11.9a1.55 1.55 0 0 0 2.7 0" />
+    </svg>
+  );
+}
+
+/**
+ * SPEC.md §11 "Notifications" (plan 064): the header control that opens the history slide-over,
+ * carrying an unread count when there are unread entries and nothing at all when there are none.
+ *
+ * Unlike Ports, Doctor and Inbox this is **not** hidden when the registry is empty. Those three
+ * would have nothing to show without projects; this one is the retrieval surface for §7's only
+ * error channel, and the very first thing a new user can trigger is a rejected `add_project`. A
+ * control that only appears *after* the first message has already been dismissed is a control the
+ * user has never seen at the moment they need it.
+ */
+function NotificationsButton({ unread }: { unread: number }) {
+  return (
+    <button
+      type="button"
+      aria-label={unread > 0 ? `Notifications, ${unread} unread` : "Notifications"}
+      title="Notifications"
+      onClick={openNotifications}
+      className="flex items-center gap-1.5 rounded-md border border-white/10 px-3 py-1.5 text-sm text-muted transition-colors hover:bg-white/5 hover:text-text"
+    >
+      <BellIcon />
+      {/* §11's accent belongs to Run and the active phase, so the count is deliberately not
+          accent-coloured — it is a quiet chip, and its absence is the "nothing unread" state. */}
+      {unread > 0 && (
+        <span className="rounded-full bg-white/10 px-1.5 text-xs font-medium leading-5 text-text">
+          {unread > 99 ? "99+" : unread}
+        </span>
+      )}
+    </button>
   );
 }
 
@@ -238,6 +332,9 @@ function App() {
     toast,
     toastTone,
     toastProjectId,
+    toastSeq,
+    notifications,
+    notificationsOpen,
     search,
     openLogsFor,
     notesFor,
@@ -253,10 +350,11 @@ function App() {
   // §11's aria-modal on each overlay is a promise the DOM doesn't keep by itself (plan 039) —
   // `inert` on the header+main wrapper below is the actual enforcement. Same fields as the
   // folder band's Esc guard in ProjectGrid.tsx (plan 041 adds `portsOpen` to both; SPEC.md §18 /
-  // plan 053 adds `inboxOpen` to both; SPEC.md §11 Doctor / plan 057 adds `doctorOpen` to both —
-  // a sixth over-the-grid surface must be in both, or one Esc fires two state changes).
+  // plan 053 adds `inboxOpen` to both; SPEC.md §11 Doctor / plan 057 adds `doctorOpen` to both;
+  // SPEC.md §11 Notifications / plan 064 adds `notificationsOpen` to both — a seventh
+  // over-the-grid surface must be in both, or one Esc fires two state changes).
   const overlayOpen = Boolean(
-    dialog || openLogsFor || notesFor || portsOpen || inboxOpen || doctorOpen,
+    dialog || openLogsFor || notesFor || portsOpen || inboxOpen || doctorOpen || notificationsOpen,
   );
 
   useEffect(() => {
@@ -368,6 +466,9 @@ function App() {
               Inbox
             </button>
           )}
+          {/* SPEC.md §11 Notifications (plan 064): the bell. Always present — see
+              `NotificationsButton`'s own note for why this one is not gated on the registry. */}
+          <NotificationsButton unread={notifications.unread} />
           <button
             type="button"
             onClick={openAddDialog}
@@ -442,11 +543,16 @@ function App() {
       <PortsPanel />
       <InboxPanel />
       <DoctorPanel />
+      <NotificationsPanel />
       <AddEditDialog />
       <MoveToFolderDialog />
       <SettingsDialog />
       {toast && (
+        // Plan 064: `key={toastSeq}` remounts on every raised toast, so an identical message
+        // repeated (a retry loop hitting the same busy port) gets its own full countdown instead of
+        // inheriting the tail of the previous one's. §11 forbids deduplicating those.
         <Toast
+          key={toastSeq}
           message={toast}
           tone={toastTone}
           projectId={toastProjectId ?? undefined}
